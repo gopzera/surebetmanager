@@ -9,19 +9,20 @@ router.use(auth);
 router.get('/', async (req, res) => {
   try {
     const { type, from, to, limit = 50, offset = 0 } = req.query;
-    let sql = 'SELECT * FROM operations WHERE user_id = ?';
+    let where = 'WHERE user_id = ?';
     const params = [req.user.id];
 
-    if (type) { sql += ' AND type = ?'; params.push(type); }
-    if (from) { sql += ' AND created_at >= ?'; params.push(from); }
-    if (to) { sql += ' AND created_at <= ?'; params.push(to + ' 23:59:59'); }
+    if (type) { where += ' AND type = ?'; params.push(type); }
+    if (from) { where += ' AND created_at >= ?'; params.push(from); }
+    if (to) { where += ' AND created_at <= ?'; params.push(to + ' 23:59:59'); }
 
-    const countSql = sql.replace(/SELECT \*/, 'SELECT COUNT(*) as total');
-    const { total } = await db.get(countSql, ...params);
+    const countRow = await db.get(`SELECT COUNT(*) as total FROM operations ${where}`, ...params);
+    const total = countRow ? countRow.total : 0;
 
-    sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(Number(limit), Number(offset));
-    const operations = await db.all(sql, ...params);
+    const operations = await db.all(
+      `SELECT * FROM operations ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      ...params, Number(limit), Number(offset)
+    );
 
     // Attach accounts for each operation
     for (const op of operations) {

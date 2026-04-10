@@ -193,12 +193,6 @@ function navigate(page) {
     calcRateInterval = null;
   }
 
-  // Clean up watcher polling when leaving watcher page
-  if (watcherPollTimer) {
-    clearInterval(watcherPollTimer);
-    watcherPollTimer = null;
-  }
-
   const pages = {
     'dashboard': renderDashboard,
     'new-operation': renderNewOperation,
@@ -1732,7 +1726,6 @@ async function renderGroup() {
 }
 
 // ===== WATCHER =====
-let watcherPollTimer = null;
 let watcherTab = 'alerts'; // 'alerts' | 'positions' | 'config'
 let watchedWallets = [];
 let watcherSoundEnabled = true;
@@ -1768,6 +1761,7 @@ async function loadWatchedWallets() {
 // Background polling (runs every 30s even when not on watcher page)
 let bgWatcherTimer = null;
 let unseenAlertCount = 0;
+let pollInProgress = false; // prevent concurrent polls
 
 function updateBadge() {
   const badge = document.getElementById('watcher-badge');
@@ -1781,7 +1775,8 @@ function updateBadge() {
 }
 
 async function bgPoll() {
-  if (watcherPaused || !currentUser) return;
+  if (watcherPaused || !currentUser || pollInProgress) return;
+  pollInProgress = true;
   try {
     const data = await api('/api/watcher/poll', { method: 'POST', body: {} });
     if (data.alerts && data.alerts.length > 0) {
@@ -1806,13 +1801,12 @@ async function bgPoll() {
       }
     }
   } catch (_) {}
+  pollInProgress = false;
 }
 
 function startBgPolling() {
   if (bgWatcherTimer) clearInterval(bgWatcherTimer);
   bgWatcherTimer = setInterval(bgPoll, 30000);
-  // Initial poll
-  bgPoll();
 }
 
 function stopBgPolling() {
@@ -1853,11 +1847,6 @@ async function renderWatcher() {
   `;
 
   switchWatcherTab(watcherTab);
-
-  // Start more frequent polling while on watcher page
-  watcherPollTimer = setInterval(() => {
-    if (!watcherPaused) bgPoll();
-  }, 15000);
 }
 
 function switchWatcherTab(tab) {

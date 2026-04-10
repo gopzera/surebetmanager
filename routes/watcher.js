@@ -213,21 +213,24 @@ router.get('/cron-poll', async (req, res) => {
 router.get('/alerts', auth, async (req, res) => {
   try {
     const { limit = 50, offset = 0, unseen } = req.query;
-    let sql = `
-      SELECT wa.*, ww.label as wallet_label
-      FROM wallet_alerts wa
-      JOIN watched_wallets ww ON ww.id = wa.wallet_id
-      WHERE ww.user_id = ?
-    `;
+    let where = 'WHERE ww.user_id = ?';
     const params = [req.user.id];
-    if (unseen === '1') { sql += ' AND wa.seen = 0'; }
+    if (unseen === '1') { where += ' AND wa.seen = 0'; }
 
-    const countSql = sql.replace(/SELECT wa\.\*, ww\.label as wallet_label/, 'SELECT COUNT(*) as total');
-    const { total } = await db.get(countSql, ...params);
+    const countRow = await db.get(
+      `SELECT COUNT(*) as total FROM wallet_alerts wa
+       JOIN watched_wallets ww ON ww.id = wa.wallet_id ${where}`,
+      ...params
+    );
+    const total = countRow ? countRow.total : 0;
 
-    sql += ' ORDER BY wa.created_at DESC LIMIT ? OFFSET ?';
-    params.push(Number(limit), Number(offset));
-    const alerts = await db.all(sql, ...params);
+    const alerts = await db.all(
+      `SELECT wa.*, ww.label as wallet_label
+       FROM wallet_alerts wa
+       JOIN watched_wallets ww ON ww.id = wa.wallet_id
+       ${where} ORDER BY wa.created_at DESC LIMIT ? OFFSET ?`,
+      ...params, Number(limit), Number(offset)
+    );
 
     res.json({ alerts, total });
   } catch (err) { res.status(500).json({ error: err.message }); }
