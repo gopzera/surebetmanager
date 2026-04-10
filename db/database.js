@@ -136,6 +136,13 @@ const db = {
           } catch (_) {}
         }
         await client.executeMultiple(SCHEMA);
+        // Migration: clear old position data that used conditionId without outcome suffix
+        // This is safe because positions are re-fetched on next poll
+        try {
+          await client.execute(
+            `DELETE FROM wallet_positions WHERE condition_id NOT LIKE '%/%'`
+          );
+        } catch (_) {}
       })();
     }
     return initPromise;

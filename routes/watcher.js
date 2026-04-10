@@ -77,6 +77,11 @@ router.delete('/wallets/:id', auth, async (req, res) => {
 
 // ===== CORE POLL LOGIC =====
 
+// Build a unique key per position: conditionId + outcome (Yes/No can coexist)
+function posKey(conditionId, outcome) {
+  return `${conditionId}/${outcome || ''}`;
+}
+
 async function pollWallet(wallet) {
   const newAlerts = [];
   const url = `${POLY_DATA_API}/positions?user=${wallet.address}&sizeThreshold=0.01&limit=500`;
@@ -84,14 +89,23 @@ async function pollWallet(wallet) {
   if (!resp.ok) return newAlerts;
   const positions = await resp.json();
 
+  // Filter out resolved positions (each share = $1, or value < $1)
+  const livePositions = positions.filter(p => {
+    const size = p.size || 0;
+    const val = p.currentValue || 0;
+    if (val < 1) return false;
+    if (Math.abs(size - val) < 0.01) return false;
+    return true;
+  });
+
   const stored = await db.all('SELECT * FROM wallet_positions WHERE wallet_id = ?', wallet.id);
   const storedMap = new Map(stored.map(p => [p.condition_id, p]));
-  const seenConditionIds = new Set();
+  const seenKeys = new Set();
 
   await db.transaction(async (tx) => {
-    for (const pos of positions) {
-      const cid = pos.conditionId;
-      seenConditionIds.add(cid);
+    for (const pos of livePositions) {
+      const key = posKey(pos.conditionId, pos.outcome);
+      seenKeys.add(key);
 
       await tx.run(
         `INSERT INTO wallet_positions (wallet_id, condition_id, title, outcome, size, avg_price, current_value)
@@ -100,13 +114,13 @@ async function pollWallet(wallet) {
            size = excluded.size, avg_price = excluded.avg_price,
            current_value = excluded.current_value, title = excluded.title,
            outcome = excluded.outcome, last_seen = CURRENT_TIMESTAMP`,
-        wallet.id, cid, pos.title || '', pos.outcome || '',
+        wallet.id, key, pos.title || '', pos.outcome || '',
         pos.size || 0, pos.avgPrice || 0, pos.currentValue || 0
       );
 
-      if (!storedMap.has(cid)) {
+      if (!storedMap.has(key)) {
         const alert = {
-          wallet_id: wallet.id, type: 'new_position', condition_id: cid,
+          wallet_id: wallet.id, type: 'new_position', condition_id: key,
           title: pos.title || 'Mercado desconhecido', outcome: pos.outcome || '',
           side: 'BUY', size: pos.size || 0, price: pos.avgPrice || 0,
           usdc_size: pos.currentValue || 0, walletLabel: wallet.label,
@@ -114,15 +128,15 @@ async function pollWallet(wallet) {
         await tx.run(
           `INSERT INTO wallet_alerts (wallet_id, type, condition_id, title, outcome, side, size, price, usdc_size, timestamp)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          wallet.id, 'new_position', cid, alert.title, alert.outcome,
+          wallet.id, 'new_position', key, alert.title, alert.outcome,
           'BUY', alert.size, alert.price, alert.usdc_size, new Date().toISOString()
         );
         newAlerts.push(alert);
       } else {
-        const old = storedMap.get(cid);
+        const old = storedMap.get(key);
         if (pos.size > old.size * 1.05 + 0.5) {
           const alert = {
-            wallet_id: wallet.id, type: 'trade_buy', condition_id: cid,
+            wallet_id: wallet.id, type: 'trade_buy', condition_id: key,
             title: pos.title || old.title, outcome: pos.outcome || old.outcome,
             side: 'BUY', size: pos.size - old.size, price: pos.avgPrice || 0,
             usdc_size: Math.abs((pos.currentValue || 0) - (old.current_value || 0)),
@@ -131,7 +145,7 @@ async function pollWallet(wallet) {
           await tx.run(
             `INSERT INTO wallet_alerts (wallet_id, type, condition_id, title, outcome, side, size, price, usdc_size, timestamp)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            wallet.id, 'trade_buy', cid, alert.title, alert.outcome,
+            wallet.id, 'trade_buy', key, alert.title, alert.outcome,
             'BUY', alert.size, alert.price, alert.usdc_size, new Date().toISOString()
           );
           newAlerts.push(alert);
@@ -140,10 +154,10 @@ async function pollWallet(wallet) {
     }
 
     // Detect closed positions
-    for (const [cid, old] of storedMap) {
-      if (!seenConditionIds.has(cid)) {
+    for (const [key, old] of storedMap) {
+      if (!seenKeys.has(key)) {
         const alert = {
-          wallet_id: wallet.id, type: 'position_closed', condition_id: cid,
+          wallet_id: wallet.id, type: 'position_closed', condition_id: key,
           title: old.title || 'Mercado desconhecido', outcome: old.outcome || '',
           side: 'SELL', size: old.size, price: 0,
           usdc_size: old.current_value || 0, walletLabel: wallet.label,
@@ -151,11 +165,11 @@ async function pollWallet(wallet) {
         await tx.run(
           `INSERT INTO wallet_alerts (wallet_id, type, condition_id, title, outcome, side, size, price, usdc_size, timestamp)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          wallet.id, 'position_closed', cid, alert.title, alert.outcome,
+          wallet.id, 'position_closed', key, alert.title, alert.outcome,
           'SELL', alert.size, 0, alert.usdc_size, new Date().toISOString()
         );
         newAlerts.push(alert);
-        await tx.run('DELETE FROM wallet_positions WHERE wallet_id = ? AND condition_id = ?', wallet.id, cid);
+        await tx.run('DELETE FROM wallet_positions WHERE wallet_id = ? AND condition_id = ?', wallet.id, key);
       }
     }
   });
