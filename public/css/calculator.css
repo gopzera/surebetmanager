@@ -1,0 +1,516 @@
+/* ==========================================
+   SUREBET CALCULATOR — scoped under .calc-page
+   ========================================== */
+
+.calc-page {
+  --bg:          #060b16;
+  --surface:     #0b1324;
+  --surface2:    #0f1b30;
+  --surface3:    #14213a;
+  --border:      #1a2d46;
+  --border-soft: #112035;
+  --text:  #cdd9ef;
+  --text2: #4d6882;
+  --text3: #283a50;
+  --cyan:      #22d3ee;
+  --cyan-dim:  rgba(34,211,238,.09);
+  --cyan-glow: rgba(34,211,238,.18);
+  --green:        #10b981;
+  --green-bright: #34d399;
+  --green-bg:     rgba(16,185,129,.07);
+  --green-border: rgba(16,185,129,.22);
+  --green-glow:   rgba(16,185,129,.25);
+  --red:        #f43f5e;
+  --red-bg:     rgba(244,63,94,.07);
+  --red-border: rgba(244,63,94,.22);
+  --red-glow:   rgba(244,63,94,.2);
+  --amber:        #f59e0b;
+  --amber-bg:     rgba(245,158,11,.08);
+  --amber-border: rgba(245,158,11,.28);
+  --poly:        #a78bfa;
+  --poly-bg:     rgba(167,139,250,.07);
+  --poly-border: rgba(167,139,250,.18);
+  --poly-glow:   rgba(167,139,250,.15);
+  --fix:        #fb923c;
+  --fix-bg:     rgba(251,146,60,.08);
+  --fix-border: rgba(251,146,60,.28);
+  --tfoot-bg:    #07101e;
+  --inp-ro:      rgba(255,255,255,.04);
+  --row-hover:   rgba(255,255,255,.018);
+  --mono:    'JetBrains Mono', monospace;
+  --sans:    'DM Sans', sans-serif;
+  --display: 'Syne', sans-serif;
+  --r:    10px;
+  --r-sm: 6px;
+  --r-xs: 4px;
+
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* ── LIGHT MODE ── */
+.calc-page.light {
+  --bg:           #edf1fa;
+  --surface:      #ffffff;
+  --surface2:     #e2ecf8;
+  --surface3:     #d5e4f5;
+  --border:       #bfd0e8;
+  --border-soft:  #cdddf2;
+  --text:         #0c1929;
+  --text2:        #3d5e80;
+  --text3:        #7a9ab8;
+  --cyan:         #0891b2;
+  --cyan-dim:     rgba(8,145,178,.08);
+  --cyan-glow:    rgba(8,145,178,.15);
+  --green:        #059669;
+  --green-bright: #0d9f72;
+  --green-bg:     rgba(5,150,105,.07);
+  --green-border: rgba(5,150,105,.25);
+  --green-glow:   rgba(5,150,105,.18);
+  --red:          #dc2250;
+  --red-bg:       rgba(220,34,80,.06);
+  --red-border:   rgba(220,34,80,.22);
+  --red-glow:     rgba(220,34,80,.15);
+  --amber-bg:     rgba(217,119,6,.08);
+  --amber-border: rgba(217,119,6,.3);
+  --poly:         #6d28d9;
+  --poly-bg:      rgba(109,40,217,.07);
+  --poly-border:  rgba(109,40,217,.2);
+  --fix-bg:       rgba(234,88,12,.07);
+  --fix-border:   rgba(234,88,12,.28);
+  --tfoot-bg:     #d8e8f8;
+  --inp-ro:       rgba(0,0,0,.04);
+  --row-hover:    rgba(79,70,229,.03);
+}
+
+/* ── ANIMATIONS ── */
+@keyframes calcFadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.calc-page > * {
+  animation: calcFadeUp .4s cubic-bezier(.22,1,.36,1) both;
+}
+.calc-page > *:nth-child(1) { animation-delay: .00s; }
+.calc-page > *:nth-child(2) { animation-delay: .06s; }
+.calc-page > *:nth-child(3) { animation-delay: .10s; }
+.calc-page > *:nth-child(4) { animation-delay: .14s; }
+.calc-page > *:nth-child(5) { animation-delay: .18s; }
+.calc-page > *:nth-child(6) { animation-delay: .22s; }
+.calc-page > *:nth-child(7) { animation-delay: .26s; }
+
+/* ── HEADER ── */
+.calc-page .c-hdr {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.calc-page .c-hdr-brand { display: flex; flex-direction: column; gap: 4px; }
+.calc-page .c-hdr-brand h2 {
+  font-family: var(--display);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -1.5px;
+  line-height: 1;
+  color: var(--text);
+}
+.calc-page .c-hdr-brand h2 em { font-style: normal; color: var(--cyan); }
+.calc-page .c-hdr-brand .c-sub {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--text3);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.calc-page .c-hdr-right {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ── THEME BUTTON ── */
+.calc-page .c-theme-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  border-radius: var(--r-sm);
+  padding: 8px 14px;
+  cursor: pointer;
+  font: 500 12px/1 var(--sans);
+  transition: border-color .15s, color .15s;
+  white-space: nowrap;
+  align-self: center;
+}
+.calc-page .c-theme-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+
+/* ── TICKER ── */
+.calc-page .c-ticker {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 10px 14px;
+  min-width: 210px;
+}
+.calc-page .c-ticker-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: 600 10px/1 var(--sans);
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 6px;
+}
+.calc-page .c-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+@keyframes calcPulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: .25; transform: scale(.75); }
+}
+.calc-page .c-dot-ok   { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.calc-page .c-dot-err  { background: var(--red); }
+.calc-page .c-dot-load { background: var(--amber); animation: calcPulseDot 1.2s ease-in-out infinite; }
+
+.calc-page .c-refresh-btn {
+  background: none; border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 15px; padding: 0;
+  transition: color .15s, transform .35s cubic-bezier(.34,1.56,.64,1);
+  line-height: 1;
+}
+.calc-page .c-refresh-btn:hover { color: var(--cyan); transform: rotate(180deg); }
+
+.calc-page .c-ticker-price {
+  font: 700 22px/1 var(--mono);
+  color: var(--text);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.calc-page .c-ticker-time   { font: 400 10px/1 var(--mono); color: var(--text3); }
+.calc-page .c-ticker-source { font-size: 10px; color: var(--text3); margin-top: 3px; }
+.calc-page .c-ticker-note   { font: 400 9.5px/1 var(--mono); color: var(--text3); margin-top: 5px; opacity: .7; }
+.calc-page .c-ticker-load   { font: 400 11px/1 var(--mono); color: var(--text3); padding: 4px 0; }
+
+/* ── CONTROLS ── */
+.calc-page .c-controls {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 11px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.calc-page .c-ctrl-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.calc-page .c-ctrl-label {
+  font: 600 10px/1 var(--sans);
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+.calc-page .c-ctrl-sep {
+  width: 1px; height: 22px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* ── BUTTONS ── */
+.calc-page .c-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  border-radius: var(--r-sm);
+  padding: 5px 11px;
+  cursor: pointer;
+  font: 500 12px/1 var(--sans);
+  transition: border-color .13s, color .13s, background .13s;
+  white-space: nowrap;
+}
+.calc-page .c-btn:hover { border-color: var(--text2); color: var(--text); }
+.calc-page .c-btn.on {
+  background: var(--cyan-dim);
+  border-color: rgba(34,211,238,.35);
+  color: var(--cyan);
+}
+
+/* ── TABLE ── */
+.calc-page .c-tbl-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: auto;
+  margin-bottom: 12px;
+}
+
+.calc-page table { border-collapse: collapse; width: 100%; }
+
+.calc-page th {
+  padding: 9px 10px;
+  background: var(--surface2);
+  font: 600 10px/1 var(--sans);
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  text-align: left;
+}
+.calc-page th.c-poly-th {
+  background: var(--poly-bg);
+  color: var(--poly);
+  border-bottom-color: var(--poly-border);
+}
+
+.calc-page td {
+  border-bottom: 1px solid var(--border-soft);
+  padding: 7px 10px;
+  vertical-align: middle;
+  border-top: none;
+  background: transparent;
+}
+.calc-page tbody tr:last-child td { border-bottom: none; }
+.calc-page tbody tr { transition: background .1s; }
+.calc-page tbody tr:hover td { background: var(--row-hover); }
+.calc-page td.c-poly-td { background: var(--poly-bg); }
+.calc-page tbody tr:hover td.c-poly-td { background: rgba(167,139,250,.13); }
+
+.calc-page .c-num-col { text-align: right; font-family: var(--mono); }
+.calc-page .c-ctr-col { text-align: center; }
+
+/* ── INPUTS ── */
+.calc-page input[type=number] {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 5px 8px;
+  font: 400 12.5px/1 var(--mono);
+  color: var(--text);
+  transition: border-color .15s, box-shadow .15s;
+  -moz-appearance: textfield;
+  width: auto;
+}
+.calc-page input[type=number]::-webkit-outer-spin-button,
+.calc-page input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.calc-page input[type=number]:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgba(34,211,238,.08);
+}
+.calc-page input[type=number][readonly] {
+  background: var(--inp-ro);
+  cursor: default;
+  font-weight: 700;
+}
+
+.calc-page select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 4px 7px;
+  font: 400 11.5px/1 var(--sans);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .13s;
+}
+.calc-page select:focus { outline: none; border-color: var(--poly); }
+.calc-page select:disabled { opacity: .3; cursor: not-allowed; }
+
+.calc-page input[type=checkbox] {
+  width: 14px; height: 14px;
+  cursor: pointer;
+  accent-color: var(--poly);
+}
+
+/* currency pill */
+.calc-page .c-cur-btn {
+  border-radius: 20px;
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all .13s;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.calc-page .c-cur-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+
+/* fix button */
+.calc-page .c-fix-btn {
+  border-radius: var(--r-xs);
+  padding: 3px 9px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .13s;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text3);
+}
+.calc-page .c-fix-btn:hover { border-color: var(--fix); }
+.calc-page .c-fix-btn.c-fix-on {
+  background: var(--fix-bg);
+  border-color: var(--fix-border);
+  color: var(--fix);
+}
+
+/* stake fixed */
+.calc-page .c-stake-fixed {
+  background: var(--fix-bg) !important;
+  border-color: var(--fix-border) !important;
+  color: var(--fix) !important;
+  font-weight: 700;
+}
+
+/* tfoot */
+.calc-page tfoot td {
+  background: var(--tfoot-bg);
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+  padding: 9px 10px;
+}
+
+/* profit/loss text */
+.calc-page .c-pos  { color: var(--green-bright); font: 700 13px/1 var(--mono); }
+.calc-page .c-neg  { color: var(--red);          font: 700 13px/1 var(--mono); }
+.calc-page .c-dim  { font: 400 10px/1 var(--mono); color: var(--text3); }
+
+/* fee badge */
+.calc-page .c-fee-badge {
+  display: inline-block;
+  background: var(--poly-bg);
+  border: 1px solid var(--poly-border);
+  color: var(--poly);
+  font: 600 10px/1 var(--mono);
+  padding: 2px 8px;
+  border-radius: 20px;
+  letter-spacing: .02em;
+}
+
+/* ── SUMMARY CARDS ── */
+.calc-page .c-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.calc-page .c-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 13px 15px;
+  transition: border-color .2s, box-shadow .2s;
+  position: relative;
+  overflow: hidden;
+}
+.calc-page .c-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,.02) 0%, transparent 60%);
+  pointer-events: none;
+}
+.calc-page .c-card-label {
+  font: 600 9.5px/1 var(--sans);
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  margin-bottom: 6px;
+}
+.calc-page .c-card-value {
+  font: 700 17px/1.2 var(--mono);
+  color: var(--text);
+}
+
+.calc-page .c-card.c-green {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+  box-shadow: 0 0 20px var(--green-glow);
+}
+.calc-page .c-card.c-green .c-card-value { color: var(--green-bright); }
+.calc-page .c-card.c-green .c-card-label { color: rgba(52,211,153,.4); }
+
+.calc-page .c-card.c-red {
+  border-color: var(--red-border);
+  background: var(--red-bg);
+  box-shadow: 0 0 20px var(--red-glow);
+}
+.calc-page .c-card.c-red .c-card-value { color: var(--red); }
+.calc-page .c-card.c-red .c-card-label { color: rgba(244,63,94,.4); }
+
+/* ── ACTIONS ── */
+.calc-page .c-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.calc-page .c-actions .c-btn { padding: 8px 18px; font-size: 12.5px; }
+.calc-page .c-actions .c-btn.c-primary {
+  background: var(--cyan-dim);
+  border-color: rgba(34,211,238,.3);
+  color: var(--cyan);
+}
+.calc-page .c-actions .c-btn.c-primary:hover {
+  background: rgba(34,211,238,.14);
+  border-color: var(--cyan);
+}
+
+/* ── LEGEND ── */
+.calc-page .c-legend {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 12px 16px;
+  font-size: 11px;
+  color: var(--text3);
+  line-height: 1.8;
+}
+.calc-page .c-legend strong { color: var(--poly); font-weight: 600; }
+.calc-page .c-legend code {
+  font-family: var(--mono);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  padding: 1px 7px;
+  font-size: 10.5px;
+  color: var(--cyan);
+}
+
+/* ── WARN BAR ── */
+.calc-page .c-warn-bar {
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  color: var(--amber);
+  border-radius: var(--r-sm);
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+/* ── RESPONSIVE ── */
+@media (max-width: 640px) {
+  .calc-page .c-hdr-brand h2 { font-size: 22px; }
+  .calc-page .c-hdr { flex-direction: column; }
+  .calc-page .c-ticker { min-width: unset; width: 100%; }
+  .calc-page .c-cards { grid-template-columns: repeat(2, 1fr); }
+  .calc-page .c-controls { gap: 10px; }
+}
