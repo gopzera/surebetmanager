@@ -20,7 +20,7 @@
   "crons": [
     {
       "path": "/api/watcher/cron-poll",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }
