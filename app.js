@@ -14,6 +14,7 @@ app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/freebets', require('./routes/freebets'));
 app.use('/api/accounts', require('./routes/accounts'));
 app.use('/api/watcher', require('./routes/watcher'));
+app.use('/api/ranking', require('./routes/ranking'));
 
 // Static files & SPA fallback (local dev only; Vercel handles via CDN + rewrites)
 if (!process.env.VERCEL) {

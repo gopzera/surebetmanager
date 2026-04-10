@@ -12,6 +12,7 @@ const SCHEMA = `
     username TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
     display_name TEXT NOT NULL,
+    show_in_ranking INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -141,6 +142,12 @@ const db = {
         try {
           await client.execute(
             `DELETE FROM wallet_positions WHERE condition_id NOT LIKE '%/%'`
+          );
+        } catch (_) {}
+        // Migration: add show_in_ranking column if missing
+        try {
+          await client.execute(
+            `ALTER TABLE users ADD COLUMN show_in_ranking INTEGER NOT NULL DEFAULT 1`
           );
         } catch (_) {}
       })();

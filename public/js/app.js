@@ -197,6 +197,7 @@ function navigate(page) {
     'dashboard': renderDashboard,
     'new-operation': renderNewOperation,
     'history': renderHistory,
+    'ranking': renderRanking,
     'calculator': renderCalculator,
     'freebets': renderFreebets,
     'settings': renderSettings,
@@ -958,19 +959,64 @@ async function deleteOperation(id) {
 // ===== SETTINGS =====
 async function renderSettings() {
   await loadAccounts();
+
+  // Fetch ranking preference
+  let showInRanking = true;
+  try {
+    const pref = await api('/api/ranking/me');
+    showInRanking = !!pref.show_in_ranking;
+  } catch (_) {}
+
   const mc = document.getElementById('main-content');
   mc.innerHTML = `
     <div class="page-header">
       <div>
-        <h1 class="page-title">Configurações</h1>
-        <p class="page-description">Gerencie suas contas Bet365</p>
+        <h1 class="page-title">Configura\u00E7\u00F5es</h1>
+        <p class="page-description">Gerencie suas contas e prefer\u00EAncias</p>
       </div>
     </div>
 
+    <!-- Ranking toggle -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:12px">Ranking</h3>
+      <div style="display:flex;align-items:center;gap:12px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px">
+          <input type="checkbox" id="setting-show-ranking" ${showInRanking ? 'checked' : ''}
+            style="width:18px;height:18px;accent-color:var(--primary);cursor:pointer"
+            onchange="toggleRankingVisibility(this.checked)">
+          Exibir meu lucro no ranking do grupo
+        </label>
+      </div>
+      <p style="color:var(--text-muted);font-size:12px;margin-top:6px">
+        Quando desativado, seu perfil n\u00E3o aparecer\u00E1 na p\u00E1gina de Ranking.
+      </p>
+    </div>
+
+    <!-- Wallet import/export -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:4px">Wallets do Watcher</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Importe ou exporte a lista de wallets monitoradas para compartilhar com outros membros do grupo.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="exportWallets()" id="export-wallets-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Exportar Wallets
+        </button>
+        <label class="btn btn-primary" style="cursor:pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Importar Wallets
+          <input type="file" accept=".json,.txt" style="display:none" onchange="importWallets(this)">
+        </label>
+      </div>
+      <div id="wallet-import-result" style="margin-top:10px"></div>
+    </div>
+
+    <!-- Bet365 accounts -->
     <div class="chart-container">
       <h3 class="chart-title" style="margin-bottom:4px">Contas Bet365</h3>
       <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px">
-        Cada conta tem seu próprio volume semanal de R$ 1.500 para a freebet e um stake máximo para aumentadas.
+        Cada conta tem seu pr\u00F3prio volume semanal de R$ 1.500 para a freebet e um stake m\u00E1ximo para aumentadas.
       </p>
 
       <div id="accounts-list-settings"></div>
@@ -983,7 +1029,7 @@ async function renderSettings() {
             <input type="text" class="form-input" id="acc-name" placeholder="Ex: Conta Principal" required>
           </div>
           <div class="form-group">
-            <label class="form-label">Stake Máximo Aumentada (R$)</label>
+            <label class="form-label">Stake M\u00E1ximo Aumentada (R$)</label>
             <input type="number" step="0.01" min="0" class="form-input" id="acc-max-stake" placeholder="250" value="250">
           </div>
           <div class="form-group">
@@ -1009,6 +1055,64 @@ async function renderSettings() {
       renderAccountsList();
     } catch (err) { toast(err.message, 'error'); }
   });
+}
+
+async function toggleRankingVisibility(checked) {
+  try {
+    await api('/api/ranking/me', { method: 'PUT', body: { show_in_ranking: checked } });
+    toast(checked ? 'Seu lucro agora aparece no ranking' : 'Seu lucro foi ocultado do ranking');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function exportWallets() {
+  try {
+    const wallets = await api('/api/watcher/wallets');
+    const active = wallets.filter(w => w.active);
+    const exportData = active.map(w => ({ label: w.label, address: w.address }));
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'wallets.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`${exportData.length} wallet(s) exportada(s)!`);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function importWallets(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const resultEl = document.getElementById('wallet-import-result');
+
+  try {
+    const text = await file.text();
+    let wallets;
+    try {
+      wallets = JSON.parse(text);
+    } catch (_) {
+      // Try parsing as plain text: one line per wallet, format "label address" or "label,address"
+      wallets = text.split('\n').filter(l => l.trim()).map(line => {
+        const parts = line.includes(',') ? line.split(',') : line.split(/\s+/);
+        const address = parts.pop().trim();
+        const label = parts.join(' ').trim() || address;
+        return { label, address };
+      });
+    }
+    if (!Array.isArray(wallets)) wallets = [wallets];
+
+    const result = await api('/api/watcher/wallets/import', {
+      method: 'POST',
+      body: { wallets }
+    });
+
+    resultEl.innerHTML = `<div style="color:var(--success);font-size:13px">${result.added} adicionada(s), ${result.skipped} ignorada(s) (duplicada/inv\u00E1lida)</div>`;
+    toast(`${result.added} wallet(s) importada(s)!`);
+  } catch (err) {
+    resultEl.innerHTML = `<div style="color:var(--danger);font-size:13px">${escapeHtml(err.message)}</div>`;
+    toast(err.message, 'error');
+  }
+  input.value = '';
 }
 
 function renderAccountsList() {
@@ -1089,6 +1193,70 @@ async function deleteAccount(id) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+// ===== RANKING =====
+async function renderRanking() {
+  const mc = document.getElementById('main-content');
+  mc.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Ranking</h1>
+        <p class="page-description">Membros do grupo ranqueados por lucro total</p>
+      </div>
+    </div>
+    <div class="table-container">
+      <div id="ranking-content"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+    </div>
+  `;
+
+  try {
+    const data = await api('/api/ranking');
+    const container = document.getElementById('ranking-content');
+    if (!data.length) {
+      container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">&#127942;</div><div class="empty-state-text">Nenhum membro visivel no ranking</div><div class="empty-state-sub">Ative a visibilidade nas Configura\u00E7\u00F5es</div></div>`;
+      return;
+    }
+
+    const medals = ['\uD83E\uDD47', '\uD83E\uDD48', '\uD83E\uDD49'];
+    container.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">
+        ${data.map((u, i) => {
+          const medal = i < 3 ? medals[i] : `<span style="color:var(--text-muted);font-weight:600;font-size:14px">${i+1}</span>`;
+          const profitVal = Number(u.total_profit) || 0;
+          const isMe = u.id === currentUser?.id;
+          return `
+            <div class="ranking-row ${isMe ? 'ranking-me' : ''}" style="
+              display:flex;align-items:center;gap:16px;
+              padding:14px 20px;
+              background:var(--bg-card);
+              border:1px solid ${isMe ? 'var(--primary)' : 'var(--border)'};
+              border-radius:var(--radius);
+              ${isMe ? 'box-shadow:0 0 12px rgba(108,92,231,.15);' : ''}
+            ">
+              <div style="width:36px;text-align:center;font-size:${i < 3 ? '22px' : '14px'}">${medal}</div>
+              <div style="
+                width:38px;height:38px;border-radius:50%;
+                background:${isMe ? 'var(--primary)' : 'var(--border)'};
+                display:flex;align-items:center;justify-content:center;
+                font-weight:700;font-size:16px;color:${isMe ? '#fff' : 'var(--text-muted)'};
+                flex-shrink:0;
+              ">${escapeHtml(u.display_name.charAt(0).toUpperCase())}</div>
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:600;font-size:15px;${isMe ? 'color:var(--primary)' : ''}">${escapeHtml(u.display_name)}${isMe ? ' (voc\u00EA)' : ''}</div>
+                <div style="font-size:12px;color:var(--text-muted)">${u.total_ops} opera\u00E7\u00F5es</div>
+              </div>
+              <div style="text-align:right">
+                <div class="${profitClass(profitVal)}" style="font-weight:700;font-size:17px;font-family:'JetBrains Mono',monospace">${formatBRL(profitVal)}</div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  } catch (err) {
+    document.getElementById('ranking-content').innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
+  }
+}
+
 // ===== CALCULATOR =====
 // -- Polymarket fee categories (effective from 30/03/2026) --
 const POLY_CATS = {
@@ -1107,9 +1275,28 @@ const POLY_CATS = {
 };
 const CAT_KEYS = Object.keys(POLY_CATS);
 
+// Fork/formula types
+const CALC_FORK_TYPES_2 = [
+  { id:"1-2",   label:"1 \u2014 2",        hint:"Home vs Away" },
+  { id:"1-X2",  label:"1 \u2014 X2",       hint:"Back Home / Lay X2" },
+  { id:"1X-2",  label:"1X \u2014 2",       hint:"Lay Home / Back Away" },
+  { id:"AH",    label:"AH1 \u2014 AH2",    hint:"Asian Handicap" },
+  { id:"OU",    label:"Over \u2014 Under",  hint:"Goals market" },
+];
+const CALC_FORK_TYPES_3 = [
+  { id:"1-X-2",    label:"1 \u2014 X \u2014 2",       hint:"3-way standard" },
+  { id:"3corr",    label:"3 corners",        hint:"Corners market" },
+  { id:"DNB+D",    label:"DNB + Draw",       hint:"Draw No Bet + Draw" },
+];
+const CALC_FORK_TYPES_N = [
+  { id:"multi",    label:"Multi-way",        hint:"4+ outcomes" },
+];
+
+const CALC_CURR_SYMS = { USD:"$", BRL:"R$" };
+
 // -- Calculator state --
 let calcNumOut = 2;
-let calcShowComm = true;
+let calcShowComm = false;
 let calcRoundValue = 0;
 let calcRoundUseFx = false;
 let calcNextId = 3;
@@ -1119,36 +1306,74 @@ let calcLastUpdated = null;
 let calcResult = null;
 let calcDarkMode = true;
 let calcRateInterval = null;
+let calcForkType = "1-2";
+let calcTotalStakeOverride = null;
 
 function makeCalcRow(id) {
-  return { id, odds: "", comm: "0", usePoly: false, cat: "Sports", currency: "USD", isFixed: false, fixedStake: "" };
+  return {
+    id, odds: "2", comm: "0",
+    betType: "back",      // "back" | "lay"
+    usePoly: false, cat: "Sports",
+    currency: "USD", isFixed: false, fixedStake: "",
+    manualStake: null,    // user-typed override when another row is the fixed anchor
+    customRate: null      // custom BRL/USD rate for display on USD rows
+  };
 }
 
 // -- Math --
-function calcEffOdds(raw, commPct, usePoly, catKey) {
+/**
+ * Effective odds taking commission and bet type into account.
+ * Back bet: eff = 1 + (raw-1)*(1 - c%)  [commission on profit only]
+ * Lay  bet: eff = raw - c%              [lay formula]
+ * Then apply Polymarket taker fee on top (back only).
+ */
+function calcEffOdds(raw, commPct, betType, usePoly, catKey) {
   if (!raw || raw <= 1) return null;
-  let ac = commPct > 0 ? raw * (1 - commPct / 100) + commPct / 100 : raw;
-  if (!usePoly) return ac;
+  const c = (parseFloat(commPct) || 0) / 100;
+  let eff;
+  if (betType === "lay") {
+    eff = raw - c;
+  } else {
+    eff = 1 + (raw - 1) * (1 - c);
+  }
+  if (eff <= 1) return null;
+  if (!usePoly || betType === "lay") return eff;
   const { feeRate, exponent } = POLY_CATS[catKey];
-  if (!feeRate) return ac;
-  const p = 1 / ac;
-  return 1 / (p * (1 + feeRate * Math.pow(p * (1 - p), exponent)));
+  if (!feeRate) return eff;
+  const p = 1 / eff;
+  const adjEff = 1 / (p * (1 + feeRate * Math.pow(p * (1 - p), exponent)));
+  return adjEff > 1 ? adjEff : null;
 }
 
 function calcTakerFeePct(raw, commPct, catKey) {
   if (raw <= 1) return 0;
-  let ac = commPct > 0 ? raw * (1 - commPct / 100) + commPct / 100 : raw;
+  const c = (parseFloat(commPct) || 0) / 100;
+  const eff = 1 + (raw - 1) * (1 - c);
+  if (eff <= 1) return 0;
   const { feeRate, exponent } = POLY_CATS[catKey];
   if (!feeRate) return 0;
-  const p = 1 / ac;
+  const p = 1 / eff;
   return feeRate * Math.pow(p * (1 - p), exponent) * 100;
 }
 
 function cf2(n) { return (typeof n === "number" && isFinite(n)) ? n.toFixed(2) : "\u2014"; }
-function cCurrSym(c) { return c === "USD" ? "$" : "R$"; }
-function cToDisplay(usdAmt, currency) {
+
+function calcToDisplay(usdAmt, currency) {
   if (currency === "USD") return usdAmt;
-  return calcUsdcBrl ? usdAmt * calcUsdcBrl : null;
+  if (currency === "BRL") return calcUsdcBrl ? usdAmt * calcUsdcBrl : null;
+  return null;
+}
+
+function calcToUSD(amt, cur) {
+  if (cur === "USD") return amt;
+  if (cur === "BRL") return calcUsdcBrl ? amt / calcUsdcBrl : amt;
+  return amt;
+}
+
+function calcFromUSD(usd, cur) {
+  if (cur === "USD") return usd;
+  if (cur === "BRL") return calcUsdcBrl ? usd * calcUsdcBrl : null;
+  return null;
 }
 
 // -- Theme --
@@ -1178,7 +1403,7 @@ async function calcFetchRate() {
     } catch (_) {}
   }
   const body = document.getElementById('calc-ticker-body');
-  if (body) body.innerHTML = `<div style="color:var(--red);font-family:var(--mono);font-size:11px">Falha ao buscar cotação</div>`;
+  if (body) body.innerHTML = `<div style="color:var(--red);font-family:var(--mono);font-size:11px">Falha ao buscar cota\u00E7\u00E3o</div>`;
   if (dot) dot.className = "c-dot c-dot-err";
 }
 
@@ -1195,12 +1420,39 @@ function calcGotRate(price, source) {
   calcUpdateDisplay();
 }
 
+// -- Fork type --
+function calcBuildForkSelect() {
+  const sel = document.getElementById("calc-fork-type");
+  if (!sel) return;
+  const types = calcNumOut === 2 ? CALC_FORK_TYPES_2 : calcNumOut === 3 ? CALC_FORK_TYPES_3 : CALC_FORK_TYPES_N;
+  sel.innerHTML = types.map(t =>
+    `<option value="${t.id}" title="${t.hint}"${calcForkType===t.id?" selected":""}>${t.label}</option>`
+  ).join("");
+  if (!types.find(t=>t.id===calcForkType)) {
+    calcForkType = types[0].id;
+    sel.value = calcForkType;
+  }
+}
+
+function calcOnForkChange() {
+  calcForkType = document.getElementById("calc-fork-type").value;
+  if (calcForkType === "1-X2" && calcRows.length >= 2) {
+    calcRows[0].betType = "back"; calcRows[1].betType = "lay";
+  } else if (calcForkType === "1X-2" && calcRows.length >= 2) {
+    calcRows[0].betType = "lay"; calcRows[1].betType = "back";
+  } else {
+    calcRows.forEach(r => { if(calcForkType!=="1-X2"&&calcForkType!=="1X-2") r.betType="back"; });
+  }
+  calcCompute(); calcBuildTable();
+}
+
 // -- Outcome buttons --
 function calcSetOutcomes(n) {
   calcNumOut = n;
   while (calcRows.length < calcNumOut) calcRows.push(makeCalcRow(calcNextId++));
   calcRows = calcRows.slice(0, calcNumOut);
   document.querySelectorAll('#calc-outcome-btns .c-btn').forEach(b => b.classList.toggle('on', parseInt(b.textContent) === n));
+  calcBuildForkSelect();
   calcCompute(); calcBuildTable();
 }
 
@@ -1211,63 +1463,79 @@ function calcToggleShowComm() {
   calcBuildTable();
 }
 
-function calcSetRound(val) {
-  calcRoundValue = val;
-  ["calc-round-off","calc-round-1","calc-round-5","calc-round-10"].forEach(id => {
-    const el = document.getElementById(id); if (el) el.classList.remove("on");
-  });
-  const btnId = val === 0 ? "calc-round-off" : `calc-round-${val}`;
-  const el = document.getElementById(btnId); if (el) el.classList.add("on");
-  calcCompute(); calcUpdateDisplay();
-}
-
-function calcToggleRoundFx() {
-  calcRoundUseFx = !calcRoundUseFx;
-  const btn = document.getElementById('calc-round-fx-btn');
-  if (btn) { btn.textContent = calcRoundUseFx ? "FX rounding: ON" : "FX rounding: OFF"; btn.classList.toggle("on", calcRoundUseFx); }
-  calcCompute(); calcUpdateDisplay();
-}
-
 // -- Core calculation --
 function calcCompute() {
-  const effArr = calcRows.map(r => calcEffOdds(parseFloat(r.odds), parseFloat(r.comm)||0, r.usePoly, r.cat));
+  const effArr = calcRows.map(r =>
+    calcEffOdds(parseFloat(r.odds), parseFloat(r.comm)||0, r.betType, r.usePoly, r.cat)
+  );
   if (!effArr.every(o => o !== null && o > 1)) { calcResult = null; return; }
 
   const invSum = effArr.reduce((s, o) => s + 1/o, 0);
   const margin = invSum;
+  const isSurebet = margin < 1;
+
   const fixIdx = calcRows.findIndex(r => r.isFixed);
-  let target = fixIdx >= 0
-    ? (parseFloat(calcRows[fixIdx].fixedStake)||0) * effArr[fixIdx] / (calcRows[fixIdx].currency==="BRL" && calcUsdcBrl ? calcUsdcBrl : 1)
-    : 100 / invSum;
+  let target;
+  if (fixIdx >= 0) {
+    const fRow = calcRows[fixIdx];
+    const raw = parseFloat(fRow.fixedStake) || 0;
+    let usdFixed;
+    if (fRow.currency === "USD") usdFixed = raw;
+    else if (fRow.currency === "BRL") usdFixed = calcUsdcBrl ? raw / calcUsdcBrl : raw;
+    else usdFixed = raw;
+    target = usdFixed * effArr[fixIdx];
+  } else {
+    const desiredTotal = calcTotalStakeOverride !== null ? calcTotalStakeOverride : 100;
+    target = desiredTotal / invSum;
+  }
 
   let stakesUSD = effArr.map(o => target / o);
+
+  // Apply manual stake overrides
+  calcRows.forEach((r, i) => {
+    if (r.manualStake !== null && !r.isFixed) {
+      const raw = r.manualStake === "" ? null : parseFloat(r.manualStake);
+      if (raw !== null && !isNaN(raw)) {
+        let usdManual;
+        if (r.currency === "USD") usdManual = raw;
+        else if (r.currency === "BRL") usdManual = calcUsdcBrl ? raw / calcUsdcBrl : raw;
+        else usdManual = raw;
+        stakesUSD[i] = usdManual;
+      }
+    }
+  });
 
   if (calcRoundValue > 0) {
     stakesUSD = stakesUSD.map((s, i) => {
       const row = calcRows[i];
       if (calcRoundUseFx && row.currency === "BRL" && calcUsdcBrl) {
-        return Math.ceil(s * calcUsdcBrl / calcRoundValue) * calcRoundValue / calcUsdcBrl;
+        const brl = s * calcUsdcBrl;
+        const rounded = Math.ceil(brl / calcRoundValue) * calcRoundValue;
+        return rounded / calcUsdcBrl;
       }
       return Math.ceil(s / calcRoundValue) * calcRoundValue;
     });
   }
 
-  const totalUSD    = stakesUSD.reduce((a,b)=>a+b,0);
-  const returnsUSD  = stakesUSD.map((s,i)=>s*effArr[i]);
-  const profitsUSD  = returnsUSD.map(r=>r-totalUSD);
-  const minProfit   = Math.min(...profitsUSD);
-  const roi         = totalUSD ? (minProfit / totalUSD) * 100 : 0;
+  const totalUSD   = stakesUSD.reduce((a,b)=>a+b,0);
+  const returnsUSD = stakesUSD.map((s,i)=>s*effArr[i]);
+  const profitsUSD = returnsUSD.map(r=>r-totalUSD);
+  const minProfit  = Math.min(...profitsUSD);
+  const roi        = totalUSD ? (minProfit / totalUSD) * 100 : 0;
 
-  calcResult = { margin, isSurebet: margin < 1, effArr, stakesUSD, totalUSD, returnsUSD, profitsUSD, minProfit, roi };
+  calcResult = { margin, isSurebet, effArr, stakesUSD, totalUSD, returnsUSD, profitsUSD, minProfit, roi };
 }
 
 // -- Build table --
 function calcBuildTable() {
+  calcCompute();
+
   let h = `<tr>
     <th style="width:28px" class="c-ctr-col">#</th>
+    <th class="c-ctr-col" style="width:50px">B/L</th>
     <th>Odds</th>
-    <th class="c-num-col">Prob %</th>`;
-  if (calcShowComm) h += `<th>Commission %</th><th class="c-num-col">Adj. Odds</th>`;
+    <th class="c-num-col">Prob%</th>`;
+  if (calcShowComm) h += `<th>Comm %</th><th class="c-num-col">Eff.Odds</th>`;
   h += `
     <th class="c-poly-th c-ctr-col">Poly</th>
     <th class="c-poly-th">Category</th>
@@ -1279,37 +1547,98 @@ function calcBuildTable() {
   </tr>`;
   document.getElementById("calc-thead").innerHTML = h;
 
-  const catOpts = CAT_KEYS.map(k => `<option value="${k}">${k}</option>`).join("");
-
   document.getElementById("calc-tbody").innerHTML = calcRows.map((row, idx) => {
     const cur = row.currency;
-    const catSelect = CAT_KEYS.map(k => `<option value="${k}"${row.cat===k?" selected":""}>${k}</option>`).join("");
+    const isLay = row.betType === "lay";
+    const catOpts = CAT_KEYS.map(k =>
+      `<option value="${k}"${row.cat===k?" selected":""}>${k}</option>`
+    ).join("");
 
     let commCols = "";
-    if (calcShowComm) commCols = `
-      <td><input type="number" min="0" max="100" step="0.01" value="${row.comm}" style="width:70px;text-align:center" oninput="calcOnCommInput(${row.id},this.value)"></td>
-      <td class="c-num-col" id="calc-ao-${row.id}">\u2014</td>`;
+    if (calcShowComm) {
+      const eff = calcResult ? calcResult.effArr[idx] : null;
+      commCols = `
+        <td><input type="number" min="-40" max="40" step="0.01" value="${row.comm}"
+          style="width:70px;text-align:center"
+          oninput="calcOnCommInput(${row.id},this.value)"></td>
+        <td class="c-num-col" id="calc-ao-${row.id}" style="font-size:12px">
+          ${eff ? `<span style="font-family:var(--mono);font-size:11px">${eff.toFixed(4)}</span>` : "\u2014"}
+        </td>`;
+    }
+
+    // Liability for lay bets
+    let liabHtml = "";
+    if (isLay && calcResult) {
+      const raw = parseFloat(row.odds) || 0;
+      const s = calcResult.stakesUSD[idx];
+      const liab = s * (raw - 1);
+      const liabDisp = calcToDisplay(liab, cur);
+      liabHtml = `<div class="c-liab-badge" title="Your liability">Liab: ${CALC_CURR_SYMS[cur]}${cf2(liabDisp??liab)}</div>`;
+    }
+
+    const stakeFixed = (row.isFixed || row.manualStake !== null) ? "c-stake-fixed" : "";
+    const stakeVal = row.isFixed ? row.fixedStake
+      : row.manualStake !== null ? row.manualStake
+      : calcResult ? (() => {
+          const v = calcToDisplay(calcResult.stakesUSD[idx], cur);
+          return v !== null ? cf2(v) : "";
+        })() : "";
 
     return `
-    <tr>
+    <tr class="${isLay?"c-is-lay":""}">
       <td class="c-ctr-col" style="font:600 11px/1 var(--mono);color:var(--text3)">${idx+1}</td>
-      <td><input type="number" min="1.001" step="0.01" value="${row.odds}" style="width:88px;text-align:center" oninput="calcOnOddsInput(${row.id},this.value)"></td>
-      <td class="c-num-col" id="calc-prob-${row.id}" style="font-size:12px">\u2014</td>
-      ${commCols}
-      <td class="c-poly-td c-ctr-col"><input type="checkbox" ${row.usePoly?"checked":""} onchange="calcOnPolyChange(${row.id},this.checked)"></td>
-      <td class="c-poly-td"><select id="calc-catsel-${row.id}" ${row.usePoly?"":"disabled"} onchange="calcOnCatChange(${row.id},this.value)">${catSelect}</select></td>
-      <td id="calc-fee-${row.id}" class="c-poly-td c-num-col"><span style="color:var(--text3)">\u2014</span></td>
       <td class="c-ctr-col">
-        <button class="c-cur-btn" id="calc-curbtn-${row.id}" onclick="calcToggleCur(${row.id})">${cur==="USD"?"$ USD":"R$ BRL"}</button>
+        <button class="c-bl-btn ${isLay?"c-lay":"c-back"}" onclick="calcToggleBL(${row.id})" title="${isLay?"Lay (you're the bookmaker)":"Back (you're the bettor)"}">${isLay?"\u2212":"+"}</button>
       </td>
-      <td>
-        <div style="display:flex;align-items:center;gap:4px">
-          <span id="calc-cursym-${row.id}" style="font:400 11px/1 var(--mono);color:var(--text3)">${cCurrSym(cur)}</span>
-          <input type="number" id="calc-stake-${row.id}" class="${row.isFixed?"c-stake-fixed":""}" style="width:92px;text-align:right" oninput="calcOnStakeInput(${row.id},this.value)" value="${row.isFixed?row.fixedStake:""}">
+      <td><input type="number" min="1.001" step="0.01" value="${row.odds}" style="width:88px;text-align:center"
+        placeholder="${isLay?"Lay odds":"Back odds"}"
+        oninput="calcOnOddsInput(${row.id},this.value)"></td>
+      <td class="c-num-col" id="calc-prob-${row.id}" style="font-size:12px">
+        ${(parseFloat(row.odds)||0) > 1 ? (100/(parseFloat(row.odds))).toFixed(1)+"%" : "\u2014"}
+      </td>
+      ${commCols}
+      <td class="c-poly-td c-ctr-col">
+        <input type="checkbox" ${row.usePoly&&!isLay?"checked":""} ${isLay?"disabled":""} onchange="calcOnPolyChange(${row.id},this.checked)" title="${isLay?"Polymarket only for back bets":"Use Polymarket taker fee"}">
+      </td>
+      <td class="c-poly-td">
+        <select id="calc-catsel-${row.id}" ${(row.usePoly&&!isLay)?"":"disabled"} onchange="calcOnCatChange(${row.id},this.value)">${catOpts}</select>
+      </td>
+      <td id="calc-fee-${row.id}" class="c-poly-td c-num-col">
+        ${(!isLay && row.usePoly) ? (() => {
+          const fp = calcTakerFeePct(parseFloat(row.odds)||0, parseFloat(row.comm)||0, row.cat);
+          return fp > 0 ? `<span class="c-fee-badge">${fp.toFixed(3)}%</span>` : `<span style="color:var(--text3)">\u2014</span>`;
+        })() : `<span style="color:var(--text3)">\u2014</span>`}
+      </td>
+      <td class="c-ctr-col">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+          <button class="c-cur-btn" id="calc-curbtn-${row.id}" onclick="calcCycleCur(${row.id})">${cur==="USD"?"$ USD":"R$ BRL"}</button>
+          ${cur==="USD" ? `<div style="display:flex;align-items:center;gap:3px">
+            <span style="font:400 9px/1 var(--mono);color:var(--text3)">R$/\$</span>
+            <input type="number" min="0.01" step="0.01"
+              style="width:64px;font-size:11px;padding:3px 5px;text-align:right"
+              placeholder="${calcUsdcBrl ? calcUsdcBrl.toFixed(2) : 'rate'}"
+              value="${row.customRate !== null ? row.customRate : ''}"
+              oninput="calcOnCustomRate(${row.id},this.value)"
+              title="Cota\u00E7\u00E3o USD/BRL personalizada para esta linha">
+          </div>` : ""}
         </div>
       </td>
-      <td class="c-ctr-col">
-        <button class="c-fix-btn ${row.isFixed?"c-fix-on":""}" onclick="calcToggleFix(${row.id})" title="${row.isFixed?"Desfixar":"Fixar stake"}">${row.isFixed?"\uD83D\uDD12":"\uD83D\uDD13"}</button>
+      <td>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <div style="display:flex;align-items:center;gap:4px">
+            <span id="calc-cursym-${row.id}" style="font:400 11px/1 var(--mono);color:var(--text3)">${CALC_CURR_SYMS[cur]}</span>
+            <input type="number" id="calc-stake-${row.id}" class="${stakeFixed}" style="width:92px;text-align:right"
+              oninput="calcOnStakeInput(${row.id},this.value)"
+              value="${stakeVal}"
+              placeholder="${isLay?"Backer stake":"Your stake"}">
+          </div>
+          ${liabHtml}
+          <div id="calc-brl-hint-${row.id}" class="c-dim" style="padding-left:2px;display:none"></div>
+        </div>
+      </td>
+      <td class="c-ctr-col" id="calc-fixcell-${row.id}">
+        <button class="c-fix-btn ${row.isFixed?"c-fix-on":"c-fix-off"}" onclick="calcToggleFix(${row.id})"
+          title="${row.isFixed?"Unfix stake":"Fix this stake"}">${row.isFixed?"\uD83D\uDD12":"\uD83D\uDD13"}</button>
       </td>
       <td id="calc-profit-${row.id}" class="c-num-col">\u2014</td>
     </tr>`;
@@ -1320,57 +1649,125 @@ function calcBuildTable() {
 
 // -- Update display --
 function calcUpdateDisplay() {
+  const roiBadge = document.getElementById("calc-roi-badge");
   if (!calcResult) {
     document.getElementById("calc-tfoot").innerHTML = "";
     document.getElementById("calc-cards").innerHTML = "";
+    if (roiBadge) roiBadge.style.display = "none";
     return;
   }
 
   calcRows.forEach((row, i) => {
-    const raw = parseFloat(row.odds) || 0;
-
     const probEl = document.getElementById(`calc-prob-${row.id}`);
-    if (probEl) probEl.textContent = raw > 1 ? (100 / raw).toFixed(1) + "%" : "\u2014";
-
-    if (calcShowComm) {
-      const ao = document.getElementById(`calc-ao-${row.id}`);
-      if (ao) ao.textContent = raw > 1 ? (raw * (1 - (parseFloat(row.comm)||0)/100) + (parseFloat(row.comm)||0)/100).toFixed(4) : "\u2014";
+    if (probEl) {
+      probEl.innerHTML = (parseFloat(row.odds)||0) > 1 ? (100/(parseFloat(row.odds))).toFixed(1)+"%" : "\u2014";
     }
 
     const feeEl = document.getElementById(`calc-fee-${row.id}`);
     if (feeEl) {
-      const fp = row.usePoly ? calcTakerFeePct(raw, parseFloat(row.comm)||0, row.cat) : 0;
-      feeEl.innerHTML = fp > 0 ? `<span class="c-fee-badge">${fp.toFixed(3)}%</span>` : `<span style="color:var(--text3)">\u2014</span>`;
-    }
-
-    const stakeEl = document.getElementById(`calc-stake-${row.id}`);
-    if (stakeEl && !row.isFixed && document.activeElement !== stakeEl) {
-      const v = cToDisplay(calcResult.stakesUSD[i], row.currency);
-      stakeEl.value = v !== null ? cf2(v) : "";
+      const isLay = row.betType === "lay";
+      if (!isLay && row.usePoly) {
+        const fp = calcTakerFeePct(parseFloat(row.odds)||0, parseFloat(row.comm)||0, row.cat);
+        feeEl.innerHTML = fp > 0 ? `<span class="c-fee-badge">${fp.toFixed(3)}%</span>` : `<span style="color:var(--text3)">\u2014</span>`;
+      } else {
+        feeEl.innerHTML = `<span style="color:var(--text3)">\u2014</span>`;
+      }
     }
 
     const profEl = document.getElementById(`calc-profit-${row.id}`);
     if (profEl) {
       const pUSD = calcResult.profitsUSD[i];
-      const disp = cToDisplay(pUSD, row.currency);
+      const disp = calcToDisplay(pUSD, row.currency);
       const sign = pUSD >= 0 ? "+" : "";
       const cls  = pUSD >= -0.005 ? "c-pos" : "c-neg";
-      const main = disp !== null ? `${sign}${cCurrSym(row.currency)}${Math.abs(disp).toFixed(2)}` : `${sign}$${Math.abs(pUSD).toFixed(2)}`;
-      const sub  = row.currency === "BRL" && calcUsdcBrl ? `<div class="c-dim">${sign}$${cf2(Math.abs(pUSD))}</div>` : "";
+      const sym  = CALC_CURR_SYMS[row.currency];
+      const main = disp !== null ? `${sign}${sym}${Math.abs(disp).toFixed(2)}` : `${sign}$${Math.abs(pUSD).toFixed(2)}`;
+      const sub  = row.currency !== "USD" && disp !== null ? `<div class="c-dim">${sign}$${cf2(Math.abs(pUSD))}</div>` : "";
       profEl.innerHTML = `<span class="${cls}">${main}</span>${sub}`;
+    }
+
+    // Stake
+    const stakeEl = document.getElementById(`calc-stake-${row.id}`);
+    if (stakeEl && !row.isFixed && row.manualStake === null && document.activeElement !== stakeEl) {
+      const v = calcToDisplay(calcResult.stakesUSD[i], row.currency);
+      stakeEl.value = v !== null ? cf2(v) : "";
+    }
+
+    // BRL hint for USD rows with customRate
+    const brlHint = document.getElementById(`calc-brl-hint-${row.id}`);
+    if (brlHint && row.currency === "USD") {
+      const activeRate = row.customRate || null;
+      if (activeRate) {
+        const usdAmt = calcResult.stakesUSD[i];
+        brlHint.textContent = `\u2248 R$${cf2(usdAmt * activeRate)}`;
+        brlHint.style.display = "";
+      } else {
+        brlHint.style.display = "none";
+      }
+    } else if (brlHint) {
+      brlHint.style.display = "none";
+    }
+
+    // Liability update (for lay rows)
+    if (row.betType === "lay") {
+      const raw = parseFloat(row.odds) || 0;
+      const s = calcResult.stakesUSD[i];
+      const liab = s * (raw - 1);
+      const liabDisp = calcToDisplay(liab, row.currency);
+      const sym = CALC_CURR_SYMS[row.currency];
+      const cell = document.getElementById(`calc-stake-${row.id}`)?.closest("td");
+      if (cell) {
+        let badge = cell.querySelector(".c-liab-badge");
+        if (!badge) {
+          badge = document.createElement("div");
+          badge.className = "c-liab-badge";
+          cell.querySelector("div").appendChild(badge);
+        }
+        badge.textContent = `Liab: ${sym}${cf2(liabDisp??liab)}`;
+      }
     }
   });
 
+  // Total stake input sync
+  const totalInput = document.getElementById("calc-total-stake-input");
+  if (totalInput && document.activeElement !== totalInput) {
+    totalInput.value = cf2(calcResult.totalUSD);
+  }
+
   // Footer
-  const commCols = calcShowComm ? 2 : 0;
-  const colsBeforeStake = 7 + commCols;
-  document.getElementById("calc-tfoot").innerHTML = `
-    <tr>
-      <td colspan="${colsBeforeStake}" style="text-align:right;color:var(--text2);font:500 12px/1 var(--sans)">Total stake (USD):</td>
-      <td><div style="display:flex;align-items:center;gap:4px"><span style="color:var(--text3);font-family:var(--mono);font-size:11px">$</span><input readonly value="${cf2(calcResult.totalUSD)}" style="width:92px;text-align:right;font-weight:700"></div></td>
-      <td></td>
-      <td class="c-num-col"><span class="c-pos">+$${cf2(calcResult.minProfit)}</span>${calcUsdcBrl?`<div class="c-dim">+R$${(calcResult.minProfit*calcUsdcBrl).toFixed(2)}</div>`:""}</td>
-    </tr>`;
+  const colCount = 12 + (calcShowComm ? 2 : 0);
+  const colsBeforeStake = colCount - 3;
+  const totalInputActive = document.activeElement?.id === "calc-total-stake-input";
+
+  if (!totalInputActive) {
+    document.getElementById("calc-tfoot").innerHTML = `
+      <tr>
+        <td colspan="${colsBeforeStake}" style="text-align:right;color:var(--text2);font:500 12px/1 var(--sans)">
+          Total stake (USD):</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="color:var(--text3);font-family:var(--mono);font-size:11px">$</span>
+            <input type="number" id="calc-total-stake-input" min="0.01" step="0.01"
+              value="${cf2(calcResult.totalUSD)}"
+              style="width:92px;text-align:right;font-weight:700"
+              title="Edite para distribuir o total entre as apostas"
+              oninput="calcOnTotalStakeInput(this.value)">
+          </div>
+        </td>
+        <td></td>
+        <td class="c-num-col" id="calc-tfoot-profit">
+          <span class="${calcResult.minProfit>=0?"c-pos":"c-neg"}">${calcResult.minProfit>=0?"+":""}$${cf2(Math.abs(calcResult.minProfit))}</span>
+          ${calcUsdcBrl?`<div class="c-dim">R$${cf2(calcResult.minProfit*calcUsdcBrl)}</div>`:""}
+        </td>
+      </tr>`;
+  } else {
+    const profitCell = document.getElementById("calc-tfoot-profit");
+    if (profitCell) {
+      profitCell.innerHTML = `
+        <span class="${calcResult.minProfit>=0?"c-pos":"c-neg"}">${calcResult.minProfit>=0?"+":""}$${cf2(Math.abs(calcResult.minProfit))}</span>
+        ${calcUsdcBrl?`<div class="c-dim">R$${cf2(calcResult.minProfit*calcUsdcBrl)}</div>`:""}`;
+    }
+  }
 
   // Cards
   const r = calcResult;
@@ -1383,6 +1780,13 @@ function calcUpdateDisplay() {
     <div class="c-card ${vc}"><div class="c-card-label">Min Profit</div><div class="c-card-value">+$${cf2(r.minProfit)}</div></div>
     <div class="c-card ${vc}"><div class="c-card-label">ROI</div><div class="c-card-value">${r.roi.toFixed(2)}%</div></div>`;
 
+  // ROI Badge
+  if (roiBadge) {
+    roiBadge.style.display = "";
+    roiBadge.textContent = calcResult.roi.toFixed(2) + "%";
+    roiBadge.className = "c-roi-badge " + (calcResult.isSurebet ? "c-arb" : "c-noarb");
+  }
+
   const warn = document.getElementById("calc-brl-warn");
   if (warn) warn.style.display = (calcRows.some(r=>r.currency==="BRL") && !calcUsdcBrl) ? "" : "none";
 }
@@ -1391,64 +1795,122 @@ function calcUpdateDisplay() {
 function calcOnOddsInput(id, val) { calcRows.find(r=>r.id===id).odds = val; calcCompute(); calcUpdateDisplay(); }
 function calcOnCommInput(id, val) { calcRows.find(r=>r.id===id).comm = val; calcCompute(); calcUpdateDisplay(); }
 function calcOnPolyChange(id, checked) {
-  calcRows.find(r=>r.id===id).usePoly = checked;
+  const row = calcRows.find(r=>r.id===id);
+  row.usePoly = checked;
   const sel = document.getElementById(`calc-catsel-${id}`);
   if (sel) sel.disabled = !checked;
-  calcCompute(); calcUpdateDisplay();
-}
-function calcOnCatChange(id, val) { calcRows.find(r=>r.id===id).cat = val; calcCompute(); calcUpdateDisplay(); }
-function calcOnStakeInput(id, val) {
-  calcRows.forEach(r => { if (r.id !== id) { r.isFixed = false; r.fixedStake = ""; } });
-  const row = calcRows.find(r=>r.id===id);
-  row.isFixed = true;
-  row.fixedStake = val;
-  calcCompute(); calcUpdateDisplay();
-}
-function calcToggleCur(id) {
-  const row = calcRows.find(r=>r.id===id);
-  const oldCur = row.currency;
-  row.currency = oldCur === "USD" ? "BRL" : "USD";
-  if (row.isFixed && row.fixedStake && calcUsdcBrl) {
-    const usd = oldCur === "USD" ? parseFloat(row.fixedStake) : parseFloat(row.fixedStake) / calcUsdcBrl;
-    row.fixedStake = cf2(row.currency === "USD" ? usd : usd * calcUsdcBrl);
-  }
   calcCompute(); calcBuildTable();
 }
+function calcOnCatChange(id, val) { calcRows.find(r=>r.id===id).cat = val; calcCompute(); calcUpdateDisplay(); }
+
+function calcOnStakeInput(id, val) {
+  const row = calcRows.find(r=>r.id===id);
+  calcTotalStakeOverride = null;
+  if (row.isFixed) {
+    row.fixedStake = val;
+  } else {
+    row.manualStake = (val === "" || val === null) ? null : val;
+  }
+  calcCompute(); calcUpdateDisplay();
+}
+
+function calcToggleBL(id) {
+  const row = calcRows.find(r=>r.id===id);
+  row.betType = row.betType === "back" ? "lay" : "back";
+  if (row.betType === "lay") { row.usePoly = false; }
+  calcCompute(); calcBuildTable();
+}
+
+function calcCycleCur(id) {
+  const row = calcRows.find(r=>r.id===id);
+  const order = ["USD","BRL"];
+  const next = order[(order.indexOf(row.currency)+1) % order.length];
+  row.customRate = null;
+  if (row.isFixed && row.fixedStake) {
+    const usd = calcToUSD(parseFloat(row.fixedStake), row.currency);
+    row.fixedStake = cf2(calcFromUSD(usd, next) ?? usd);
+  }
+  if (row.manualStake !== null && row.manualStake !== "") {
+    const usd = calcToUSD(parseFloat(row.manualStake), row.currency);
+    row.manualStake = cf2(calcFromUSD(usd, next) ?? usd);
+  }
+  row.currency = next;
+  calcCompute(); calcBuildTable();
+}
+
 function calcToggleFix(id) {
   const row = calcRows.find(r=>r.id===id);
   if (row.isFixed) {
     row.isFixed = false; row.fixedStake = "";
   } else {
-    calcRows.forEach(r => { r.isFixed = false; r.fixedStake = ""; });
+    calcRows.forEach(r => { r.isFixed = false; r.fixedStake = ""; r.manualStake = null; });
+    calcTotalStakeOverride = null;
     row.isFixed = true;
-    const idx = calcRows.indexOf(row);
-    const usd = calcResult ? calcResult.stakesUSD[idx] : 0;
-    row.fixedStake = cf2(cToDisplay(usd, row.currency) ?? usd);
+    const stakeEl = document.getElementById(`calc-stake-${id}`);
+    const typedVal = row.manualStake !== null && row.manualStake !== ""
+      ? row.manualStake
+      : (stakeEl && stakeEl.value !== "" ? stakeEl.value : null);
+    if (typedVal !== null) {
+      row.fixedStake = typedVal;
+    } else {
+      const idx = calcRows.indexOf(row);
+      const usd = calcResult ? calcResult.stakesUSD[idx] : 0;
+      const disp = calcFromUSD(usd, row.currency);
+      row.fixedStake = cf2(disp ?? usd);
+    }
+    row.manualStake = null;
   }
   calcCompute(); calcBuildTable();
 }
 
-// -- Utilities --
-function calcCopyStakes() {
-  if (!calcResult) return alert("Nada para copiar");
-  let txt = "Surebet Stakes\n\n";
-  calcRows.forEach((r,i) => {
-    const usd = calcResult.stakesUSD[i];
-    txt += `Outcome ${i+1}: $${cf2(usd)} USD`;
-    if (r.currency === "BRL" && calcUsdcBrl) txt += `  /  R$${cf2(usd*calcUsdcBrl)} BRL`;
-    txt += "\n";
+function calcOnCustomRate(id, val) {
+  const row = calcRows.find(r=>r.id===id);
+  row.customRate = (val === "" || val === null) ? null : parseFloat(val) || null;
+  calcUpdateDisplay();
+}
+
+function calcOnTotalStakeInput(val) {
+  const parsed = parseFloat(val);
+  if (!isNaN(parsed) && parsed > 0) {
+    calcTotalStakeOverride = parsed;
+    calcRows.forEach(r => { r.isFixed = false; r.fixedStake = ""; r.manualStake = null; });
+    calcCompute(); calcUpdateDisplay();
+  } else if (val === "" || val === null) {
+    calcTotalStakeOverride = null;
+    calcCompute(); calcUpdateDisplay();
+  }
+}
+
+// -- Share odds --
+function calcShareOdds() {
+  if (!calcRows.some(r => r.odds)) return alert("Enter odds first.");
+  const params = new URLSearchParams();
+  params.set("n", calcNumOut);
+  params.set("ft", calcForkType);
+  calcRows.forEach((r, i) => {
+    params.set(`o${i}`, r.odds);
+    params.set(`c${i}`, r.comm);
+    params.set(`bt${i}`, r.betType);
+    params.set(`poly${i}`, r.usePoly ? "1" : "0");
+    params.set(`cat${i}`, r.cat);
+    params.set(`cur${i}`, r.currency);
+    params.set(`fx${i}`, r.isFixed ? "1" : "0");
+    if (r.isFixed && r.fixedStake) params.set(`fxs${i}`, r.fixedStake);
+    if (r.customRate !== null) params.set(`cr${i}`, r.customRate);
   });
-  txt += `\nTotal USD: $${cf2(calcResult.totalUSD)}\nMin Profit: +$${cf2(calcResult.minProfit)}`;
-  navigator.clipboard.writeText(txt).then(() => {
-    const btn = document.getElementById("calc-copy-btn");
-    if (btn) { const orig = btn.textContent; btn.textContent = "\u2713 Copiado!"; setTimeout(() => btn.textContent = orig, 1800); }
+  const url = `${location.origin}${location.pathname}?${params.toString()}`;
+  navigator.clipboard.writeText(url).then(() => {
+    const btn = document.getElementById("calc-share-btn");
+    if (btn) { const orig = btn.textContent; btn.textContent = "\u2705 Link copied!"; setTimeout(() => btn.textContent = orig, 2000); }
+  }).catch(() => {
+    prompt("Copy this link:", url);
   });
 }
 
+// -- Import to operation (BUG FIX: uses highest BRL stake row's odd, not highest odd) --
 function calcImportToOperation() {
   if (!calcResult) return alert("Calcule uma surebet antes de importar.");
 
-  // Identify Poly row(s) and Bet365 row(s)
   const polyRows = [];
   const bet365Rows = [];
   calcRows.forEach((row, i) => {
@@ -1469,24 +1931,21 @@ function calcImportToOperation() {
     return alert("Marque pelo menos um outcome como Poly e tenha pelo menos um outcome Bet365.");
   }
 
-  // Poly side: first poly row (usually there's only one)
   const poly = polyRows[0];
   const polyStakeUSD = poly.stakeUSD;
   const polyOdd = poly.odds;
 
-  // Bet365 side: sum of BRL stakes, highest odd is the "aumentada" odd
+  // Bet365 side: sum of BRL stakes, and the odd from the row with the HIGHEST BRL STAKE (the aumentada)
   const totalStakeBet365BRL = bet365Rows.reduce((s, r) => s + r.stakeBRL, 0);
-  const highestOddBet365 = Math.max(...bet365Rows.map(r => r.odds));
+  const aumentadaRow = bet365Rows.reduce((best, r) => r.stakeBRL > best.stakeBRL ? r : best, bet365Rows[0]);
+  const aumentadaOdd = aumentadaRow.odds;
 
-  // Detect type: 4 outcomes with 3 bet365 + 1 poly = aumentada 25%
   const isAumentada = bet365Rows.length >= 3 && polyRows.length >= 1;
   const type = isAumentada ? 'aumentada25' : 'arbitragem';
 
-  // Build notes with bet descriptions for aumentada
   let notes = '';
   if (isAumentada) {
-    // Sort: highest odd first (the boosted bet)
-    const sorted = [...bet365Rows].sort((a, b) => b.odds - a.odds);
+    const sorted = [...bet365Rows].sort((a, b) => b.stakeBRL - a.stakeBRL);
     notes = sorted.map((r, i) => {
       const label = i === 0 ? 'Aumentada' : `Aposta ${i + 1}`;
       const stakeDisplay = r.currency === 'BRL'
@@ -1497,11 +1956,10 @@ function calcImportToOperation() {
     notes += ` | Poly: odd ${polyOdd.toFixed(2)} / $${polyStakeUSD.toFixed(2)}`;
   }
 
-  // Store data and navigate to new operation
   window._calcImport = {
     type,
     stakeBet365: totalStakeBet365BRL,
-    oddBet365: highestOddBet365,
+    oddBet365: aumentadaOdd,
     stakePolyUSD: polyStakeUSD,
     oddPoly: polyOdd,
     exchangeRate: calcUsdcBrl || 5,
@@ -1512,45 +1970,85 @@ function calcImportToOperation() {
   toast('Dados importados da calculadora!', 'success');
 }
 
-function calcLoadExample() {
-  calcNumOut = 3;
-  calcRows = [
-    {id:1, odds:"2.12", comm:"0", usePoly:false, cat:"Sports", currency:"USD", isFixed:false, fixedStake:""},
-    {id:2, odds:"3.55", comm:"0", usePoly:false, cat:"Sports", currency:"USD", isFixed:false, fixedStake:""},
-    {id:3, odds:"4.10", comm:"0", usePoly:false, cat:"Sports", currency:"USD", isFixed:false, fixedStake:""}
-  ];
-  calcNextId = 4;
-  document.querySelectorAll('#calc-outcome-btns .c-btn').forEach(b => b.classList.toggle("on", b.textContent == "3"));
+function calcResetAll() {
+  calcNumOut = 2; calcForkType = "1-2";
+  calcRows = [makeCalcRow(1), makeCalcRow(2)];
+  calcNextId = 3; calcRoundValue = 0; calcRoundUseFx = false; calcTotalStakeOverride = null;
+  document.querySelectorAll('#calc-outcome-btns .c-btn').forEach(b => b.classList.toggle("on", b.textContent==="2"));
+  calcBuildForkSelect();
+  calcShowComm = false;
+  const commBtn = document.getElementById("calc-show-comm-btn");
+  if (commBtn) { commBtn.textContent = "Show commissions"; commBtn.classList.remove("on"); }
+  calcSaveState();
   calcCompute(); calcBuildTable();
 }
 
-function calcResetAll() {
-  calcNumOut = 2;
-  calcRows = [makeCalcRow(1), makeCalcRow(2)];
-  calcNextId = 3;
-  calcRoundValue = 0;
-  calcRoundUseFx = false;
-  document.querySelectorAll('#calc-outcome-btns .c-btn').forEach(b => b.classList.toggle("on", b.textContent == "2"));
-  document.getElementById("calc-round-off")?.classList.add("on");
-  ["calc-round-1","calc-round-5","calc-round-10"].forEach(id => document.getElementById(id)?.classList.remove("on"));
-  const fxBtn = document.getElementById("calc-round-fx-btn");
-  if (fxBtn) { fxBtn.textContent = "FX rounding: OFF"; fxBtn.classList.remove("on"); }
-  calcShowComm = true;
-  const commBtn = document.getElementById("calc-show-comm-btn");
-  if (commBtn) { commBtn.textContent = "Hide commissions"; commBtn.classList.add("on"); }
-  calcCompute(); calcBuildTable();
+// -- State persistence --
+function calcSaveState() {
+  const state = {
+    numOut: calcNumOut,
+    showComm: calcShowComm,
+    roundValue: calcRoundValue,
+    roundUseFx: calcRoundUseFx,
+    forkType: calcForkType,
+    totalStakeOverride: calcTotalStakeOverride,
+    nextId: calcNextId,
+    rows: calcRows.map(r => ({
+      id: r.id, odds: r.odds, comm: r.comm, betType: r.betType,
+      usePoly: r.usePoly, cat: r.cat, currency: r.currency,
+      isFixed: r.isFixed, fixedStake: r.fixedStake,
+      manualStake: r.manualStake, customRate: r.customRate
+    })),
+  };
+  sessionStorage.setItem('calcState', JSON.stringify(state));
 }
+
+function calcRestoreState() {
+  try {
+    const raw = sessionStorage.getItem('calcState');
+    if (!raw) return false;
+    const state = JSON.parse(raw);
+    calcNumOut = state.numOut || 2;
+    calcShowComm = state.showComm || false;
+    calcRoundValue = state.roundValue || 0;
+    calcRoundUseFx = state.roundUseFx || false;
+    calcForkType = state.forkType || "1-2";
+    calcTotalStakeOverride = state.totalStakeOverride || null;
+    calcNextId = state.nextId || 3;
+    if (state.rows && state.rows.length) {
+      calcRows = state.rows.map(r => ({
+        id: r.id, odds: r.odds || "", comm: r.comm || "0",
+        betType: r.betType || "back", usePoly: !!r.usePoly,
+        cat: r.cat || "Sports", currency: r.currency || "USD",
+        isFixed: !!r.isFixed, fixedStake: r.fixedStake || "",
+        manualStake: r.manualStake !== undefined ? r.manualStake : null,
+        customRate: r.customRate !== undefined ? r.customRate : null
+      }));
+    } else {
+      return false;
+    }
+    return true;
+  } catch (_) { return false; }
+}
+
+// Auto-save on every state change (wrap handlers)
+const _origCalcCompute = calcCompute;
+calcCompute = function() { _origCalcCompute(); calcSaveState(); };
 
 // -- Render --
 function renderCalculator() {
-  // Reset state
-  calcRows = [makeCalcRow(1), makeCalcRow(2)];
-  calcNextId = 3;
-  calcNumOut = 2;
-  calcShowComm = true;
-  calcRoundValue = 0;
-  calcRoundUseFx = false;
-  calcResult = null;
+  const restored = calcRestoreState();
+  if (!restored) {
+    calcRows = [makeCalcRow(1), makeCalcRow(2)];
+    calcNextId = 3;
+    calcNumOut = 2;
+    calcShowComm = false;
+    calcRoundValue = 0;
+    calcRoundUseFx = false;
+    calcForkType = "1-2";
+    calcTotalStakeOverride = null;
+    calcResult = null;
+  }
 
   const stored = localStorage.getItem("calcDarkMode");
   if (stored !== null) calcDarkMode = stored === "true";
@@ -1565,13 +2063,14 @@ function renderCalculator() {
         <div class="c-sub">Arbitrage + Polymarket</div>
       </div>
       <div class="c-hdr-right">
+        <div id="calc-roi-badge" class="c-roi-badge" style="display:none">\u2014</div>
         <button class="c-theme-btn" id="calc-theme-btn" onclick="calcToggleTheme()">${calcDarkMode ? "\u2728 Light" : "\uD83C\uDF19 Dark"}</button>
         <div class="c-ticker">
           <div class="c-ticker-top">
             <span><span class="c-dot c-dot-load" id="calc-status-dot"></span>USDC / BRL</span>
             <button class="c-refresh-btn" onclick="calcFetchRate()" title="Atualizar">\u21BA</button>
           </div>
-          <div id="calc-ticker-body"><div class="c-ticker-load">Buscando cotação\u2026</div></div>
+          <div id="calc-ticker-body"><div class="c-ticker-load">Buscando cota\u00E7\u00E3o\u2026</div></div>
           <div class="c-ticker-note">\u21BB atualiza a cada 5s</div>
         </div>
       </div>
@@ -1581,22 +2080,18 @@ function renderCalculator() {
       <div class="c-ctrl-group">
         <span class="c-ctrl-label">Outcomes</span>
         <div id="calc-outcome-btns" style="display:flex;gap:5px">
-          ${[2,3,4,5,6].map(n => `<button class="c-btn ${n===2?'on':''}" onclick="calcSetOutcomes(${n})">${n}</button>`).join('')}
+          ${[2,3,4,5,6].map(n => `<button class="c-btn ${n===calcNumOut?'on':''}" onclick="calcSetOutcomes(${n})">${n}</button>`).join('')}
         </div>
       </div>
       <div class="c-ctrl-sep"></div>
-      <button class="c-btn on" id="calc-show-comm-btn" onclick="calcToggleShowComm()">Hide commissions</button>
-      <div class="c-ctrl-sep"></div>
       <div class="c-ctrl-group">
-        <span class="c-ctrl-label">Round stakes</span>
-        <button class="c-btn on" id="calc-round-off" onclick="calcSetRound(0)">Off</button>
-        <button class="c-btn" id="calc-round-1" onclick="calcSetRound(1)">$1</button>
-        <button class="c-btn" id="calc-round-5" onclick="calcSetRound(5)">$5</button>
-        <button class="c-btn" id="calc-round-10" onclick="calcSetRound(10)">$10</button>
+        <span class="c-ctrl-label">Type</span>
+        <select class="c-fork-select" id="calc-fork-type" onchange="calcOnForkChange()"></select>
       </div>
       <div class="c-ctrl-sep"></div>
-      <button class="c-btn" id="calc-round-fx-btn" onclick="calcToggleRoundFx()">FX rounding: OFF</button>
-      <div id="calc-brl-warn" style="display:none" class="c-warn-bar">\u26A0 Linhas em BRL precisam da cotação ao vivo</div>
+      <button class="c-btn ${calcShowComm?'on':''}" id="calc-show-comm-btn" onclick="calcToggleShowComm()">${calcShowComm ? "Hide commissions" : "Show commissions"}</button>
+
+      <div id="calc-brl-warn" style="display:none" class="c-warn-bar">\u26A0 Linhas em BRL precisam da cota\u00E7\u00E3o ao vivo</div>
     </div>
 
     <div class="c-tbl-wrap">
@@ -1610,19 +2105,21 @@ function renderCalculator() {
     <div class="c-cards" id="calc-cards"></div>
 
     <div class="c-actions">
-      <button class="c-btn c-primary" onclick="calcCopyStakes()" id="calc-copy-btn">\uD83D\uDCCB Copiar stakes</button>
-      <button class="c-btn c-primary" onclick="calcImportToOperation()" id="calc-import-btn">\uD83D\uDCE5 Importar p/ Operação</button>
-      <button class="c-btn" onclick="calcLoadExample()">Exemplo sports 3-way</button>
-      <button class="c-btn" onclick="calcResetAll()">Resetar tudo</button>
+      <button class="c-btn c-primary" onclick="calcShareOdds()" id="calc-share-btn">\uD83D\uDD17 Share odds</button>
+      <button class="c-btn c-primary" onclick="calcImportToOperation()" id="calc-import-btn">\uD83D\uDCE5 Importar p/ Opera\u00E7\u00E3o</button>
+      <button class="c-btn" onclick="calcResetAll()">Reset all</button>
     </div>
 
     <div class="c-legend">
       <strong>Polymarket taker fee (a partir de 30/03/2026):</strong><br>
-      <code>eff_rate = feeRate \u00D7 (p \u00D7 (1\u2212p))^exponent</code> onde p = 1/odds.<br>
-      Rounding usa Math.ceil (para cima). FX rounding converte \u2192 arredonda em BRL \u2192 converte de volta.
+      Back: <code>eff = 1 + (raw\u22121)\u00D7(1\u2212c%)</code> | Lay: <code>eff = raw \u2212 c%</code><br>
+      <code>taker_fee = feeRate \u00D7 (p \u00D7 (1\u2212p))^exponent</code> onde p = 1/eff_odds.
     </div>
 
   </div>`;
+
+  // Build fork select
+  calcBuildForkSelect();
 
   // Start rate fetching
   calcFetchRate();

@@ -43,6 +43,54 @@ router.post('/wallets', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ===== WALLET IMPORT/EXPORT =====
+
+// Export wallets as JSON
+router.get('/wallets/export', auth, async (req, res) => {
+  try {
+    const wallets = await db.all(
+      'SELECT label, address FROM watched_wallets WHERE user_id = ? AND active = 1 ORDER BY label',
+      req.user.id
+    );
+    res.setHeader('Content-Disposition', 'attachment; filename=wallets.json');
+    res.json(wallets);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Import wallets from JSON array of {label, address}
+router.post('/wallets/import', auth, async (req, res) => {
+  try {
+    const { wallets } = req.body;
+    if (!Array.isArray(wallets) || !wallets.length) {
+      return res.status(400).json({ error: 'Envie um array de wallets com label e address' });
+    }
+    let added = 0;
+    let skipped = 0;
+    for (const w of wallets) {
+      const label = (w.label || '').trim();
+      const address = (w.address || '').trim().toLowerCase();
+      if (!label || !address || !/^0x[a-f0-9]{40}$/i.test(address)) {
+        skipped++;
+        continue;
+      }
+      const existing = await db.get(
+        'SELECT id FROM watched_wallets WHERE user_id = ? AND address = ?',
+        req.user.id, address
+      );
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await db.run(
+        'INSERT INTO watched_wallets (user_id, label, address) VALUES (?, ?, ?)',
+        req.user.id, label, address
+      );
+      added++;
+    }
+    res.json({ added, skipped });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 router.put('/wallets/:id', auth, async (req, res) => {
   try {
     const wallet = await db.get(
