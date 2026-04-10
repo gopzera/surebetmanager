@@ -111,34 +111,6 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// Group stats
-router.get('/group', async (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const weekStart = getWeekStart();
-    const monthStart = today.substring(0, 7) + '-01';
-
-    const groupStats = await db.all(
-      `SELECT u.display_name, u.id as user_id,
-        COALESCE(SUM(CASE WHEN DATE(o.created_at) = ? THEN o.profit ELSE 0 END), 0) as today_profit,
-        COALESCE(SUM(CASE WHEN DATE(o.created_at) >= ? THEN o.profit ELSE 0 END), 0) as week_profit,
-        COALESCE(SUM(CASE WHEN DATE(o.created_at) >= ? THEN o.profit ELSE 0 END), 0) as month_profit,
-        COALESCE(SUM(o.profit), 0) as total_profit,
-        COUNT(o.id) as total_ops
-      FROM users u
-      LEFT JOIN operations o ON u.id = o.user_id
-      GROUP BY u.id
-      ORDER BY total_profit DESC`,
-      today, weekStart, monthStart
-    );
-
-    const groupTotal = await db.get('SELECT COALESCE(SUM(profit), 0) as total FROM operations');
-
-    res.json({ members: groupStats, groupTotal: groupTotal.total });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // Data export / backup
 router.get('/export', async (req, res) => {

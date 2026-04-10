@@ -199,7 +199,6 @@ function navigate(page) {
     'history': renderHistory,
     'calculator': renderCalculator,
     'freebets': renderFreebets,
-    'group': renderGroup,
     'settings': renderSettings,
     'watcher': renderWatcher,
   };
@@ -639,6 +638,31 @@ async function renderNewOperation() {
   });
 
   document.getElementById('new-op-form').addEventListener('submit', submitNewOperation);
+
+  // Pre-fill from calculator import
+  if (window._calcImport) {
+    const imp = window._calcImport;
+    window._calcImport = null;
+
+    // Select type
+    const typeEl = document.querySelector(`.type-option[data-type="${imp.type}"]`);
+    if (typeEl) selectType(typeEl);
+
+    // Fill fields
+    if (imp.stakeBet365) document.getElementById('new-stake-bet365').value = imp.stakeBet365.toFixed(2);
+    if (imp.oddBet365) document.getElementById('new-odd-bet365').value = imp.oddBet365.toFixed(2);
+    if (imp.stakePolyUSD) document.getElementById('new-stake-poly-usd').value = imp.stakePolyUSD.toFixed(2);
+    if (imp.oddPoly) document.getElementById('new-odd-poly').value = imp.oddPoly.toFixed(2);
+    if (imp.exchangeRate) {
+      rateInput.value = imp.exchangeRate.toFixed(4);
+      rateStatus.textContent = '(da calculadora)';
+      rateStatus.style.color = 'var(--success)';
+    }
+    if (imp.notes) document.getElementById('new-notes').value = imp.notes;
+
+    updatePolyBRL();
+    updateStakePerAccount();
+  }
 }
 
 function selectType(el) {
@@ -1421,6 +1445,73 @@ function calcCopyStakes() {
   });
 }
 
+function calcImportToOperation() {
+  if (!calcResult) return alert("Calcule uma surebet antes de importar.");
+
+  // Identify Poly row(s) and Bet365 row(s)
+  const polyRows = [];
+  const bet365Rows = [];
+  calcRows.forEach((row, i) => {
+    const data = {
+      row,
+      idx: i,
+      odds: parseFloat(row.odds) || 0,
+      stakeUSD: calcResult.stakesUSD[i],
+      stakeBRL: calcResult.stakesUSD[i] * (calcUsdcBrl || 5),
+      currency: row.currency,
+      usePoly: row.usePoly,
+    };
+    if (row.usePoly) polyRows.push(data);
+    else bet365Rows.push(data);
+  });
+
+  if (!polyRows.length || !bet365Rows.length) {
+    return alert("Marque pelo menos um outcome como Poly e tenha pelo menos um outcome Bet365.");
+  }
+
+  // Poly side: first poly row (usually there's only one)
+  const poly = polyRows[0];
+  const polyStakeUSD = poly.stakeUSD;
+  const polyOdd = poly.odds;
+
+  // Bet365 side: sum of BRL stakes, highest odd is the "aumentada" odd
+  const totalStakeBet365BRL = bet365Rows.reduce((s, r) => s + r.stakeBRL, 0);
+  const highestOddBet365 = Math.max(...bet365Rows.map(r => r.odds));
+
+  // Detect type: 4 outcomes with 3 bet365 + 1 poly = aumentada 25%
+  const isAumentada = bet365Rows.length >= 3 && polyRows.length >= 1;
+  const type = isAumentada ? 'aumentada25' : 'arbitragem';
+
+  // Build notes with bet descriptions for aumentada
+  let notes = '';
+  if (isAumentada) {
+    // Sort: highest odd first (the boosted bet)
+    const sorted = [...bet365Rows].sort((a, b) => b.odds - a.odds);
+    notes = sorted.map((r, i) => {
+      const label = i === 0 ? 'Aumentada' : `Aposta ${i + 1}`;
+      const stakeDisplay = r.currency === 'BRL'
+        ? `R$${r.stakeBRL.toFixed(2)}`
+        : `$${r.stakeUSD.toFixed(2)} (R$${r.stakeBRL.toFixed(2)})`;
+      return `${label}: odd ${r.odds.toFixed(2)} / stake ${stakeDisplay}`;
+    }).join(' | ');
+    notes += ` | Poly: odd ${polyOdd.toFixed(2)} / $${polyStakeUSD.toFixed(2)}`;
+  }
+
+  // Store data and navigate to new operation
+  window._calcImport = {
+    type,
+    stakeBet365: totalStakeBet365BRL,
+    oddBet365: highestOddBet365,
+    stakePolyUSD: polyStakeUSD,
+    oddPoly: polyOdd,
+    exchangeRate: calcUsdcBrl || 5,
+    notes,
+  };
+
+  navigate('new-operation');
+  toast('Dados importados da calculadora!', 'success');
+}
+
 function calcLoadExample() {
   calcNumOut = 3;
   calcRows = [
@@ -1520,6 +1611,7 @@ function renderCalculator() {
 
     <div class="c-actions">
       <button class="c-btn c-primary" onclick="calcCopyStakes()" id="calc-copy-btn">\uD83D\uDCCB Copiar stakes</button>
+      <button class="c-btn c-primary" onclick="calcImportToOperation()" id="calc-import-btn">\uD83D\uDCE5 Importar p/ Operação</button>
       <button class="c-btn" onclick="calcLoadExample()">Exemplo sports 3-way</button>
       <button class="c-btn" onclick="calcResetAll()">Resetar tudo</button>
     </div>
@@ -1684,46 +1776,6 @@ async function deleteFreebet(id) {
 }
 
 // ===== GROUP =====
-async function renderGroup() {
-  const mc = document.getElementById('main-content');
-  mc.innerHTML = `
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">Grupo</h1>
-        <p class="page-description">Resultados de todos os membros</p>
-      </div>
-    </div>
-    <div id="group-total" class="stat-card" style="margin-bottom:20px"></div>
-    <div class="group-card" id="group-table"></div>
-  `;
-  try {
-    const data = await api('/api/dashboard/group');
-    document.getElementById('group-total').innerHTML = `
-      <div class="stat-label">Lucro Total do Grupo</div>
-      <div class="stat-value ${profitClass(data.groupTotal)}">${formatBRL(data.groupTotal)}</div>
-      <div class="stat-sub">${data.members.length} membro(s)</div>
-    `;
-    if (!data.members.length) {
-      document.getElementById('group-table').innerHTML = `<div class="empty-state"><div class="empty-state-text">Nenhum membro encontrado</div></div>`;
-      return;
-    }
-    document.getElementById('group-table').innerHTML = `
-      <table>
-        <thead><tr><th>Membro</th><th>Hoje</th><th>Semana</th><th>Mês</th><th>Total</th><th>Operações</th></tr></thead>
-        <tbody>
-          ${data.members.map(m => `<tr>
-            <td><strong>${escapeHtml(m.display_name)}</strong></td>
-            <td class="${profitClass(m.today_profit)}">${formatBRL(m.today_profit)}</td>
-            <td class="${profitClass(m.week_profit)}">${formatBRL(m.week_profit)}</td>
-            <td class="${profitClass(m.month_profit)}">${formatBRL(m.month_profit)}</td>
-            <td class="${profitClass(m.total_profit)}"><strong>${formatBRL(m.total_profit)}</strong></td>
-            <td>${m.total_ops}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-    `;
-  } catch (err) { toast(err.message, 'error'); }
-}
 
 // ===== WATCHER =====
 let watcherTab = 'alerts'; // 'alerts' | 'positions' | 'config'
