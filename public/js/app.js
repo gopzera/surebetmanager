@@ -166,7 +166,13 @@ async function showApp() {
   document.getElementById('user-name').textContent = currentUser.display_name;
   document.getElementById('user-avatar').textContent = currentUser.display_name.charAt(0).toUpperCase();
   await loadAccounts();
-  navigate('dashboard');
+  // Auto-navigate to calculator if URL has shared odds params
+  const urlParams = new URLSearchParams(location.search);
+  if (urlParams.has('n') && urlParams.has('o0')) {
+    navigate('calculator');
+  } else {
+    navigate('dashboard');
+  }
   // Start background watcher polling
   startBgPolling();
   // Load initial unseen count
@@ -661,6 +667,16 @@ async function renderNewOperation() {
     }
     if (imp.notes) document.getElementById('new-notes').value = imp.notes;
 
+    // Extra fields from duplicate operation
+    if (imp.game) document.getElementById('new-game').value = imp.game;
+    if (imp.eventDate) document.getElementById('new-event-date').value = imp.eventDate;
+    if (imp.accountIds && imp.accountIds.length) {
+      imp.accountIds.forEach(id => {
+        const cb = document.querySelector(`#new-accounts-list input[value="${id}"]`);
+        if (cb) cb.checked = true;
+      });
+    }
+
     updatePolyBRL();
     updateStakePerAccount();
   }
@@ -789,6 +805,7 @@ function renderHistoryTable(ops) {
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
           <td>
             <div class="action-btns">
+              <button onclick="duplicateOperation(${op.id})" title="Duplicar">&#128203;</button>
               <button onclick="openEditModal(${op.id})" title="Editar">&#9998;</button>
               <button class="delete" onclick="deleteOperation(${op.id})" title="Excluir">&#128465;</button>
             </div>
@@ -816,6 +833,30 @@ function clearFilters() {
   document.getElementById('filter-to').value = '';
   historyPage = 0;
   loadHistory();
+}
+
+// ===== DUPLICATE OPERATION =====
+async function duplicateOperation(id) {
+  try {
+    const { operations } = await api('/api/operations?limit=999');
+    const op = operations.find(o => o.id === id);
+    if (!op) { toast('Opera\u00E7\u00E3o n\u00E3o encontrada', 'error'); return; }
+
+    window._calcImport = {
+      type: op.type,
+      stakeBet365: op.stake_bet365,
+      oddBet365: op.odd_bet365,
+      stakePolyUSD: op.stake_poly_usd,
+      oddPoly: op.odd_poly,
+      exchangeRate: op.exchange_rate,
+      notes: op.notes || '',
+      game: op.game || '',
+      eventDate: op.event_date || '',
+      accountIds: (op.accounts || []).map(a => a.id),
+    };
+    navigate('new-operation');
+    toast('Opera\u00E7\u00E3o duplicada! Ajuste os dados e salve.', 'success');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // ===== EDIT MODAL =====
@@ -1983,6 +2024,122 @@ function calcResetAll() {
   calcCompute(); calcBuildTable();
 }
 
+// -- Odds history (last 10 saved calculations) --
+const CALC_HISTORY_KEY = 'calcOddsHistory';
+const CALC_HISTORY_MAX = 10;
+
+function calcGetHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(CALC_HISTORY_KEY) || '[]');
+  } catch (_) { return []; }
+}
+
+function calcSaveToHistory() {
+  if (!calcResult || !calcResult.isSurebet) return; // only save surebets
+  const entry = {
+    ts: Date.now(),
+    forkType: calcForkType,
+    numOut: calcNumOut,
+    roi: calcResult.roi,
+    minProfit: calcResult.minProfit,
+    totalUSD: calcResult.totalUSD,
+    rows: calcRows.map(r => ({
+      odds: r.odds, comm: r.comm, betType: r.betType,
+      usePoly: r.usePoly, cat: r.cat, currency: r.currency,
+      customRate: r.customRate,
+    })),
+  };
+  const history = calcGetHistory();
+  // Avoid duplicate: skip if last entry has same odds
+  if (history.length > 0) {
+    const last = history[0];
+    const sameOdds = last.rows.length === entry.rows.length &&
+      last.rows.every((r, i) => r.odds === entry.rows[i].odds && r.betType === entry.rows[i].betType);
+    if (sameOdds) return;
+  }
+  history.unshift(entry);
+  if (history.length > CALC_HISTORY_MAX) history.length = CALC_HISTORY_MAX;
+  localStorage.setItem(CALC_HISTORY_KEY, JSON.stringify(history));
+  calcRenderHistory();
+}
+
+function calcLoadFromHistory(idx) {
+  const history = calcGetHistory();
+  const entry = history[idx];
+  if (!entry) return;
+  calcNumOut = entry.numOut || 2;
+  calcForkType = entry.forkType || "1-2";
+  calcTotalStakeOverride = null;
+  calcRows = entry.rows.map((r, i) => ({
+    id: i + 1, odds: r.odds || "", comm: r.comm || "0",
+    betType: r.betType || "back", usePoly: !!r.usePoly,
+    cat: r.cat || "Sports", currency: r.currency || "USD",
+    isFixed: false, fixedStake: "", manualStake: null,
+    customRate: r.customRate !== undefined ? r.customRate : null,
+  }));
+  calcNextId = calcRows.length + 1;
+
+  // Update outcome buttons
+  document.querySelectorAll('#calc-outcome-btns .c-btn').forEach(b =>
+    b.classList.toggle('on', parseInt(b.textContent) === calcNumOut)
+  );
+  calcBuildForkSelect();
+  const forkSel = document.getElementById('calc-fork-type');
+  if (forkSel) forkSel.value = calcForkType;
+
+  calcCompute();
+  calcBuildTable();
+  toast('C\u00E1lculo restaurado do hist\u00F3rico');
+}
+
+function calcDeleteHistory(idx) {
+  const history = calcGetHistory();
+  history.splice(idx, 1);
+  localStorage.setItem(CALC_HISTORY_KEY, JSON.stringify(history));
+  calcRenderHistory();
+}
+
+function calcClearHistory() {
+  localStorage.removeItem(CALC_HISTORY_KEY);
+  calcRenderHistory();
+}
+
+function calcRenderHistory() {
+  const container = document.getElementById('calc-history-list');
+  if (!container) return;
+  const history = calcGetHistory();
+  if (!history.length) {
+    container.innerHTML = `<div style="color:var(--text3);font-size:12px;padding:8px 0;text-align:center">Nenhum c\u00E1lculo salvo. Surebets v\u00E1lidas s\u00E3o salvas automaticamente.</div>`;
+    return;
+  }
+  container.innerHTML = history.map((entry, idx) => {
+    const date = new Date(entry.ts);
+    const timeStr = date.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit' }) + ' ' +
+      date.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+    const oddsStr = entry.rows.map((r, i) => {
+      const prefix = r.betType === 'lay' ? 'L' : '';
+      const poly = r.usePoly ? '*' : '';
+      return `${prefix}${r.odds}${poly}`;
+    }).join(' / ');
+    const forkLabel = entry.forkType || '';
+    return `
+      <div style="
+        display:flex;align-items:center;gap:10px;
+        padding:8px 12px;
+        background:var(--surface2);border:1px solid var(--border);
+        border-radius:var(--r-sm);font-size:12px;
+      ">
+        <div style="flex:1;min-width:0">
+          <div style="font-family:var(--mono);font-weight:600;color:var(--text)">${oddsStr}</div>
+          <div style="color:var(--text3);font-size:10px;margin-top:2px">${timeStr} \u2022 ${forkLabel} \u2022 ROI: <span style="color:${entry.roi >= 0 ? 'var(--green-bright)' : 'var(--red)'}">${entry.roi.toFixed(2)}%</span></div>
+        </div>
+        <button class="c-btn" style="padding:3px 8px;font-size:11px" onclick="calcLoadFromHistory(${idx})" title="Carregar">\u21BB</button>
+        <button class="c-btn" style="padding:3px 8px;font-size:11px;color:var(--red)" onclick="calcDeleteHistory(${idx})" title="Remover">\u2715</button>
+      </div>
+    `;
+  }).join('');
+}
+
 // -- State persistence --
 function calcSaveState() {
   const state = {
@@ -2033,21 +2190,58 @@ function calcRestoreState() {
 
 // Auto-save on every state change (wrap handlers)
 const _origCalcCompute = calcCompute;
-calcCompute = function() { _origCalcCompute(); calcSaveState(); };
+calcCompute = function() { _origCalcCompute(); calcSaveState(); calcSaveToHistory(); };
+
+// -- Load shared odds from URL --
+function calcLoadFromURL() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("n") || !params.has("o0")) return false;
+
+  const n = parseInt(params.get("n")) || 2;
+  calcNumOut = n;
+  calcForkType = params.get("ft") || "1-2";
+  calcShowComm = false;
+  calcRoundValue = 0;
+  calcRoundUseFx = false;
+  calcTotalStakeOverride = null;
+  calcRows = [];
+  for (let i = 0; i < n; i++) {
+    const r = makeCalcRow(i + 1);
+    r.odds     = params.get(`o${i}`)   || "";
+    r.comm     = params.get(`c${i}`)   || "0";
+    r.betType  = params.get(`bt${i}`)  || "back";
+    r.usePoly  = params.get(`poly${i}`) === "1";
+    r.cat      = params.get(`cat${i}`) || "Sports";
+    r.currency = params.get(`cur${i}`) || "USD";
+    r.isFixed  = params.get(`fx${i}`) === "1";
+    r.fixedStake = r.isFixed ? (params.get(`fxs${i}`) || "") : "";
+    r.customRate = params.has(`cr${i}`) ? parseFloat(params.get(`cr${i}`)) || null : null;
+    calcRows.push(r);
+  }
+  calcNextId = n + 1;
+
+  // Clean URL params so refresh doesn't re-apply
+  history.replaceState(null, '', location.pathname);
+  return true;
+}
 
 // -- Render --
 function renderCalculator() {
-  const restored = calcRestoreState();
-  if (!restored) {
-    calcRows = [makeCalcRow(1), makeCalcRow(2)];
-    calcNextId = 3;
-    calcNumOut = 2;
-    calcShowComm = false;
-    calcRoundValue = 0;
-    calcRoundUseFx = false;
-    calcForkType = "1-2";
-    calcTotalStakeOverride = null;
-    calcResult = null;
+  // Priority: URL params > sessionStorage > defaults
+  const fromURL = calcLoadFromURL();
+  if (!fromURL) {
+    const restored = calcRestoreState();
+    if (!restored) {
+      calcRows = [makeCalcRow(1), makeCalcRow(2)];
+      calcNextId = 3;
+      calcNumOut = 2;
+      calcShowComm = false;
+      calcRoundValue = 0;
+      calcRoundUseFx = false;
+      calcForkType = "1-2";
+      calcTotalStakeOverride = null;
+      calcResult = null;
+    }
   }
 
   const stored = localStorage.getItem("calcDarkMode");
@@ -2110,6 +2304,14 @@ function renderCalculator() {
       <button class="c-btn" onclick="calcResetAll()">Reset all</button>
     </div>
 
+    <div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0;font-size:14px;font-weight:600;opacity:.85">\uD83D\uDCCB Hist\u00F3rico de C\u00E1lculos</h3>
+        <button class="c-btn" onclick="calcClearHistory()" style="font-size:11px;padding:3px 10px">Limpar</button>
+      </div>
+      <div id="calc-history-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+
     <div class="c-legend">
       <strong>Polymarket taker fee (a partir de 30/03/2026):</strong><br>
       Back: <code>eff = 1 + (raw\u22121)\u00D7(1\u2212c%)</code> | Lay: <code>eff = raw \u2212 c%</code><br>
@@ -2128,6 +2330,7 @@ function renderCalculator() {
   // Build initial table
   calcCompute();
   calcBuildTable();
+  calcRenderHistory();
 }
 
 // ===== FREEBETS =====
