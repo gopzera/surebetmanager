@@ -412,27 +412,56 @@ async function renderDashboard() {
   }
 }
 
+function statDelta(current, previous, label) {
+  if (!previous || previous === 0) return '';
+  const diff = current - previous;
+  const pct = ((diff / Math.abs(previous)) * 100).toFixed(0);
+  const isUp = diff > 0;
+  const isZero = diff === 0;
+  if (isZero) return '';
+  const arrow = isUp ? '\u25B2' : '\u25BC';
+  const cls = isUp ? 'stat-delta-up' : 'stat-delta-down';
+  return `<span class="${cls}" title="vs ${label}: ${formatBRL(previous)}">${arrow} ${isUp ? '+' : ''}${pct}%</span>`;
+}
+
 function renderStats(data) {
+  const yesterdayProfit = data.yesterday ? data.yesterday.profit : 0;
+  const prevWeekProfit = data.prevWeek ? data.prevWeek.profit : 0;
+  const prevMonthProfit = data.prevMonth ? data.prevMonth.profit : 0;
+  const avgDaily = data.avgDailyProfit || 0;
+
   document.getElementById('stats-grid').innerHTML = `
     <div class="stat-card">
       <div class="stat-label">Lucro Hoje</div>
       <div class="stat-value ${profitClass(data.today.profit)}">${formatBRL(data.today.profit)}</div>
-      <div class="stat-sub">${data.today.count} operação(ões)</div>
+      <div class="stat-sub">
+        ${data.today.count} operação(ões)
+        ${statDelta(data.today.profit, yesterdayProfit, 'ontem')}
+      </div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Lucro na Semana</div>
       <div class="stat-value ${profitClass(data.week.profit)}">${formatBRL(data.week.profit)}</div>
-      <div class="stat-sub">${data.week.count} operação(ões)</div>
+      <div class="stat-sub">
+        ${data.week.count} operação(ões)
+        ${statDelta(data.week.profit, prevWeekProfit, 'semana anterior')}
+      </div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Lucro no Mês</div>
       <div class="stat-value ${profitClass(data.month.profit)}">${formatBRL(data.month.profit)}</div>
-      <div class="stat-sub">${data.month.count} operação(ões)</div>
+      <div class="stat-sub">
+        ${data.month.count} operação(ões)
+        ${statDelta(data.month.profit, prevMonthProfit, 'mês anterior')}
+      </div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Lucro Total</div>
       <div class="stat-value ${profitClass(data.allTime.profit)}">${formatBRL(data.allTime.profit)}</div>
-      <div class="stat-sub">${data.allTime.count} operação(ões)</div>
+      <div class="stat-sub">
+        ${data.allTime.count} operação(ões)
+        ${avgDaily > 0 ? `<span class="stat-avg" title="Média diária desde a primeira operação">\u00D8 ${formatBRL(avgDaily)}/dia</span>` : ''}
+      </div>
     </div>
   `;
 }
@@ -1902,6 +1931,7 @@ function calcBuildTable() {
   }).join("");
 
   calcUpdateDisplay();
+  calcRenderSimulator();
 }
 
 // -- Update display --
@@ -2227,6 +2257,141 @@ function calcImportToOperation() {
   toast('Dados importados da calculadora!', 'success');
 }
 
+// -- Scenario Simulator --
+function calcRenderSimulator() {
+  const container = document.getElementById('calc-simulator');
+  if (!container) return;
+
+  if (!calcResult || !calcResult.isSurebet) {
+    container.style.display = 'none';
+    return;
+  }
+
+  container.style.display = 'block';
+  const r = calcResult;
+  const fx = calcUsdcBrl || 5.0;
+
+  // Breakeven: at what margin does profit = 0? margin = 1.0
+  // Find how much one odd can drop before margin hits 1
+  const effArr = r.effArr;
+  const breakevens = effArr.map((eff, i) => {
+    // margin = sum(1/eff_j) = 1 at breakeven
+    // 1/eff_i_new = 1 - sum(1/eff_j for j != i)
+    const otherSum = effArr.reduce((s, o, j) => j === i ? s : s + 1/o, 0);
+    const neededInv = 1 - otherSum;
+    if (neededInv <= 0) return null; // always profitable regardless
+    return 1 / neededInv; // breakeven effective odd
+  });
+
+  // Simulate different total stakes
+  const currentTotal = r.totalUSD;
+  const simStakes = [50, 100, 250, 500, 1000, 2500, 5000].filter(s => s !== Math.round(currentTotal));
+  simStakes.push(Math.round(currentTotal));
+  simStakes.sort((a, b) => a - b);
+
+  const simRows = simStakes.map(total => {
+    const profit = total * (r.roi / 100);
+    const profitBRL = profit * fx;
+    const isCurrent = Math.abs(total - currentTotal) < 1;
+    return { total, profit, profitBRL, isCurrent };
+  });
+
+  // Breakeven display
+  const beRows = breakevens.map((be, i) => {
+    if (!be) return null;
+    const row = calcRows[i];
+    const rawOdd = parseFloat(row.odds) || 0;
+    const currentEff = effArr[i];
+    const drop = currentEff - be;
+    const dropPct = currentEff > 1 ? (drop / (currentEff - 1) * 100) : 0;
+    return { idx: i, rawOdd, currentEff, breakeven: be, drop, dropPct };
+  }).filter(Boolean);
+
+  container.innerHTML = `
+    <div style="
+      margin-bottom:12px;padding:16px;
+      background:var(--surface2);border:1px solid var(--border);
+      border-radius:var(--r-sm);
+    ">
+      <h3 style="margin:0 0 12px;font-size:14px;font-weight:600;opacity:.85">\uD83D\uDD2C Simulador de Cen\u00E1rios</h3>
+
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">Lucro por Stake Total</div>
+          <table style="width:100%;font-size:12px;border-collapse:collapse">
+            <thead><tr style="color:var(--text3)">
+              <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">Stake (USD)</th>
+              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Lucro (USD)</th>
+              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Lucro (BRL)</th>
+            </tr></thead>
+            <tbody>
+              ${simRows.map(s => `
+                <tr style="${s.isCurrent ? 'font-weight:700;color:var(--green-bright);' : ''}">
+                  <td style="padding:3px 8px;font-family:var(--mono)">$${s.total.toLocaleString()}${s.isCurrent ? ' \u25C0' : ''}</td>
+                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:var(--green-bright)">$${s.profit.toFixed(2)}</td>
+                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:var(--green-bright)">R$${s.profitBRL.toFixed(2)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">Breakeven por Linha</div>
+          <table style="width:100%;font-size:12px;border-collapse:collapse">
+            <thead><tr style="color:var(--text3)">
+              <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">#</th>
+              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Odd Atual</th>
+              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Odd Breakeven</th>
+              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Margem</th>
+            </tr></thead>
+            <tbody>
+              ${beRows.map(b => `
+                <tr>
+                  <td style="padding:3px 8px;font-family:var(--mono)">${b.idx + 1}</td>
+                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono)">${b.currentEff.toFixed(3)}</td>
+                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:var(--yellow)">${b.breakeven.toFixed(3)}</td>
+                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:${b.dropPct > 10 ? 'var(--green-bright)' : 'var(--red)'}">
+                    ${b.dropPct.toFixed(1)}%
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div style="font-size:10px;color:var(--text3);margin-top:6px">
+            Margem = quanto a odd efetiva pode cair antes de perder a surebet
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px">Simulador R\u00E1pido</div>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <label style="font-size:12px;color:var(--text3)">Stake total:</label>
+          <input type="range" id="calc-sim-slider" min="10" max="10000" step="10" value="${Math.round(currentTotal)}"
+            oninput="calcSimSliderUpdate()" style="flex:1;min-width:120px;accent-color:var(--green-bright)">
+          <span id="calc-sim-stake" style="font-family:var(--mono);font-size:13px;min-width:70px">$${Math.round(currentTotal)}</span>
+          <span id="calc-sim-profit" style="font-family:var(--mono);font-size:13px;font-weight:700;color:var(--green-bright);min-width:90px">
+            \u2192 R$${(r.minProfit * fx).toFixed(2)}
+          </span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function calcSimSliderUpdate() {
+  const slider = document.getElementById('calc-sim-slider');
+  const stakeEl = document.getElementById('calc-sim-stake');
+  const profitEl = document.getElementById('calc-sim-profit');
+  if (!slider || !calcResult) return;
+  const total = parseFloat(slider.value);
+  const profit = total * (calcResult.roi / 100);
+  const fx = calcUsdcBrl || 5.0;
+  stakeEl.textContent = `$${Math.round(total)}`;
+  profitEl.textContent = `\u2192 R$${(profit * fx).toFixed(2)}`;
+}
+
 function calcResetAll() {
   calcNumOut = 2; calcForkType = "1-2";
   calcRows = [makeCalcRow(1), makeCalcRow(2)];
@@ -2519,6 +2684,8 @@ function renderCalculator() {
       <button class="c-btn c-primary" onclick="calcImportToOperation()" id="calc-import-btn">\uD83D\uDCE5 Importar p/ Opera\u00E7\u00E3o</button>
       <button class="c-btn" onclick="calcResetAll()">Reset all</button>
     </div>
+
+    <div id="calc-simulator" style="display:none"></div>
 
     <div style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">

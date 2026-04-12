@@ -5,12 +5,22 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 router.use(auth);
 
-function getWeekStart() {
-  const now = new Date();
-  const dayOfWeek = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+function getWeekStart(d) {
+  const date = d ? new Date(d) : new Date();
+  const dayOfWeek = date.getDay();
+  const monday = new Date(date);
+  monday.setDate(date.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
   return monday.toISOString().split('T')[0];
+}
+
+function getPrevMonthRange(todayStr) {
+  const d = new Date(todayStr + 'T00:00:00');
+  const first = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  const last = new Date(d.getFullYear(), d.getMonth(), 0);
+  return {
+    start: first.toISOString().split('T')[0],
+    end: last.toISOString().split('T')[0],
+  };
 }
 
 router.get('/stats', async (req, res) => {
@@ -20,10 +30,30 @@ router.get('/stats', async (req, res) => {
     const weekStart = getWeekStart();
     const monthStart = today.substring(0, 7) + '-01';
 
+    // Previous periods for comparison
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+    const prevWeekMonday = new Date(weekStart + 'T00:00:00');
+    prevWeekMonday.setDate(prevWeekMonday.getDate() - 7);
+    const prevWeekStart = prevWeekMonday.toISOString().split('T')[0];
+    const prevWeekEnd = new Date(weekStart + 'T00:00:00');
+    prevWeekEnd.setDate(prevWeekEnd.getDate() - 1);
+    const prevWeekEndStr = prevWeekEnd.toISOString().split('T')[0];
+
+    const prevMonth = getPrevMonthRange(today);
+
     const todayStats = await db.get(
       `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
        FROM operations WHERE user_id = ? AND DATE(created_at) = ?`,
       userId, today
+    );
+
+    const yesterdayStats = await db.get(
+      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
+       FROM operations WHERE user_id = ? AND DATE(created_at) = ?`,
+      userId, yesterdayStr
     );
 
     const weekStats = await db.get(
@@ -32,10 +62,22 @@ router.get('/stats', async (req, res) => {
       userId, weekStart
     );
 
+    const prevWeekStats = await db.get(
+      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
+       FROM operations WHERE user_id = ? AND DATE(created_at) >= ? AND DATE(created_at) <= ?`,
+      userId, prevWeekStart, prevWeekEndStr
+    );
+
     const monthStats = await db.get(
       `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
        FROM operations WHERE user_id = ? AND DATE(created_at) >= ?`,
       userId, monthStart
+    );
+
+    const prevMonthStats = await db.get(
+      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
+       FROM operations WHERE user_id = ? AND DATE(created_at) >= ? AND DATE(created_at) <= ?`,
+      userId, prevMonth.start, prevMonth.end
     );
 
     const allTimeStats = await db.get(
@@ -43,6 +85,17 @@ router.get('/stats', async (req, res) => {
        FROM operations WHERE user_id = ?`,
       userId
     );
+
+    // Average daily profit (for all-time comparison)
+    const firstOp = await db.get(
+      `SELECT DATE(created_at) as first_date FROM operations WHERE user_id = ? ORDER BY created_at ASC LIMIT 1`,
+      userId
+    );
+    let avgDailyProfit = 0;
+    if (firstOp && firstOp.first_date) {
+      const daysSinceFirst = Math.max(1, Math.ceil((new Date(today) - new Date(firstOp.first_date)) / 86400000));
+      avgDailyProfit = allTimeStats.profit / daysSinceFirst;
+    }
 
     const accountVolumes = await db.all(
       `SELECT
@@ -100,9 +153,13 @@ router.get('/stats', async (req, res) => {
 
     res.json({
       today: todayStats,
+      yesterday: yesterdayStats,
       week: weekStats,
+      prevWeek: prevWeekStats,
       month: monthStats,
+      prevMonth: prevMonthStats,
       allTime: allTimeStats,
+      avgDailyProfit,
       accountVolumes,
       weeklyVolumeGoal: 1500,
       profitByType,

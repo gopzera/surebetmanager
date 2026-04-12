@@ -125,6 +125,43 @@ router.delete('/wallets/:id', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
+// ===== DISCORD WEBHOOK =====
+
+async function sendDiscordWebhook(alerts) {
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl || !alerts.length) return;
+
+  const typeEmoji = { new_position: '🟢', position_closed: '🔴', trade_buy: '📈', trade_sell: '📉' };
+  const typeText = { new_position: 'Nova posição', position_closed: 'Posição fechada', trade_buy: 'Compra adicional', trade_sell: 'Venda parcial' };
+
+  const embeds = alerts.slice(0, 10).map(a => ({
+    color: a.type === 'position_closed' ? 0xEF5350 : a.type === 'new_position' ? 0x00C853 : 0xFFA726,
+    author: { name: `${typeEmoji[a.type] || '📊'} ${a.walletLabel || 'Wallet'}` },
+    title: typeText[a.type] || a.type,
+    description: a.title || 'Mercado desconhecido',
+    fields: [
+      ...(a.outcome ? [{ name: 'Resultado', value: a.outcome, inline: true }] : []),
+      ...(a.size ? [{ name: 'Shares', value: Number(a.size).toFixed(2), inline: true }] : []),
+      ...(a.price ? [{ name: 'Preço', value: `$${Number(a.price).toFixed(3)}`, inline: true }] : []),
+      ...(a.usdc_size ? [{ name: 'Valor', value: `$${Number(a.usdc_size).toFixed(2)}`, inline: true }] : []),
+    ],
+    timestamp: new Date().toISOString(),
+  }));
+
+  try {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'Surebet Watcher',
+        embeds,
+      }),
+    });
+  } catch (err) {
+    console.error('Discord webhook error:', err.message);
+  }
+}
+
 // ===== CORE POLL LOGIC =====
 
 // Build a unique key per position: conditionId + outcome (Yes/No can coexist)
@@ -247,6 +284,9 @@ router.post('/poll', auth, async (req, res) => {
         console.error(`Error polling wallet ${wallet.label}:`, err.message);
       }
     }
+    // Send to Discord webhook (fire and forget)
+    if (newAlerts.length) sendDiscordWebhook(newAlerts);
+
     res.json({ alerts: newAlerts });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
@@ -260,14 +300,19 @@ router.get('/cron-poll', async (req, res) => {
   try {
     const wallets = await db.all('SELECT * FROM watched_wallets WHERE active = 1');
     let totalAlerts = 0;
+    const allNewAlerts = [];
     for (const wallet of wallets) {
       try {
         const alerts = await pollWallet(wallet);
         totalAlerts += alerts.length;
+        allNewAlerts.push(...alerts);
       } catch (err) {
         console.error(`Cron poll error for wallet ${wallet.label}:`, err.message);
       }
     }
+    // Send to Discord webhook (fire and forget)
+    if (allNewAlerts.length) sendDiscordWebhook(allNewAlerts);
+
     res.json({ ok: true, walletsPolled: wallets.length, newAlerts: totalAlerts });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
