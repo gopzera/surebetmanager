@@ -13,7 +13,8 @@ router.get('/', async (req, res) => {
     );
     res.json(freebets);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
@@ -46,7 +47,8 @@ router.post('/', async (req, res) => {
     );
     res.json({ id: r.lastInsertRowid });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
@@ -56,7 +58,8 @@ router.delete('/:id', async (req, res) => {
     if (r.changes === 0) return res.status(404).json({ error: 'Freebet não encontrada' });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 

@@ -111,7 +111,8 @@ router.get('/stats', async (req, res) => {
       weekStart
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
@@ -139,7 +140,8 @@ router.get('/export', async (req, res) => {
       freebets,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 

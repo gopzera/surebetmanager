@@ -52,7 +52,8 @@ router.get('/', async (req, res) => {
 
     res.json({ operations, total, allTags: allTags.map(r => r.tag) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
@@ -113,7 +114,8 @@ router.post('/', async (req, res) => {
 
     res.json({ id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
@@ -132,35 +134,35 @@ router.put('/:id', async (req, res) => {
       await tx.run(
         `UPDATE operations SET type=?, game=?, event_date=?, stake_bet365=?, odd_bet365=?,
           stake_poly_usd=?, odd_poly=?, exchange_rate=?, result=?, profit=?, notes=?
-        WHERE id = ? AND user_id = ?`,
+        WHERE id = ?`,
         type ?? op.type, game ?? op.game, event_date ?? op.event_date,
         stake_bet365 ?? op.stake_bet365, odd_bet365 ?? op.odd_bet365,
         stake_poly_usd ?? op.stake_poly_usd, odd_poly ?? op.odd_poly,
         exchange_rate ?? op.exchange_rate,
         result ?? op.result, profit ?? op.profit, notes ?? op.notes,
-        req.params.id, req.user.id
+        op.id
       );
 
       if (account_ids !== undefined) {
-        await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', req.params.id);
+        await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', op.id);
         for (const accId of (account_ids || [])) {
           if (userAccountIds.includes(Number(accId))) {
             await tx.run(
               'INSERT INTO operation_accounts (operation_id, account_id) VALUES (?, ?)',
-              req.params.id, Number(accId)
+              op.id, Number(accId)
             );
           }
         }
       }
 
       if (tags !== undefined) {
-        await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', req.params.id);
+        await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', op.id);
         for (const tag of (tags || [])) {
           const t = tag.trim().toLowerCase();
           if (t) {
             await tx.run(
               'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
-              req.params.id, t
+              op.id, t
             );
           }
         }
@@ -169,23 +171,26 @@ router.put('/:id', async (req, res) => {
 
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
 // Delete operation
 router.delete('/:id', async (req, res) => {
   try {
-    const changes = await db.transaction(async (tx) => {
-      await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', req.params.id);
-      await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', req.params.id);
-      const r = await tx.run('DELETE FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
-      return r.changes;
+    // Verify ownership BEFORE deleting linked records
+    const op = await db.get('SELECT id FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
+    if (!op) return res.status(404).json({ error: 'Operação não encontrada' });
+
+    await db.transaction(async (tx) => {
+      await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', op.id);
+      await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', op.id);
+      await tx.run('DELETE FROM operations WHERE id = ?', op.id);
     });
-    if (changes === 0) return res.status(404).json({ error: 'Operação não encontrada' });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Erro ao excluir operação' });
   }
 });
 

@@ -12,6 +12,9 @@ router.get('/', async (req, res) => {
       `SELECT
         u.id,
         u.display_name,
+        u.discord_id,
+        u.discord_username,
+        u.discord_avatar,
         COALESCE(SUM(o.profit), 0) as total_profit,
         COUNT(o.id) as total_ops
       FROM users u
@@ -22,7 +25,8 @@ router.get('/', async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
@@ -32,7 +36,8 @@ router.get('/me', async (req, res) => {
     const user = await db.get('SELECT show_in_ranking FROM users WHERE id = ?', req.user.id);
     res.json({ show_in_ranking: user ? user.show_in_ranking : 1 });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
@@ -45,7 +50,8 @@ router.put('/me', async (req, res) => {
     );
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 

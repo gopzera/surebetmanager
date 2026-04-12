@@ -1,4 +1,10 @@
 require('dotenv').config();
+
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET não definido. Defina no .env antes de iniciar.');
+  process.exit(1);
+}
+
 const app = require('./app');
 const db = require('./db/database');
 

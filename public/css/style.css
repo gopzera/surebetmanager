@@ -585,6 +585,70 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .auth-switch a:hover { text-decoration: underline; }
 
+/* Discord button */
+.btn-discord {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  background: #5865F2;
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-discord:hover { background: #4752c4; }
+.btn-discord svg { flex-shrink: 0; }
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Discord profile in settings */
+.discord-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(88, 101, 242, 0.08);
+  border: 1px solid rgba(88, 101, 242, 0.2);
+  border-radius: var(--radius);
+}
+.discord-profile img {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+.discord-profile-info {
+  flex: 1;
+  min-width: 0;
+}
+.discord-profile-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.discord-profile-id {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* Calculator */
 .calc-grid {
   display: grid;

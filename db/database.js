@@ -160,6 +160,16 @@ const db = {
             `ALTER TABLE users ADD COLUMN show_in_ranking INTEGER NOT NULL DEFAULT 1`
           );
         } catch (_) {}
+        // Migration: add Discord columns if missing
+        for (const col of [
+          'discord_id TEXT',
+          'discord_username TEXT',
+          'discord_avatar TEXT',
+        ]) {
+          try {
+            await client.execute(`ALTER TABLE users ADD COLUMN ${col}`);
+          } catch (_) {}
+        }
       })();
     }
     return initPromise;

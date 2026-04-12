@@ -196,6 +196,57 @@ function computeProfit(stakeBet365, oddBet365, stakePolyUsd, oddPoly, exchangeRa
 // ===== AUTH =====
 let isLoginMode = true;
 
+function loginWithDiscord() {
+  window.location.href = '/api/auth/discord?action=login';
+}
+
+function linkDiscord() {
+  window.location.href = '/api/auth/discord?action=link';
+}
+
+async function unlinkDiscord() {
+  if (!confirm('Desvincular Discord da sua conta?')) return;
+  try {
+    await api('/api/auth/discord/unlink', { method: 'POST' });
+    toast('Discord desvinculado!');
+    currentUser.discord_id = null;
+    currentUser.discord_username = null;
+    currentUser.discord_avatar = null;
+    renderSettings();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function getDiscordAvatarUrl(discordId, avatarHash, size = 64) {
+  if (!discordId || !avatarHash) return null;
+  return `https://cdn.discordapp.com/avatars/${discordId}/${avatarHash}.png?size=${size}`;
+}
+
+function handleDiscordUrlParams() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('discord_login')) {
+    toast('Login com Discord realizado!');
+  } else if (params.has('discord_linked')) {
+    toast('Discord vinculado com sucesso!');
+  } else if (params.has('discord_error')) {
+    const errors = {
+      no_code: 'Falha na autorização do Discord',
+      not_configured: 'Discord OAuth não configurado no servidor',
+      token_failed: 'Falha ao obter token do Discord',
+      profile_failed: 'Falha ao buscar perfil do Discord',
+      not_in_guild: 'Você precisa ser membro do servidor do grupo para acessar',
+      discord_already_linked: 'Este Discord já está vinculado a outra conta',
+      not_authenticated: 'Faça login antes de vincular o Discord',
+      server_error: 'Erro interno ao processar login Discord',
+    };
+    const code = params.get('discord_error');
+    toast(errors[code] || `Erro Discord: ${code}`, 'error');
+  }
+  // Clean URL params
+  if (params.has('discord_login') || params.has('discord_linked') || params.has('discord_error')) {
+    history.replaceState(null, '', location.pathname);
+  }
+}
+
 function toggleAuthMode() {
   isLoginMode = !isLoginMode;
   document.getElementById('register-field').style.display = isLoginMode ? 'none' : 'block';
@@ -226,6 +277,7 @@ document.getElementById('auth-form').addEventListener('submit', async (e) => {
 });
 
 async function checkAuth() {
+  handleDiscordUrlParams();
   try {
     currentUser = await api('/api/auth/me');
     showApp();
@@ -246,8 +298,16 @@ async function logout() {
 async function showApp() {
   document.getElementById('auth-page').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
-  document.getElementById('user-name').textContent = currentUser.display_name;
-  document.getElementById('user-avatar').textContent = currentUser.display_name.charAt(0).toUpperCase();
+  const displayName = currentUser.discord_username || currentUser.display_name;
+  document.getElementById('user-name').textContent = displayName;
+  const avatarEl = document.getElementById('user-avatar');
+  const discordAvatarUrl = getDiscordAvatarUrl(currentUser.discord_id, currentUser.discord_avatar, 64);
+  if (discordAvatarUrl) {
+    avatarEl.innerHTML = `<img src="${discordAvatarUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+    avatarEl.style.overflow = 'hidden';
+  } else {
+    avatarEl.textContent = displayName.charAt(0).toUpperCase();
+  }
   await loadAccounts();
   // Auto-navigate to calculator if URL has shared odds params
   const urlParams = new URLSearchParams(location.search);
@@ -1141,6 +1201,33 @@ async function renderSettings() {
       </div>
     </div>
 
+    <!-- Discord -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:12px">Discord</h3>
+      ${currentUser.discord_id ? `
+        <div class="discord-profile">
+          <img src="${getDiscordAvatarUrl(currentUser.discord_id, currentUser.discord_avatar, 80) || ''}"
+            onerror="this.style.display='none'" alt="Avatar">
+          <div class="discord-profile-info">
+            <div class="discord-profile-name">${escapeHtml(currentUser.discord_username || '')}</div>
+            <div class="discord-profile-id">ID: ${currentUser.discord_id}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="unlinkDiscord()" style="color:var(--danger)">Desvincular</button>
+        </div>
+        <p style="color:var(--text-muted);font-size:12px;margin-top:8px">
+          Seu avatar e nome do Discord aparecer\u00E3o no Ranking.
+        </p>
+      ` : `
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
+          Vincule seu Discord para exibir seu avatar e nome no ranking do grupo.
+        </p>
+        <button class="btn-discord" onclick="linkDiscord()" style="width:auto;padding:8px 20px">
+          <svg width="18" height="14" viewBox="0 0 71 55" fill="currentColor"><path d="M60.1 4.9A58.5 58.5 0 0045.4.2a.2.2 0 00-.2.1 40.8 40.8 0 00-1.8 3.7 54 54 0 00-16.2 0A26.5 26.5 0 0025.4.3a.2.2 0 00-.2-.1A58.4 58.4 0 0010.5 5a.2.2 0 00-.1 0C1.5 18 -.9 30.6.3 43a.2.2 0 00.1.2A58.7 58.7 0 0018 54.7a.2.2 0 00.3-.1 42 42 0 003.6-5.9.2.2 0 00-.1-.3 38.6 38.6 0 01-5.5-2.6.2.2 0 01 0-.4l1.1-.9a.2.2 0 01.2 0 41.9 41.9 0 0035.6 0 .2.2 0 01.2 0l1.1.9a.2.2 0 010 .3 36.2 36.2 0 01-5.5 2.7.2.2 0 00-.1.3 47.2 47.2 0 003.6 5.8.2.2 0 00.3.1A58.5 58.5 0 0070.6 43.2a.2.2 0 00.1-.1c1.4-14.7-2.4-27.5-10.2-38.8a.2.2 0 00-.1 0zM23.7 35.6c-3.4 0-6.1-3.1-6.1-6.9s2.7-6.9 6.1-6.9 6.2 3.1 6.1 6.9c0 3.8-2.7 6.9-6.1 6.9zm22.6 0c-3.4 0-6.1-3.1-6.1-6.9s2.7-6.9 6.1-6.9 6.2 3.1 6.1 6.9c0 3.8-2.7 6.9-6.1 6.9z"/></svg>
+          Vincular Discord
+        </button>
+      `}
+    </div>
+
     <!-- Ranking toggle -->
     <div class="chart-container" style="margin-bottom:20px">
       <h3 class="chart-title" style="margin-bottom:12px">Ranking</h3>
@@ -1388,6 +1475,11 @@ async function renderRanking() {
           const medal = i < 3 ? medals[i] : `<span style="color:var(--text-muted);font-weight:600;font-size:14px">${i+1}</span>`;
           const profitVal = Number(u.total_profit) || 0;
           const isMe = u.id === currentUser?.id;
+          const dName = u.discord_username || u.display_name;
+          const dAvatar = getDiscordAvatarUrl(u.discord_id, u.discord_avatar, 80);
+          const avatarInner = dAvatar
+            ? `<img src="${dAvatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" onerror="this.parentElement.textContent='${escapeHtml(dName.charAt(0).toUpperCase())}'"/>`
+            : escapeHtml(dName.charAt(0).toUpperCase());
           return `
             <div class="ranking-row ${isMe ? 'ranking-me' : ''}" style="
               display:flex;align-items:center;gap:16px;
@@ -1399,14 +1491,14 @@ async function renderRanking() {
             ">
               <div style="width:36px;text-align:center;font-size:${i < 3 ? '22px' : '14px'}">${medal}</div>
               <div style="
-                width:38px;height:38px;border-radius:50%;
+                width:38px;height:38px;border-radius:50%;overflow:hidden;
                 background:${isMe ? 'var(--primary)' : 'var(--border)'};
                 display:flex;align-items:center;justify-content:center;
                 font-weight:700;font-size:16px;color:${isMe ? '#fff' : 'var(--text-muted)'};
                 flex-shrink:0;
-              ">${escapeHtml(u.display_name.charAt(0).toUpperCase())}</div>
+              ">${avatarInner}</div>
               <div style="flex:1;min-width:0">
-                <div style="font-weight:600;font-size:15px;${isMe ? 'color:var(--primary)' : ''}">${escapeHtml(u.display_name)}${isMe ? ' (voc\u00EA)' : ''}</div>
+                <div style="font-weight:600;font-size:15px;${isMe ? 'color:var(--primary)' : ''}">${escapeHtml(dName)}${isMe ? ' (voc\u00EA)' : ''}</div>
                 <div style="font-size:12px;color:var(--text-muted)">${u.total_ops} opera\u00E7\u00F5es</div>
               </div>
               <div style="text-align:right">

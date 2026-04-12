@@ -15,7 +15,7 @@ router.get('/wallets', auth, async (req, res) => {
       req.user.id
     );
     res.json(wallets);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 router.post('/wallets', auth, async (req, res) => {
@@ -40,7 +40,7 @@ router.post('/wallets', auth, async (req, res) => {
       req.user.id, label.trim(), addr
     );
     res.json({ id: r.lastInsertRowid });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 // ===== WALLET IMPORT/EXPORT =====
@@ -54,7 +54,7 @@ router.get('/wallets/export', auth, async (req, res) => {
     );
     res.setHeader('Content-Disposition', 'attachment; filename=wallets.json');
     res.json(wallets);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 // Import wallets from JSON array of {label, address}
@@ -88,7 +88,7 @@ router.post('/wallets/import', auth, async (req, res) => {
       added++;
     }
     res.json({ added, skipped });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 router.put('/wallets/:id', auth, async (req, res) => {
@@ -104,23 +104,25 @@ router.put('/wallets/:id', auth, async (req, res) => {
       label ?? wallet.label, active ?? wallet.active, wallet.id
     );
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 router.delete('/wallets/:id', auth, async (req, res) => {
   try {
-    const changes = await db.transaction(async (tx) => {
-      await tx.run('DELETE FROM wallet_alerts WHERE wallet_id = ?', req.params.id);
-      await tx.run('DELETE FROM wallet_positions WHERE wallet_id = ?', req.params.id);
-      const r = await tx.run(
-        'DELETE FROM watched_wallets WHERE id = ? AND user_id = ?',
-        req.params.id, req.user.id
-      );
-      return r.changes;
+    // Verify ownership BEFORE deleting linked records
+    const wallet = await db.get(
+      'SELECT id FROM watched_wallets WHERE id = ? AND user_id = ?',
+      req.params.id, req.user.id
+    );
+    if (!wallet) return res.status(404).json({ error: 'Wallet não encontrada' });
+
+    await db.transaction(async (tx) => {
+      await tx.run('DELETE FROM wallet_alerts WHERE wallet_id = ?', wallet.id);
+      await tx.run('DELETE FROM wallet_positions WHERE wallet_id = ?', wallet.id);
+      await tx.run('DELETE FROM watched_wallets WHERE id = ?', wallet.id);
     });
-    if (changes === 0) return res.status(404).json({ error: 'Wallet não encontrada' });
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 // ===== CORE POLL LOGIC =====
@@ -246,13 +248,13 @@ router.post('/poll', auth, async (req, res) => {
       }
     }
     res.json({ alerts: newAlerts });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 // Cron poll — polls ALL users' wallets (secured by CRON_SECRET)
 router.get('/cron-poll', async (req, res) => {
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
@@ -267,7 +269,7 @@ router.get('/cron-poll', async (req, res) => {
       }
     }
     res.json({ ok: true, walletsPolled: wallets.length, newAlerts: totalAlerts });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 // ===== ALERTS =====
@@ -299,7 +301,7 @@ router.get('/alerts', auth, async (req, res) => {
     );
 
     res.json({ alerts, total });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 router.post('/alerts/seen', auth, async (req, res) => {
@@ -311,13 +313,18 @@ router.post('/alerts/seen', auth, async (req, res) => {
          WHERE wallet_id IN (SELECT id FROM watched_wallets WHERE user_id = ?)`,
         req.user.id
       );
-    } else if (Array.isArray(ids)) {
-      for (const id of ids) {
-        await db.run('UPDATE wallet_alerts SET seen = 1 WHERE id = ?', id);
-      }
+    } else if (Array.isArray(ids) && ids.length > 0) {
+      // Only mark alerts that belong to this user's wallets
+      const placeholders = ids.map(() => '?').join(',');
+      await db.run(
+        `UPDATE wallet_alerts SET seen = 1
+         WHERE id IN (${placeholders})
+         AND wallet_id IN (SELECT id FROM watched_wallets WHERE user_id = ?)`,
+        ...ids.map(Number), req.user.id
+      );
     }
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 // Delete all alerts for user
@@ -329,7 +336,7 @@ router.delete('/alerts', auth, async (req, res) => {
       req.user.id
     );
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 // Current positions for all watched wallets
@@ -352,7 +359,7 @@ router.get('/positions', auth, async (req, res) => {
       return true;
     });
     res.json(active);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
 });
 
 module.exports = router;
