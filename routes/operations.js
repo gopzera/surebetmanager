@@ -8,23 +8,27 @@ router.use(auth);
 // List operations with filters
 router.get('/', async (req, res) => {
   try {
-    const { type, from, to, limit = 50, offset = 0 } = req.query;
-    let where = 'WHERE user_id = ?';
+    const { type, from, to, tag, limit = 50, offset = 0 } = req.query;
+    let where = 'WHERE o.user_id = ?';
     const params = [req.user.id];
 
-    if (type) { where += ' AND type = ?'; params.push(type); }
-    if (from) { where += ' AND created_at >= ?'; params.push(from); }
-    if (to) { where += ' AND created_at <= ?'; params.push(to + ' 23:59:59'); }
+    if (type) { where += ' AND o.type = ?'; params.push(type); }
+    if (from) { where += ' AND o.created_at >= ?'; params.push(from); }
+    if (to) { where += ' AND o.created_at <= ?'; params.push(to + ' 23:59:59'); }
+    if (tag) {
+      where += ' AND o.id IN (SELECT operation_id FROM operation_tags WHERE tag = ?)';
+      params.push(tag);
+    }
 
-    const countRow = await db.get(`SELECT COUNT(*) as total FROM operations ${where}`, ...params);
+    const countRow = await db.get(`SELECT COUNT(*) as total FROM operations o ${where}`, ...params);
     const total = countRow ? countRow.total : 0;
 
     const operations = await db.all(
-      `SELECT * FROM operations ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT o.* FROM operations o ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`,
       ...params, Number(limit), Number(offset)
     );
 
-    // Attach accounts for each operation
+    // Attach accounts and tags for each operation
     for (const op of operations) {
       op.accounts = await db.all(
         `SELECT a.id, a.name FROM operation_accounts oa
@@ -32,9 +36,21 @@ router.get('/', async (req, res) => {
          WHERE oa.operation_id = ?`,
         op.id
       );
+      const tagRows = await db.all(
+        'SELECT tag FROM operation_tags WHERE operation_id = ?', op.id
+      );
+      op.tags = tagRows.map(r => r.tag);
     }
 
-    res.json({ operations, total });
+    // Get all tags for this user (for filter dropdown)
+    const allTags = await db.all(
+      `SELECT DISTINCT ot.tag FROM operation_tags ot
+       JOIN operations o ON o.id = ot.operation_id
+       WHERE o.user_id = ? ORDER BY ot.tag`,
+      req.user.id
+    );
+
+    res.json({ operations, total, allTags: allTags.map(r => r.tag) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -43,7 +59,7 @@ router.get('/', async (req, res) => {
 // Create operation
 router.post('/', async (req, res) => {
   try {
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, tags } = req.body;
 
     if (!type || !game) {
       return res.status(400).json({ error: 'Tipo e jogo são obrigatórios' });
@@ -79,6 +95,19 @@ router.post('/', async (req, res) => {
         );
       }
 
+      // Save tags
+      if (Array.isArray(tags)) {
+        for (const tag of tags) {
+          const t = tag.trim().toLowerCase();
+          if (t) {
+            await tx.run(
+              'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
+              r.lastInsertRowid, t
+            );
+          }
+        }
+      }
+
       return r.lastInsertRowid;
     });
 
@@ -94,7 +123,7 @@ router.put('/:id', async (req, res) => {
     const op = await db.get('SELECT * FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!op) return res.status(404).json({ error: 'Operação não encontrada' });
 
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, tags } = req.body;
 
     const userAccounts = await db.all('SELECT id FROM accounts WHERE user_id = ?', req.user.id);
     const userAccountIds = userAccounts.map(a => a.id);
@@ -123,6 +152,19 @@ router.put('/:id', async (req, res) => {
           }
         }
       }
+
+      if (tags !== undefined) {
+        await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', req.params.id);
+        for (const tag of (tags || [])) {
+          const t = tag.trim().toLowerCase();
+          if (t) {
+            await tx.run(
+              'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
+              req.params.id, t
+            );
+          }
+        }
+      }
     });
 
     res.json({ ok: true });
@@ -136,6 +178,7 @@ router.delete('/:id', async (req, res) => {
   try {
     const changes = await db.transaction(async (tx) => {
       await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', req.params.id);
+      await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', req.params.id);
       const r = await tx.run('DELETE FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
       return r.changes;
     });

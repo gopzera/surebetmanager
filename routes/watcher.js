@@ -274,10 +274,14 @@ router.get('/cron-poll', async (req, res) => {
 
 router.get('/alerts', auth, async (req, res) => {
   try {
-    const { limit = 50, offset = 0, unseen } = req.query;
+    const { limit = 50, offset = 0, unseen, wallet_id, type, from, to } = req.query;
     let where = 'WHERE ww.user_id = ?';
     const params = [req.user.id];
     if (unseen === '1') { where += ' AND wa.seen = 0'; }
+    if (wallet_id) { where += ' AND wa.wallet_id = ?'; params.push(Number(wallet_id)); }
+    if (type) { where += ' AND wa.type = ?'; params.push(type); }
+    if (from) { where += ' AND wa.created_at >= ?'; params.push(from); }
+    if (to) { where += ' AND wa.created_at <= ?'; params.push(to + ' 23:59:59'); }
 
     const countRow = await db.get(
       `SELECT COUNT(*) as total FROM wallet_alerts wa
@@ -312,6 +316,18 @@ router.post('/alerts/seen', auth, async (req, res) => {
         await db.run('UPDATE wallet_alerts SET seen = 1 WHERE id = ?', id);
       }
     }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delete all alerts for user
+router.delete('/alerts', auth, async (req, res) => {
+  try {
+    await db.run(
+      `DELETE FROM wallet_alerts
+       WHERE wallet_id IN (SELECT id FROM watched_wallets WHERE user_id = ?)`,
+      req.user.id
+    );
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

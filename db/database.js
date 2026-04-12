@@ -110,9 +110,19 @@ const SCHEMA = `
     FOREIGN KEY (wallet_id) REFERENCES watched_wallets(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS operation_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    FOREIGN KEY (operation_id) REFERENCES operations(id) ON DELETE CASCADE,
+    UNIQUE(operation_id, tag)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_operations_user ON operations(user_id);
   CREATE INDEX IF NOT EXISTS idx_operations_date ON operations(created_at);
   CREATE INDEX IF NOT EXISTS idx_operations_type ON operations(type);
+  CREATE INDEX IF NOT EXISTS idx_operation_tags_op ON operation_tags(operation_id);
+  CREATE INDEX IF NOT EXISTS idx_operation_tags_tag ON operation_tags(tag);
   CREATE INDEX IF NOT EXISTS idx_op_accounts_op ON operation_accounts(operation_id);
   CREATE INDEX IF NOT EXISTS idx_op_accounts_acc ON operation_accounts(account_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);

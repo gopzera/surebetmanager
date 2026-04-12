@@ -63,6 +63,89 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// ===== TAG INPUT COMPONENT =====
+let allKnownTags = []; // populated from API
+
+function renderTagsDisplay(tags) {
+  if (!tags || !tags.length) return '';
+  return tags.map(t => `<span class="tag-badge">${escapeHtml(t)}</span>`).join(' ');
+}
+
+function initTagInput(containerId, initialTags = []) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  wrap._tags = [...initialTags];
+
+  function render() {
+    const tags = wrap._tags;
+    wrap.innerHTML = tags.map((t, i) =>
+      `<span class="tag-item">${escapeHtml(t)}<button type="button" onclick="removeTag('${containerId}',${i})">&times;</button></span>`
+    ).join('') +
+      `<input type="text" placeholder="${tags.length ? '' : 'Digite uma tag e pressione Enter...'}" onkeydown="tagInputKey(event,'${containerId}')" id="${containerId}-input">`;
+    // Suggestions
+    const sugId = containerId + '-suggestions';
+    let sugEl = document.getElementById(sugId);
+    if (!sugEl) {
+      sugEl = document.createElement('div');
+      sugEl.id = sugId;
+      sugEl.className = 'tag-suggestions';
+      wrap.parentNode.appendChild(sugEl);
+    }
+    const unused = allKnownTags.filter(t => !tags.includes(t));
+    sugEl.innerHTML = unused.slice(0, 8).map(t =>
+      `<button type="button" onclick="addTag('${containerId}','${escapeHtml(t)}')">${escapeHtml(t)}</button>`
+    ).join('');
+  }
+  render();
+  wrap.addEventListener('click', () => {
+    const inp = document.getElementById(containerId + '-input');
+    if (inp) inp.focus();
+  });
+}
+
+function tagInputKey(e, containerId) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault();
+    const val = e.target.value.trim().toLowerCase().replace(/,/g, '');
+    if (val) addTag(containerId, val);
+  }
+  if (e.key === 'Backspace' && !e.target.value) {
+    const wrap = document.getElementById(containerId);
+    if (wrap && wrap._tags.length) {
+      wrap._tags.pop();
+      initTagInput(containerId, wrap._tags);
+    }
+  }
+}
+
+function addTag(containerId, tag) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  const t = tag.trim().toLowerCase();
+  if (t && !wrap._tags.includes(t)) {
+    wrap._tags.push(t);
+    initTagInput(containerId, wrap._tags);
+  }
+}
+
+function removeTag(containerId, idx) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  wrap._tags.splice(idx, 1);
+  initTagInput(containerId, wrap._tags);
+}
+
+function getTagsFromInput(containerId) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return [];
+  // Also grab any text in the input field that hasn't been committed
+  const inp = document.getElementById(containerId + '-input');
+  const pending = inp?.value?.trim().toLowerCase();
+  const tags = [...(wrap._tags || [])];
+  if (pending && !tags.includes(pending)) tags.push(pending);
+  return tags;
+}
+
 async function loadAccounts() {
   try {
     userAccounts = await api('/api/accounts');
@@ -406,13 +489,14 @@ function renderRecentTable(ops) {
   container.innerHTML = `
     <table>
       <thead><tr>
-        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Stake B365</th><th>Stake Poly</th><th>Lucro</th><th>Contas</th><th>Status</th>
+        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake B365</th><th>Stake Poly</th><th>Lucro</th><th>Contas</th><th>Status</th>
       </tr></thead>
       <tbody>
         ${ops.map(op => `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
+          <td>${renderTagsDisplay(op.tags)}</td>
           <td>${formatBRL(op.stake_bet365)}</td>
           <td>${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span></td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
@@ -548,6 +632,11 @@ async function renderNewOperation() {
         </div>
       </div>
 
+      <div class="form-group full" style="margin-top:8px">
+        <label class="form-label">Tags (opcional)</label>
+        <div class="tags-input-wrap" id="new-tags"></div>
+      </div>
+
       <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:24px">
         <button type="button" class="btn btn-ghost" onclick="navigate('dashboard')">Cancelar</button>
         <button type="submit" class="btn btn-primary">Registrar Operação</button>
@@ -646,6 +735,13 @@ async function renderNewOperation() {
 
   document.getElementById('new-op-form').addEventListener('submit', submitNewOperation);
 
+  // Load known tags and init tag input
+  try {
+    const tagData = await api('/api/operations?limit=0');
+    if (tagData.allTags) allKnownTags = tagData.allTags;
+  } catch {}
+  initTagInput('new-tags');
+
   // Pre-fill from calculator import
   if (window._calcImport) {
     const imp = window._calcImport;
@@ -675,6 +771,11 @@ async function renderNewOperation() {
         const cb = document.querySelector(`#new-accounts-list input[value="${id}"]`);
         if (cb) cb.checked = true;
       });
+    }
+
+    // Pre-fill tags from duplicate
+    if (imp.tags && imp.tags.length) {
+      initTagInput('new-tags', imp.tags);
     }
 
     updatePolyBRL();
@@ -709,6 +810,7 @@ async function submitNewOperation(e) {
     profit: parseFloat(document.getElementById('new-profit').value) || 0,
     notes: document.getElementById('new-notes').value.trim(),
     account_ids,
+    tags: getTagsFromInput('new-tags'),
   };
 
   try {
@@ -738,12 +840,15 @@ async function renderHistory() {
         Nova Operação
       </button>
     </div>
-    <div class="filters-bar">
+    <div class="filters-bar" style="flex-wrap:wrap">
       <select class="form-select" id="filter-type" onchange="loadHistory()">
         <option value="">Todos os tipos</option>
         <option value="aquecimento">Aquecimento</option>
         <option value="arbitragem">Arbitragem</option>
         <option value="aumentada25">Aumentada 25%</option>
+      </select>
+      <select class="form-select" id="filter-tag" onchange="loadHistory()">
+        <option value="">Todas tags</option>
       </select>
       <input type="date" class="form-input" id="filter-from" onchange="loadHistory()">
       <input type="date" class="form-input" id="filter-to" onchange="loadHistory()">
@@ -760,15 +865,27 @@ async function renderHistory() {
 
 async function loadHistory() {
   const type = document.getElementById('filter-type').value;
+  const tag = document.getElementById('filter-tag').value;
   const from = document.getElementById('filter-from').value;
   const to = document.getElementById('filter-to').value;
   const params = new URLSearchParams({ limit: PAGE_SIZE, offset: historyPage * PAGE_SIZE });
   if (type) params.append('type', type);
+  if (tag) params.append('tag', tag);
   if (from) params.append('from', from);
   if (to) params.append('to', to);
 
   try {
-    const { operations, total } = await api(`/api/operations?${params}`);
+    const { operations, total, allTags } = await api(`/api/operations?${params}`);
+
+    // Populate tag filter dropdown
+    const tagSelect = document.getElementById('filter-tag');
+    if (tagSelect && allTags) {
+      const currentTag = tagSelect.value;
+      allKnownTags = allTags;
+      tagSelect.innerHTML = '<option value="">Todas tags</option>' +
+        allTags.map(t => `<option value="${t}" ${t === currentTag ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('');
+    }
+
     renderHistoryTable(operations);
     renderPagination(total);
     const totalProfit = operations.reduce((s, o) => s + o.profit, 0);
@@ -790,16 +907,16 @@ function renderHistoryTable(ops) {
   container.innerHTML = `
     <table>
       <thead><tr>
-        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Stake B365</th><th>Stake Poly</th><th>Câmbio</th><th>Contas</th><th>Lucro</th><th>Status</th><th></th>
+        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake B365</th><th>Stake Poly</th><th>Contas</th><th>Lucro</th><th>Status</th><th></th>
       </tr></thead>
       <tbody>
         ${ops.map(op => `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
+          <td>${renderTagsDisplay(op.tags)}</td>
           <td>${formatBRL(op.stake_bet365)}</td>
           <td>${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span></td>
-          <td style="font-size:12px">${op.exchange_rate?.toFixed(4) || '-'}</td>
           <td style="font-size:12px">${(op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-'}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
@@ -829,6 +946,7 @@ function renderPagination(total) {
 
 function clearFilters() {
   document.getElementById('filter-type').value = '';
+  document.getElementById('filter-tag').value = '';
   document.getElementById('filter-from').value = '';
   document.getElementById('filter-to').value = '';
   historyPage = 0;
@@ -853,6 +971,7 @@ async function duplicateOperation(id) {
       game: op.game || '',
       eventDate: op.event_date || '',
       accountIds: (op.accounts || []).map(a => a.id),
+      tags: op.tags || [],
     };
     navigate('new-operation');
     toast('Opera\u00E7\u00E3o duplicada! Ajuste os dados e salve.', 'success');
@@ -863,7 +982,8 @@ async function duplicateOperation(id) {
 async function openEditModal(id) {
   try {
     await loadAccounts();
-    const { operations } = await api(`/api/operations?limit=999`);
+    const { operations, allTags } = await api(`/api/operations?limit=999`);
+    if (allTags) allKnownTags = allTags;
     const op = operations.find(o => o.id === id);
     if (!op) { toast('Operação não encontrada', 'error'); return; }
     fillEditModal(op);
@@ -903,6 +1023,9 @@ function fillEditModal(op) {
       </label>
     `;
   }).join('') || '<span style="color:var(--text-muted);font-size:13px">Nenhuma conta cadastrada</span>';
+
+  // Init tags
+  initTagInput('edit-tags', op.tags || []);
 
   // Wire up auto-profit for edit modal
   wireEditAutoProfit(op.result);
@@ -978,6 +1101,7 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     profit: parseFloat(document.getElementById('edit-profit').value) || 0,
     notes: document.getElementById('edit-notes').value,
     account_ids,
+    tags: getTagsFromInput('edit-tags'),
   };
 
   try {
@@ -2618,7 +2742,18 @@ async function renderWatcherAlerts() {
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div>';
 
   try {
-    const data = await api('/api/watcher/alerts?limit=50');
+    // Build filter query string
+    const params = new URLSearchParams({ limit: 50 });
+    const walletFilter = document.getElementById('alert-filter-wallet')?.value;
+    const typeFilter = document.getElementById('alert-filter-type')?.value;
+    const fromFilter = document.getElementById('alert-filter-from')?.value;
+    const toFilter = document.getElementById('alert-filter-to')?.value;
+    if (walletFilter) params.append('wallet_id', walletFilter);
+    if (typeFilter) params.append('type', typeFilter);
+    if (fromFilter) params.append('from', fromFilter);
+    if (toFilter) params.append('to', toFilter);
+
+    const data = await api(`/api/watcher/alerts?${params}`);
     // Mark as seen
     if (data.alerts.length > 0) {
       const unseenIds = data.alerts.filter(a => !a.seen).map(a => a.id);
@@ -2629,21 +2764,45 @@ async function renderWatcherAlerts() {
       }
     }
 
+    // Build wallet options for filter
+    const walletOptions = watchedWallets.map(w =>
+      `<option value="${w.id}" ${walletFilter == w.id ? 'selected' : ''}>${escapeHtml(w.label)}</option>`
+    ).join('');
+
+    const filtersHTML = `
+      <div class="filters-bar" style="margin-bottom:12px;flex-wrap:wrap">
+        <select class="form-select" id="alert-filter-wallet" onchange="renderWatcherAlerts()" style="min-width:130px">
+          <option value="">Todas wallets</option>
+          ${walletOptions}
+        </select>
+        <select class="form-select" id="alert-filter-type" onchange="renderWatcherAlerts()" style="min-width:130px">
+          <option value="" ${!typeFilter ? 'selected' : ''}>Todos tipos</option>
+          <option value="new_position" ${typeFilter === 'new_position' ? 'selected' : ''}>Nova posição</option>
+          <option value="position_closed" ${typeFilter === 'position_closed' ? 'selected' : ''}>Posição fechada</option>
+          <option value="trade_buy" ${typeFilter === 'trade_buy' ? 'selected' : ''}>Compra adicional</option>
+          <option value="trade_sell" ${typeFilter === 'trade_sell' ? 'selected' : ''}>Venda parcial</option>
+        </select>
+        <input type="date" class="form-input" id="alert-filter-from" value="${fromFilter || ''}" onchange="renderWatcherAlerts()" style="min-width:130px">
+        <input type="date" class="form-input" id="alert-filter-to" value="${toFilter || ''}" onchange="renderWatcherAlerts()" style="min-width:130px">
+        <button class="btn btn-ghost btn-sm" onclick="clearAlertFilters()">Limpar filtros</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" onclick="clearAllAlerts()">Limpar tudo</button>
+      </div>
+    `;
+
     if (!data.alerts.length) {
-      container.innerHTML = `
+      container.innerHTML = filtersHTML + `
         <div class="empty-state">
           <div class="empty-state-icon">👁️</div>
-          <div class="empty-state-text">Nenhum alerta ainda</div>
-          <div class="empty-state-sub">Adicione wallets na aba "Wallets" e os alertas aparecerão aqui quando houver atividade</div>
+          <div class="empty-state-text">Nenhum alerta encontrado</div>
+          <div class="empty-state-sub">${walletFilter || typeFilter || fromFilter || toFilter ? 'Tente ajustar os filtros' : 'Adicione wallets na aba "Wallets" e os alertas aparecerão aqui quando houver atividade'}</div>
         </div>
       `;
       return;
     }
 
-    container.innerHTML = `
-      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
-        <button class="btn btn-ghost btn-sm" onclick="clearAllAlerts()">Limpar tudo</button>
-      </div>
+    container.innerHTML = filtersHTML + `
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${data.total} alerta(s) encontrado(s)</div>
       <div class="alert-feed">
         ${data.alerts.map(a => renderAlertCard(a)).join('')}
       </div>
@@ -2651,6 +2810,18 @@ async function renderWatcherAlerts() {
   } catch (err) {
     container.innerHTML = `<div style="color:var(--danger);text-align:center;padding:20px">${err.message}</div>`;
   }
+}
+
+function clearAlertFilters() {
+  const w = document.getElementById('alert-filter-wallet');
+  const t = document.getElementById('alert-filter-type');
+  const f = document.getElementById('alert-filter-from');
+  const to = document.getElementById('alert-filter-to');
+  if (w) w.value = '';
+  if (t) t.value = '';
+  if (f) f.value = '';
+  if (to) to.value = '';
+  renderWatcherAlerts();
 }
 
 function renderAlertCard(a) {
@@ -2888,7 +3059,7 @@ async function manualPoll() {
 async function clearAllAlerts() {
   if (!confirm('Limpar todos os alertas?')) return;
   try {
-    await api('/api/watcher/alerts/seen', { method: 'POST', body: { ids: 'all' } });
+    await api('/api/watcher/alerts', { method: 'DELETE' });
     unseenAlertCount = 0;
     updateBadge();
     renderWatcherAlerts();

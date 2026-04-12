@@ -92,6 +92,10 @@ router.get('/stats', async (req, res) => {
          WHERE oa.operation_id = ?`,
         op.id
       );
+      const tagRows = await db.all(
+        'SELECT tag FROM operation_tags WHERE operation_id = ?', op.id
+      );
+      op.tags = tagRows.map(r => r.tag);
     }
 
     res.json({
