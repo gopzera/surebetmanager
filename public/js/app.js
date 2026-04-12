@@ -1862,6 +1862,23 @@ function calcBuildTable() {
       liabHtml = `<div class="c-liab-badge" title="Your liability">Liab: ${CALC_CURR_SYMS[cur]}${cf2(liabDisp??liab)}</div>`;
     }
 
+    // Polymarket price per share (based on raw odd) and shares count
+    const rawOdd = parseFloat(row.odds) || 0;
+    const isPoly = !isLay && row.usePoly && rawOdd > 1;
+    const polyPrice = isPoly ? 1 / rawOdd : null;
+    let polyPriceHint = "";
+    let polySharesHint = "";
+    if (isPoly) {
+      polyPriceHint = `<div class="c-poly-price" title="Preço por share (limit order)">$${polyPrice.toFixed(3)}/share</div>`;
+      if (calcResult) {
+        const stakeUSD = calcResult.stakesUSD[idx] || 0;
+        if (stakeUSD > 0) {
+          const shares = stakeUSD / polyPrice;
+          polySharesHint = `<div class="c-shares-badge" title="Shares a comprar em limit order">Shares: ${shares.toFixed(2)}</div>`;
+        }
+      }
+    }
+
     const stakeFixed = (row.isFixed || row.manualStake !== null) ? "c-stake-fixed" : "";
     const stakeVal = row.isFixed ? row.fixedStake
       : row.manualStake !== null ? row.manualStake
@@ -1876,9 +1893,14 @@ function calcBuildTable() {
       <td class="c-ctr-col">
         <button class="c-bl-btn ${isLay?"c-lay":"c-back"}" onclick="calcToggleBL(${row.id})" title="${isLay?"Lay (you're the bookmaker)":"Back (you're the bettor)"}">${isLay?"\u2212":"+"}</button>
       </td>
-      <td><input type="number" min="1.001" step="0.01" value="${row.odds}" style="width:88px;text-align:center"
-        placeholder="${isLay?"Lay odds":"Back odds"}"
-        oninput="calcOnOddsInput(${row.id},this.value)"></td>
+      <td>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+          <input type="number" min="1.001" step="0.01" value="${row.odds}" style="width:88px;text-align:center"
+            placeholder="${isLay?"Lay odds":"Back odds"}"
+            oninput="calcOnOddsInput(${row.id},this.value)">
+          ${polyPriceHint}
+        </div>
+      </td>
       <td class="c-num-col" id="calc-prob-${row.id}" style="font-size:12px">
         ${(parseFloat(row.odds)||0) > 1 ? (100/(parseFloat(row.odds))).toFixed(1)+"%" : "\u2014"}
       </td>
@@ -1919,6 +1941,7 @@ function calcBuildTable() {
               placeholder="${isLay?"Backer stake":"Your stake"}">
           </div>
           ${liabHtml}
+          ${polySharesHint}
           <div id="calc-brl-hint-${row.id}" class="c-dim" style="padding-left:2px;display:none"></div>
         </div>
       </td>
@@ -2998,15 +3021,18 @@ function switchWatcherTab(tab) {
 
 async function renderWatcherAlerts() {
   const container = document.getElementById('watcher-content');
+
+  // Read filter values BEFORE overwriting the container (otherwise they get destroyed)
+  const walletFilter = document.getElementById('alert-filter-wallet')?.value || '';
+  const typeFilter = document.getElementById('alert-filter-type')?.value || '';
+  const fromFilter = document.getElementById('alert-filter-from')?.value || '';
+  const toFilter = document.getElementById('alert-filter-to')?.value || '';
+
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div>';
 
   try {
     // Build filter query string
     const params = new URLSearchParams({ limit: 50 });
-    const walletFilter = document.getElementById('alert-filter-wallet')?.value;
-    const typeFilter = document.getElementById('alert-filter-type')?.value;
-    const fromFilter = document.getElementById('alert-filter-from')?.value;
-    const toFilter = document.getElementById('alert-filter-to')?.value;
     if (walletFilter) params.append('wallet_id', walletFilter);
     if (typeFilter) params.append('type', typeFilter);
     if (fromFilter) params.append('from', fromFilter);

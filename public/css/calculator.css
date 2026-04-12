@@ -475,6 +475,29 @@
   letter-spacing: .02em;
 }
 
+/* Polymarket price per share (shown below odd input) */
+.calc-page .c-poly-price {
+  font: 500 10px/1 var(--mono);
+  color: var(--poly);
+  background: var(--poly-bg);
+  border: 1px solid var(--poly-border);
+  border-radius: var(--r-xs);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+/* Polymarket shares badge (shown near stake) */
+.calc-page .c-shares-badge {
+  font: 500 10px/1 var(--mono);
+  color: var(--poly);
+  background: var(--poly-bg);
+  border: 1px solid var(--poly-border);
+  border-radius: var(--r-xs);
+  padding: 2px 7px;
+  margin-top: 3px;
+  display: inline-block;
+}
+
 /* ── SUMMARY CARDS ── */
 .calc-page .c-cards {
   display: grid;
