@@ -1813,6 +1813,41 @@ function calcCompute() {
 }
 
 // -- Build table --
+// -- Polymarket price/shares helpers (reused in build and update) --
+function calcPolyState(row) {
+  const isLay = row.betType === "lay";
+  const rawOdd = parseFloat(row.odds) || 0;
+  const isPoly = !isLay && row.usePoly && rawOdd > 1;
+  if (!isPoly) return { isPoly: false };
+  const priceExact = 1 / rawOdd;
+  const priceRounded = Math.round(priceExact * 100) / 100;
+  if (priceRounded <= 0 || priceRounded >= 1) return { isPoly: false };
+  const realOdd = 1 / priceRounded;
+  const oddDiffers = Math.abs(realOdd - rawOdd) > 1e-9;
+  return { isPoly: true, rawOdd, priceRounded, realOdd, oddDiffers };
+}
+
+function calcBuildPolyPriceHint(row) {
+  const s = calcPolyState(row);
+  if (!s.isPoly) return "";
+  const priceStr = s.priceRounded.toFixed(2);
+  const realOddStr = s.realOdd.toFixed(10);
+  return `
+    <div class="c-poly-price" title="Preço por share em limit order (arredondado para 2 casas)">$${priceStr}/share</div>
+    ${s.oddDiffers ? `<div class="c-poly-real-odd" title="Odd real com preço arredondado">odd real: ${realOddStr}</div>
+    <button type="button" class="c-poly-odd-btn" onclick="calcUseRealOdd(${row.id})" title="Substituir a odd pela odd real">transformar em odd real</button>` : ''}
+  `;
+}
+
+function calcBuildPolySharesHint(row, idx) {
+  const s = calcPolyState(row);
+  if (!s.isPoly || !calcResult) return "";
+  const stakeUSD = calcResult.stakesUSD[idx] || 0;
+  if (stakeUSD <= 0) return "";
+  const shares = stakeUSD / s.priceRounded;
+  return `<div class="c-shares-badge" title="Shares em limit order a $${s.priceRounded.toFixed(2)} cada">Shares: ${shares.toFixed(2)}</div>`;
+}
+
 function calcBuildTable() {
   calcCompute();
 
@@ -1862,30 +1897,8 @@ function calcBuildTable() {
       liabHtml = `<div class="c-liab-badge" title="Your liability">Liab: ${CALC_CURR_SYMS[cur]}${cf2(liabDisp??liab)}</div>`;
     }
 
-    // Polymarket price per share (rounded to 2 decimals — Polymarket's tick size)
-    const rawOdd = parseFloat(row.odds) || 0;
-    const isPoly = !isLay && row.usePoly && rawOdd > 1;
-    const polyPriceExact = isPoly ? 1 / rawOdd : null;
-    const polyPriceRounded = isPoly ? Math.round(polyPriceExact * 100) / 100 : null;
-    const polyRealOdd = (isPoly && polyPriceRounded > 0 && polyPriceRounded < 1) ? 1 / polyPriceRounded : null;
-    const oddDiffers = polyRealOdd !== null && Math.abs(polyRealOdd - rawOdd) > 1e-9;
-    let polyPriceHint = "";
-    let polySharesHint = "";
-    if (isPoly && polyPriceRounded > 0 && polyPriceRounded < 1) {
-      const realOddStr = polyRealOdd.toFixed(10);
-      polyPriceHint = `
-        <div class="c-poly-price" title="Preço por share em limit order (arredondado para 2 casas)">$${polyPriceRounded.toFixed(2)}/share</div>
-        ${oddDiffers ? `<div class="c-poly-real-odd" title="Odd real com preço arredondado">odd real: ${realOddStr}</div>
-        <button type="button" class="c-poly-odd-btn" onclick="calcUseRealOdd(${row.id})" title="Substituir a odd pela odd real (preço exato 0.${String(polyPriceRounded.toFixed(2)).split('.')[1]})">transformar em odd real</button>` : ''}
-      `;
-      if (calcResult) {
-        const stakeUSD = calcResult.stakesUSD[idx] || 0;
-        if (stakeUSD > 0) {
-          const shares = stakeUSD / polyPriceRounded;
-          polySharesHint = `<div class="c-shares-badge" title="Shares em limit order a $${polyPriceRounded.toFixed(2)} cada">Shares: ${shares.toFixed(2)}</div>`;
-        }
-      }
-    }
+    const polyPriceHint = calcBuildPolyPriceHint(row);
+    const polySharesHint = calcBuildPolySharesHint(row, idx);
 
     const stakeFixed = (row.isFixed || row.manualStake !== null) ? "c-stake-fixed" : "";
     const stakeVal = row.isFixed ? row.fixedStake
@@ -1906,7 +1919,7 @@ function calcBuildTable() {
           <input type="number" min="1.001" step="0.01" value="${row.odds}" style="width:88px;text-align:center"
             placeholder="${isLay?"Lay odds":"Back odds"}"
             oninput="calcOnOddsInput(${row.id},this.value)">
-          ${polyPriceHint}
+          <div id="calc-polyprice-${row.id}" class="c-polyprice-wrap">${polyPriceHint}</div>
         </div>
       </td>
       <td class="c-num-col" id="calc-prob-${row.id}" style="font-size:12px">
@@ -1949,7 +1962,7 @@ function calcBuildTable() {
               placeholder="${isLay?"Backer stake":"Your stake"}">
           </div>
           ${liabHtml}
-          ${polySharesHint}
+          <div id="calc-shares-${row.id}" class="c-shares-wrap">${polySharesHint}</div>
           <div id="calc-brl-hint-${row.id}" class="c-dim" style="padding-left:2px;display:none"></div>
         </div>
       </td>
@@ -2010,6 +2023,14 @@ function calcUpdateDisplay() {
       const v = calcToDisplay(calcResult.stakesUSD[i], row.currency);
       stakeEl.value = v !== null ? cf2(v) : "";
     }
+
+    // Polymarket price/real-odd hint (below odd input)
+    const polyPriceWrap = document.getElementById(`calc-polyprice-${row.id}`);
+    if (polyPriceWrap) polyPriceWrap.innerHTML = calcBuildPolyPriceHint(row);
+
+    // Polymarket shares badge (near stake)
+    const sharesWrap = document.getElementById(`calc-shares-${row.id}`);
+    if (sharesWrap) sharesWrap.innerHTML = calcBuildPolySharesHint(row, i);
 
     // BRL hint for USD rows with customRate
     const brlHint = document.getElementById(`calc-brl-hint-${row.id}`);
@@ -2615,7 +2636,15 @@ function calcRestoreState() {
 
 // Auto-save on every state change (wrap handlers)
 const _origCalcCompute = calcCompute;
-calcCompute = function() { _origCalcCompute(); calcSaveState(); calcSaveToHistory(); };
+let _calcHistoryDebounce = null;
+calcCompute = function() {
+  _origCalcCompute();
+  calcSaveState();
+  // Debounce history save: only saves 2s after the last compute, so rapid typing
+  // creates a single history entry instead of one per keystroke.
+  clearTimeout(_calcHistoryDebounce);
+  _calcHistoryDebounce = setTimeout(() => { calcSaveToHistory(); }, 2000);
+};
 
 // -- Load shared odds from URL --
 function calcLoadFromURL() {
