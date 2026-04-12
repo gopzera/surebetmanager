@@ -1862,19 +1862,27 @@ function calcBuildTable() {
       liabHtml = `<div class="c-liab-badge" title="Your liability">Liab: ${CALC_CURR_SYMS[cur]}${cf2(liabDisp??liab)}</div>`;
     }
 
-    // Polymarket price per share (based on raw odd) and shares count
+    // Polymarket price per share (rounded to 2 decimals — Polymarket's tick size)
     const rawOdd = parseFloat(row.odds) || 0;
     const isPoly = !isLay && row.usePoly && rawOdd > 1;
-    const polyPrice = isPoly ? 1 / rawOdd : null;
+    const polyPriceExact = isPoly ? 1 / rawOdd : null;
+    const polyPriceRounded = isPoly ? Math.round(polyPriceExact * 100) / 100 : null;
+    const polyRealOdd = (isPoly && polyPriceRounded > 0 && polyPriceRounded < 1) ? 1 / polyPriceRounded : null;
+    const oddDiffers = polyRealOdd !== null && Math.abs(polyRealOdd - rawOdd) > 1e-9;
     let polyPriceHint = "";
     let polySharesHint = "";
-    if (isPoly) {
-      polyPriceHint = `<div class="c-poly-price" title="Preço por share (limit order)">$${polyPrice.toFixed(3)}/share</div>`;
+    if (isPoly && polyPriceRounded > 0 && polyPriceRounded < 1) {
+      const realOddStr = polyRealOdd.toFixed(10);
+      polyPriceHint = `
+        <div class="c-poly-price" title="Preço por share em limit order (arredondado para 2 casas)">$${polyPriceRounded.toFixed(2)}/share</div>
+        ${oddDiffers ? `<div class="c-poly-real-odd" title="Odd real com preço arredondado">odd real: ${realOddStr}</div>
+        <button type="button" class="c-poly-odd-btn" onclick="calcUseRealOdd(${row.id})" title="Substituir a odd pela odd real (preço exato 0.${String(polyPriceRounded.toFixed(2)).split('.')[1]})">transformar em odd real</button>` : ''}
+      `;
       if (calcResult) {
         const stakeUSD = calcResult.stakesUSD[idx] || 0;
         if (stakeUSD > 0) {
-          const shares = stakeUSD / polyPrice;
-          polySharesHint = `<div class="c-shares-badge" title="Shares a comprar em limit order">Shares: ${shares.toFixed(2)}</div>`;
+          const shares = stakeUSD / polyPriceRounded;
+          polySharesHint = `<div class="c-shares-badge" title="Shares em limit order a $${polyPriceRounded.toFixed(2)} cada">Shares: ${shares.toFixed(2)}</div>`;
         }
       }
     }
@@ -2103,6 +2111,19 @@ function calcUpdateDisplay() {
 
 // -- Input handlers --
 function calcOnOddsInput(id, val) { calcRows.find(r=>r.id===id).odds = val; calcCompute(); calcUpdateDisplay(); }
+function calcUseRealOdd(id) {
+  const row = calcRows.find(r => r.id === id);
+  if (!row) return;
+  const raw = parseFloat(row.odds) || 0;
+  if (raw <= 1) return;
+  const priceExact = 1 / raw;
+  const priceRounded = Math.round(priceExact * 100) / 100;
+  if (priceRounded <= 0 || priceRounded >= 1) return;
+  const realOdd = 1 / priceRounded;
+  row.odds = realOdd.toFixed(10);
+  calcCompute();
+  calcBuildTable();
+}
 function calcOnCommInput(id, val) { calcRows.find(r=>r.id===id).comm = val; calcCompute(); calcUpdateDisplay(); }
 function calcOnPolyChange(id, checked) {
   const row = calcRows.find(r=>r.id===id);
