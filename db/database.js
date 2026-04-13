@@ -131,6 +131,38 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_wallet_positions_wallet ON wallet_positions(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_wallet_alerts_wallet ON wallet_alerts(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_wallet_alerts_seen ON wallet_alerts(seen);
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general' CHECK(category IN ('general', 'system')),
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    data TEXT,
+    seen INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+  CREATE INDEX IF NOT EXISTS idx_notifications_seen ON notifications(seen);
+  CREATE INDEX IF NOT EXISTS idx_notifications_category ON notifications(category);
+
+  CREATE TABLE IF NOT EXISTS admin_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    target_user_id INTEGER,
+    target_operation_id INTEGER,
+    details TEXT,
+    ip TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (admin_id) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_id);
+  CREATE INDEX IF NOT EXISTS idx_admin_actions_target ON admin_actions(target_user_id);
 `;
 
 let initPromise = null;
@@ -169,6 +201,38 @@ const db = {
           try {
             await client.execute(`ALTER TABLE users ADD COLUMN ${col}`);
           } catch (_) {}
+        }
+        // Migration: add stake_bet365 to operation_accounts (nullable = equal split)
+        try {
+          await client.execute(`ALTER TABLE operation_accounts ADD COLUMN stake_bet365 REAL`);
+        } catch (_) {}
+        // Migration: add Polymarket wallet + notification prefs to users
+        for (const col of [
+          'poly_wallet_address TEXT',
+          'notify_fill_order INTEGER NOT NULL DEFAULT 0',
+          'notify_fill_limit_order INTEGER NOT NULL DEFAULT 0',
+          'notify_redeem INTEGER NOT NULL DEFAULT 0',
+          'poly_last_activity_ts INTEGER NOT NULL DEFAULT 0',
+          'is_admin INTEGER NOT NULL DEFAULT 0',
+        ]) {
+          try {
+            await client.execute(`ALTER TABLE users ADD COLUMN ${col}`);
+          } catch (_) {}
+        }
+        // Bootstrap: promote usernames listed in BOOTSTRAP_ADMIN_USERNAMES (comma-separated).
+        // Set once in the environment, redeploy, then unset — this is idempotent but
+        // keeping the env var permanently means anyone with deploy access can re-promote.
+        if (process.env.BOOTSTRAP_ADMIN_USERNAMES) {
+          const names = process.env.BOOTSTRAP_ADMIN_USERNAMES
+            .split(',').map(s => s.trim()).filter(Boolean);
+          for (const name of names) {
+            try {
+              await client.execute({
+                sql: 'UPDATE users SET is_admin = 1 WHERE username = ?',
+                args: [name],
+              });
+            } catch (_) {}
+          }
         }
       })();
     }

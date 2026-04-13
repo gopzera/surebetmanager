@@ -74,7 +74,7 @@ router.post('/logout', (req, res) => {
 router.get('/me', auth, async (req, res) => {
   try {
     const user = await db.get(
-      'SELECT id, username, display_name, discord_id, discord_username, discord_avatar FROM users WHERE id = ?',
+      'SELECT id, username, display_name, discord_id, discord_username, discord_avatar, is_admin FROM users WHERE id = ?',
       req.user.id
     );
     if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });

@@ -31,7 +31,7 @@ router.get('/', async (req, res) => {
     // Attach accounts and tags for each operation
     for (const op of operations) {
       op.accounts = await db.all(
-        `SELECT a.id, a.name FROM operation_accounts oa
+        `SELECT a.id, a.name, oa.stake_bet365 as stake FROM operation_accounts oa
          JOIN accounts a ON a.id = oa.account_id
          WHERE oa.operation_id = ?`,
         op.id
@@ -60,20 +60,29 @@ router.get('/', async (req, res) => {
 // Create operation
 router.post('/', async (req, res) => {
   try {
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, tags } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags } = req.body;
 
     if (!type || !game) {
       return res.status(400).json({ error: 'Tipo e jogo são obrigatórios' });
     }
 
-    // Validate account_ids belong to this user
-    const validAccountIds = [];
-    if (account_ids && account_ids.length > 0) {
-      const userAccounts = await db.all('SELECT id FROM accounts WHERE user_id = ?', req.user.id);
-      const userAccountIds = userAccounts.map(a => a.id);
+    // Resolve account entries: prefer account_stakes (custom per-account stake),
+    // fall back to account_ids (equal split, stake = NULL).
+    const userAccountsList = await db.all('SELECT id FROM accounts WHERE user_id = ?', req.user.id);
+    const userAccountIds = userAccountsList.map(a => a.id);
+    const accountEntries = [];
+    if (Array.isArray(account_stakes) && account_stakes.length > 0) {
+      for (const entry of account_stakes) {
+        const accId = Number(entry.account_id);
+        if (userAccountIds.includes(accId)) {
+          const stake = entry.stake != null ? parseFloat(entry.stake) : null;
+          accountEntries.push({ accId, stake: (stake !== null && !isNaN(stake)) ? stake : null });
+        }
+      }
+    } else if (Array.isArray(account_ids)) {
       for (const accId of account_ids) {
         if (userAccountIds.includes(Number(accId))) {
-          validAccountIds.push(Number(accId));
+          accountEntries.push({ accId: Number(accId), stake: null });
         }
       }
     }
@@ -89,10 +98,10 @@ router.post('/', async (req, res) => {
         result || 'pending', profit || 0, notes || null
       );
 
-      for (const accId of validAccountIds) {
+      for (const entry of accountEntries) {
         await tx.run(
-          'INSERT INTO operation_accounts (operation_id, account_id) VALUES (?, ?)',
-          r.lastInsertRowid, accId
+          'INSERT INTO operation_accounts (operation_id, account_id, stake_bet365) VALUES (?, ?, ?)',
+          r.lastInsertRowid, entry.accId, entry.stake
         );
       }
 
@@ -125,7 +134,7 @@ router.put('/:id', async (req, res) => {
     const op = await db.get('SELECT * FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!op) return res.status(404).json({ error: 'Operação não encontrada' });
 
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, tags } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags } = req.body;
 
     const userAccounts = await db.all('SELECT id FROM accounts WHERE user_id = ?', req.user.id);
     const userAccountIds = userAccounts.map(a => a.id);
@@ -143,12 +152,25 @@ router.put('/:id', async (req, res) => {
         op.id
       );
 
-      if (account_ids !== undefined) {
+      if (account_stakes !== undefined) {
+        await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', op.id);
+        for (const entry of (account_stakes || [])) {
+          const accId = Number(entry.account_id);
+          if (userAccountIds.includes(accId)) {
+            const stake = entry.stake != null ? parseFloat(entry.stake) : null;
+            const safeStake = (stake !== null && !isNaN(stake)) ? stake : null;
+            await tx.run(
+              'INSERT INTO operation_accounts (operation_id, account_id, stake_bet365) VALUES (?, ?, ?)',
+              op.id, accId, safeStake
+            );
+          }
+        }
+      } else if (account_ids !== undefined) {
         await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', op.id);
         for (const accId of (account_ids || [])) {
           if (userAccountIds.includes(Number(accId))) {
             await tx.run(
-              'INSERT INTO operation_accounts (operation_id, account_id) VALUES (?, ?)',
+              'INSERT INTO operation_accounts (operation_id, account_id, stake_bet365) VALUES (?, ?, NULL)',
               op.id, Number(accId)
             );
           }

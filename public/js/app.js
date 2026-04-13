@@ -309,6 +309,9 @@ async function showApp() {
     avatarEl.textContent = displayName.charAt(0).toUpperCase();
   }
   await loadAccounts();
+  // Show admin nav item only for admins
+  const adminNav = document.getElementById('nav-admin');
+  if (adminNav) adminNav.style.display = currentUser.is_admin ? '' : 'none';
   // Auto-navigate to calculator if URL has shared odds params
   const urlParams = new URLSearchParams(location.search);
   if (urlParams.has('n') && urlParams.has('o0')) {
@@ -324,6 +327,8 @@ async function showApp() {
     unseenAlertCount = d.total || 0;
     updateBadge();
   } catch (_) {}
+  // Initial notifications badge
+  refreshNotificationsBadge();
 }
 
 // ===== NAVIGATION =====
@@ -351,6 +356,8 @@ function navigate(page) {
     'freebets': renderFreebets,
     'settings': renderSettings,
     'watcher': renderWatcher,
+    'notifications': renderNotifications,
+    'admin': renderAdmin,
   };
   (pages[page] || renderDashboard)();
 }
@@ -645,15 +652,26 @@ async function renderNewOperation() {
       ${activeAccounts.length ? `
       <h3 class="chart-title" style="margin:24px 0 12px">Contas Utilizadas</h3>
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Selecione quais contas Bet365 foram usadas nesta operação</p>
+      <label class="account-check" style="margin-bottom:12px;cursor:pointer;display:inline-flex">
+        <input type="checkbox" id="new-custom-stakes-toggle" onchange="toggleCustomStakes('new')">
+        <div class="account-check-dot"></div>
+        <div style="font-size:13px">Usar stake personalizado por conta</div>
+      </label>
       <div class="accounts-checklist" id="new-accounts-list">
         ${activeAccounts.map(acc => `
-          <label class="account-check" onclick="this.classList.toggle('checked')">
-            <input type="checkbox" name="accounts" value="${acc.id}">
+          <label class="account-check" onclick="accountCheckClick(event, this)">
+            <input type="checkbox" name="accounts" value="${acc.id}" data-account-id="${acc.id}">
             <div class="account-check-dot"></div>
-            <div>
+            <div style="flex:1">
               <div>${escapeHtml(acc.name)}</div>
               <div class="account-check-info">Max aumentada: ${formatBRL(acc.max_stake_aumentada)}</div>
             </div>
+            <input type="number" step="0.01" min="0" class="form-input per-account-stake"
+              data-account-id="${acc.id}"
+              placeholder="R$"
+              style="display:none;width:100px;margin-left:8px"
+              onclick="event.stopPropagation()"
+              oninput="onPerAccountStakeChange('new')">
           </label>
         `).join('')}
       </div>
@@ -769,10 +787,15 @@ async function renderNewOperation() {
   // Live calc for stake per account
   const stakeBet365Input = document.getElementById('new-stake-bet365');
   function updateStakePerAccount() {
-    const checked = document.querySelectorAll('#new-accounts-list input:checked');
-    const total = parseFloat(stakeBet365Input?.value) || 0;
     const info = document.getElementById('stake-per-account-info');
     if (!info) return;
+    const customOn = document.getElementById('new-custom-stakes-toggle')?.checked;
+    if (customOn) {
+      info.textContent = 'Stake personalizado ativo — defina o valor de cada conta';
+      return;
+    }
+    const checked = document.querySelectorAll('#new-accounts-list input[name="accounts"]:checked');
+    const total = parseFloat(stakeBet365Input?.value) || 0;
     if (checked.length > 0 && total > 0) {
       const perAccount = total / checked.length;
       info.textContent = `${formatBRL(perAccount)} por conta (${checked.length} conta${checked.length > 1 ? 's' : ''} selecionada${checked.length > 1 ? 's' : ''})`;
@@ -858,8 +881,23 @@ async function renderNewOperation() {
     if (imp.accountIds && imp.accountIds.length) {
       imp.accountIds.forEach(id => {
         const cb = document.querySelector(`#new-accounts-list input[value="${id}"]`);
-        if (cb) cb.checked = true;
+        if (cb) {
+          cb.checked = true;
+          cb.closest('label.account-check')?.classList.add('checked');
+        }
       });
+    }
+    if (imp.accountStakes && imp.accountStakes.length) {
+      const toggle = document.getElementById('new-custom-stakes-toggle');
+      if (toggle) {
+        toggle.checked = true;
+        toggleCustomStakes('new');
+      }
+      imp.accountStakes.forEach(({ account_id, stake }) => {
+        const inp = document.querySelector(`#new-accounts-list input.per-account-stake[data-account-id="${account_id}"]`);
+        if (inp && stake != null) inp.value = Number(stake).toFixed(2);
+      });
+      onPerAccountStakeChange('new');
     }
 
     // Pre-fill tags from duplicate
@@ -883,14 +921,30 @@ async function submitNewOperation(e) {
   const type = document.getElementById('new-type').value;
   if (!type) { toast('Selecione o tipo de operação', 'error'); return; }
 
-  const checkedBoxes = document.querySelectorAll('#new-accounts-list input:checked');
+  const useCustomStakes = document.getElementById('new-custom-stakes-toggle')?.checked;
+  const checkedBoxes = document.querySelectorAll('#new-accounts-list input[name="accounts"]:checked');
   const account_ids = Array.from(checkedBoxes).map(cb => Number(cb.value));
+
+  let account_stakes;
+  let totalStakeBet365 = parseFloat(document.getElementById('new-stake-bet365').value) || 0;
+  if (useCustomStakes && account_ids.length > 0) {
+    account_stakes = [];
+    let sum = 0;
+    for (const cb of checkedBoxes) {
+      const accId = Number(cb.dataset.accountId);
+      const inp = document.querySelector(`#new-accounts-list input.per-account-stake[data-account-id="${accId}"]`);
+      const stake = parseFloat(inp?.value) || 0;
+      sum += stake;
+      account_stakes.push({ account_id: accId, stake });
+    }
+    totalStakeBet365 = sum;
+  }
 
   const body = {
     type,
     game: document.getElementById('new-game').value.trim(),
     event_date: document.getElementById('new-event-date').value,
-    stake_bet365: parseFloat(document.getElementById('new-stake-bet365').value) || 0,
+    stake_bet365: totalStakeBet365,
     odd_bet365: parseFloat(document.getElementById('new-odd-bet365').value) || 0,
     stake_poly_usd: parseFloat(document.getElementById('new-stake-poly-usd').value) || 0,
     odd_poly: parseFloat(document.getElementById('new-odd-poly').value) || 0,
@@ -898,9 +952,10 @@ async function submitNewOperation(e) {
     result: document.getElementById('new-result').value,
     profit: parseFloat(document.getElementById('new-profit').value) || 0,
     notes: document.getElementById('new-notes').value.trim(),
-    account_ids,
     tags: getTagsFromInput('new-tags'),
   };
+  if (account_stakes) body.account_stakes = account_stakes;
+  else body.account_ids = account_ids;
 
   try {
     await api('/api/operations', { method: 'POST', body });
@@ -909,6 +964,51 @@ async function submitNewOperation(e) {
   } catch (err) {
     toast(err.message, 'error');
   }
+}
+
+// Toggle custom per-account stake mode ('new' or 'edit')
+function toggleCustomStakes(mode) {
+  const prefix = mode === 'new' ? 'new' : 'edit';
+  const listId = mode === 'new' ? 'new-accounts-list' : 'edit-accounts-list';
+  const toggle = document.getElementById(`${prefix}-custom-stakes-toggle`);
+  const stakeInputs = document.querySelectorAll(`#${listId} .per-account-stake`);
+  const totalInput = document.getElementById(`${prefix}-stake-bet365`);
+  const enabled = toggle?.checked;
+  stakeInputs.forEach(inp => { inp.style.display = enabled ? '' : 'none'; });
+  if (totalInput) {
+    totalInput.readOnly = enabled;
+    totalInput.style.opacity = enabled ? '0.7' : '';
+    totalInput.title = enabled ? 'Calculado automaticamente a partir das stakes por conta' : '';
+  }
+  if (enabled) onPerAccountStakeChange(mode);
+  // Update info text for 'new' mode
+  if (mode === 'new') {
+    const info = document.getElementById('stake-per-account-info');
+    if (info && enabled) info.textContent = 'Stake personalizado ativo — defina o valor de cada conta';
+  }
+}
+
+function onPerAccountStakeChange(mode) {
+  const prefix = mode === 'new' ? 'new' : 'edit';
+  const listId = mode === 'new' ? 'new-accounts-list' : 'edit-accounts-list';
+  const toggle = document.getElementById(`${prefix}-custom-stakes-toggle`);
+  if (!toggle?.checked) return;
+  const totalInput = document.getElementById(`${prefix}-stake-bet365`);
+  const checked = document.querySelectorAll(`#${listId} input[name="accounts"]:checked, #${listId} input[name="edit-accounts"]:checked`);
+  let sum = 0;
+  for (const cb of checked) {
+    const accId = Number(cb.dataset.accountId || cb.value);
+    const inp = document.querySelector(`#${listId} input.per-account-stake[data-account-id="${accId}"]`);
+    sum += parseFloat(inp?.value) || 0;
+  }
+  if (totalInput) totalInput.value = sum ? sum.toFixed(2) : '';
+}
+
+// Wrapper: toggle checked state, but ignore clicks on the per-account stake input
+function accountCheckClick(event, label) {
+  if (event.target.classList.contains('per-account-stake')) return;
+  if (event.target.tagName === 'INPUT' && event.target.type !== 'checkbox') return;
+  label.classList.toggle('checked');
 }
 
 // ===== HISTORY =====
@@ -1049,6 +1149,7 @@ async function duplicateOperation(id) {
     const op = operations.find(o => o.id === id);
     if (!op) { toast('Opera\u00E7\u00E3o n\u00E3o encontrada', 'error'); return; }
 
+    const accs = op.accounts || [];
     window._calcImport = {
       type: op.type,
       stakeBet365: op.stake_bet365,
@@ -1059,7 +1160,10 @@ async function duplicateOperation(id) {
       notes: op.notes || '',
       game: op.game || '',
       eventDate: op.event_date || '',
-      accountIds: (op.accounts || []).map(a => a.id),
+      accountIds: accs.map(a => a.id),
+      accountStakes: accs.some(a => a.stake != null)
+        ? accs.map(a => ({ account_id: a.id, stake: a.stake }))
+        : null,
       tags: op.tags || [],
     };
     navigate('new-operation');
@@ -1098,20 +1202,60 @@ function fillEditModal(op) {
   const autoProfitInfo = document.getElementById('edit-auto-profit-info');
   if (autoProfitInfo) autoProfitInfo.style.display = 'none';
 
-  // Build accounts checklist
-  const opAccountIds = (op.accounts || []).map(a => a.id);
+  // Build accounts checklist (with per-account stake inputs)
+  const opAccounts = op.accounts || [];
+  const opAccountIds = opAccounts.map(a => a.id);
+  const accountStakeMap = {};
+  let hasCustomStakes = false;
+  for (const a of opAccounts) {
+    if (a.stake != null) { accountStakeMap[a.id] = a.stake; hasCustomStakes = true; }
+  }
+
   const container = document.getElementById('edit-accounts-list');
   const activeAccounts = userAccounts.filter(a => a.active);
+
+  // Insert toggle above the list (outside, via parent)
+  const parentGroup = container.parentElement;
+  let toggleLabel = document.getElementById('edit-custom-stakes-wrap');
+  if (!toggleLabel) {
+    toggleLabel = document.createElement('label');
+    toggleLabel.id = 'edit-custom-stakes-wrap';
+    toggleLabel.className = 'account-check';
+    toggleLabel.style.cssText = 'margin-bottom:12px;cursor:pointer;display:inline-flex';
+    toggleLabel.innerHTML = `
+      <input type="checkbox" id="edit-custom-stakes-toggle" onchange="toggleCustomStakes('edit')">
+      <div class="account-check-dot"></div>
+      <div style="font-size:13px">Usar stake personalizado por conta</div>
+    `;
+    parentGroup.insertBefore(toggleLabel, container);
+  }
+  const toggleInput = document.getElementById('edit-custom-stakes-toggle');
+  if (toggleInput) toggleInput.checked = hasCustomStakes;
+
   container.innerHTML = activeAccounts.map(acc => {
     const checked = opAccountIds.includes(acc.id);
+    const stakeVal = accountStakeMap[acc.id];
+    const stakeStr = stakeVal != null ? Number(stakeVal).toFixed(2) : '';
     return `
-      <label class="account-check ${checked ? 'checked' : ''}" onclick="this.classList.toggle('checked')">
-        <input type="checkbox" name="edit-accounts" value="${acc.id}" ${checked ? 'checked' : ''}>
+      <label class="account-check ${checked ? 'checked' : ''}" onclick="accountCheckClick(event, this)">
+        <input type="checkbox" name="edit-accounts" value="${acc.id}" data-account-id="${acc.id}" ${checked ? 'checked' : ''}>
         <div class="account-check-dot"></div>
-        <div>${escapeHtml(acc.name)}</div>
+        <div style="flex:1">${escapeHtml(acc.name)}</div>
+        <input type="number" step="0.01" min="0" class="form-input per-account-stake"
+          data-account-id="${acc.id}"
+          placeholder="R$"
+          value="${stakeStr}"
+          style="display:${hasCustomStakes ? '' : 'none'};width:100px;margin-left:8px"
+          onclick="event.stopPropagation()"
+          oninput="onPerAccountStakeChange('edit')">
       </label>
     `;
   }).join('') || '<span style="color:var(--text-muted);font-size:13px">Nenhuma conta cadastrada</span>';
+
+  if (hasCustomStakes) {
+    const totalEl = document.getElementById('edit-stake-bet365');
+    if (totalEl) { totalEl.readOnly = true; totalEl.style.opacity = '0.7'; }
+  }
 
   // Init tags
   initTagInput('edit-tags', op.tags || []);
@@ -1120,46 +1264,39 @@ function fillEditModal(op) {
   wireEditAutoProfit(op.result);
 }
 
-function wireEditAutoProfit(originalResult) {
+function wireEditAutoProfit(_originalResult) {
   const resultSelect = document.getElementById('edit-result');
   const stakeBet365 = document.getElementById('edit-stake-bet365');
   const oddBet365 = document.getElementById('edit-odd-bet365');
   const stakePolyUsd = document.getElementById('edit-stake-poly-usd');
   const oddPoly = document.getElementById('edit-odd-poly');
   const exchangeRate = document.getElementById('edit-exchange-rate');
-  const profitInput = document.getElementById('edit-profit');
   const autoProfitInfo = document.getElementById('edit-auto-profit-info');
 
+  // Show a non-destructive suggestion instead of overwriting the user's profit value.
+  // The user can click the button to apply the calculated profit if they agree.
   function updateEditAutoProfit() {
+    if (!autoProfitInfo) return;
     const result = resultSelect?.value;
-    if (result === 'pending') {
-      if (autoProfitInfo) autoProfitInfo.style.display = 'none';
-      return;
-    }
+    if (result === 'pending') { autoProfitInfo.style.display = 'none'; return; }
     const p = computeProfit(
       stakeBet365?.value, oddBet365?.value,
       stakePolyUsd?.value, oddPoly?.value,
       exchangeRate?.value, result
     );
-    if (p !== null && autoProfitInfo) {
-      profitInput.value = p.toFixed(2);
-      const label = result === 'void' ? 'Anulado - lucro zerado' :
-        `Lucro calculado: ${formatBRL(p)} (${result === 'bet365_won' ? 'Bet365 ganhou' : 'Poly ganhou'})`;
-      autoProfitInfo.textContent = label;
-      autoProfitInfo.style.display = 'block';
-      autoProfitInfo.style.color = p >= 0 ? 'var(--success)' : 'var(--danger)';
-    }
+    if (p === null) { autoProfitInfo.style.display = 'none'; return; }
+    const label = result === 'void'
+      ? 'Sugestão: lucro 0 (anulado)'
+      : `Sugestão: ${formatBRL(p)} (${result === 'bet365_won' ? 'Bet365 ganhou' : 'Poly ganhou'})`;
+    autoProfitInfo.innerHTML = `
+      <span style="color:${p >= 0 ? 'var(--success)' : 'var(--danger)'}">${label}</span>
+      <button type="button" class="btn btn-ghost btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px"
+        onclick="document.getElementById('edit-profit').value='${p.toFixed(2)}'">Aplicar</button>
+    `;
+    autoProfitInfo.style.display = 'block';
   }
 
-  // Only auto-calc on result CHANGE (not on initial load)
-  const handler = () => {
-    if (resultSelect?.value !== originalResult) {
-      updateEditAutoProfit();
-    }
-  };
-  resultSelect?.addEventListener('change', handler);
-
-  // Also recalc if stakes/odds change while result is not pending
+  resultSelect?.addEventListener('change', updateEditAutoProfit);
   [stakeBet365, oddBet365, stakePolyUsd, oddPoly, exchangeRate].forEach(el => {
     el?.addEventListener('input', () => {
       if (resultSelect?.value !== 'pending') updateEditAutoProfit();
@@ -1174,8 +1311,21 @@ function closeEditModal() {
 document.getElementById('edit-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const id = document.getElementById('edit-id').value;
-  const checkedBoxes = document.querySelectorAll('#edit-accounts-list input:checked');
+  const checkedBoxes = document.querySelectorAll('#edit-accounts-list input[name="edit-accounts"]:checked');
   const account_ids = Array.from(checkedBoxes).map(cb => Number(cb.value));
+
+  const useCustomStakes = document.getElementById('edit-custom-stakes-toggle')?.checked;
+  let account_stakes;
+  if (useCustomStakes) {
+    account_stakes = [];
+    for (const cb of checkedBoxes) {
+      const accId = Number(cb.value);
+      const inp = document.querySelector(`#edit-accounts-list input.per-account-stake[data-account-id="${accId}"]`);
+      const raw = inp?.value;
+      const stake = raw !== '' && raw != null ? parseFloat(raw) : null;
+      account_stakes.push({ account_id: accId, stake });
+    }
+  }
 
   const body = {
     type: document.getElementById('edit-type').value,
@@ -1189,9 +1339,10 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     exchange_rate: parseFloat(document.getElementById('edit-exchange-rate').value) || 5.0,
     profit: parseFloat(document.getElementById('edit-profit').value) || 0,
     notes: document.getElementById('edit-notes').value,
-    account_ids,
     tags: getTagsFromInput('edit-tags'),
   };
+  if (account_stakes) body.account_stakes = account_stakes;
+  else body.account_ids = account_ids;
 
   try {
     await api(`/api/operations/${id}`, { method: 'PUT', body });
@@ -1220,6 +1371,10 @@ async function renderSettings() {
     const pref = await api('/api/ranking/me');
     showInRanking = !!pref.show_in_ranking;
   } catch (_) {}
+
+  // Fetch Polymarket wallet/notification prefs
+  let polyPrefs = { poly_wallet_address: '', notify_fill_order: false, notify_fill_limit_order: false, notify_redeem: false };
+  try { polyPrefs = await api('/api/settings/poly'); } catch (_) {}
 
   const mc = document.getElementById('main-content');
   mc.innerHTML = `
@@ -1271,6 +1426,38 @@ async function renderSettings() {
       <p style="color:var(--text-muted);font-size:12px;margin-top:6px">
         Quando desativado, seu perfil n\u00E3o aparecer\u00E1 na p\u00E1gina de Ranking.
       </p>
+    </div>
+
+    <!-- Polymarket Wallet + Notifications -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:4px">Wallet Polymarket</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Preencha sua wallet para receber notifica\u00E7\u00F5es da sua atividade no Polymarket.
+      </p>
+      <div class="form-group" style="margin-bottom:16px">
+        <label class="form-label">Endere\u00E7o da Wallet</label>
+        <input type="text" class="form-input" id="setting-poly-wallet"
+          placeholder="0x..."
+          value="${escapeHtml(polyPrefs.poly_wallet_address || '')}">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px">
+          <input type="checkbox" id="setting-notify-fill" ${polyPrefs.notify_fill_order ? 'checked' : ''}
+            style="width:18px;height:18px;accent-color:var(--primary);cursor:pointer">
+          Notificar fill order (ordem executada no mercado)
+        </label>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px">
+          <input type="checkbox" id="setting-notify-fill-limit" ${polyPrefs.notify_fill_limit_order ? 'checked' : ''}
+            style="width:18px;height:18px;accent-color:var(--primary);cursor:pointer">
+          Notificar fill limit order (ordem limit executada)
+        </label>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px">
+          <input type="checkbox" id="setting-notify-redeem" ${polyPrefs.notify_redeem ? 'checked' : ''}
+            style="width:18px;height:18px;accent-color:var(--primary);cursor:pointer">
+          Notificar redeem dispon\u00EDvel (aposta vencedora pronta para sacar)
+        </label>
+      </div>
+      <button class="btn btn-primary" onclick="savePolySettings()">Salvar prefer\u00EAncias</button>
     </div>
 
     <!-- Wallet import/export -->
@@ -1342,6 +1529,19 @@ async function toggleRankingVisibility(checked) {
   try {
     await api('/api/ranking/me', { method: 'PUT', body: { show_in_ranking: checked } });
     toast(checked ? 'Seu lucro agora aparece no ranking' : 'Seu lucro foi ocultado do ranking');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function savePolySettings() {
+  const body = {
+    poly_wallet_address: document.getElementById('setting-poly-wallet').value.trim(),
+    notify_fill_order: document.getElementById('setting-notify-fill').checked,
+    notify_fill_limit_order: document.getElementById('setting-notify-fill-limit').checked,
+    notify_redeem: document.getElementById('setting-notify-redeem').checked,
+  };
+  try {
+    await api('/api/settings/poly', { method: 'PUT', body });
+    toast('Prefer\u00EAncias da Polymarket salvas!');
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -2555,7 +2755,7 @@ function calcRenderHistory() {
   if (!container) return;
   const history = calcGetHistory();
   if (!history.length) {
-    container.innerHTML = `<div style="color:var(--text3);font-size:12px;padding:8px 0;text-align:center">Nenhum c\u00E1lculo salvo. Surebets v\u00E1lidas s\u00E3o salvas automaticamente.</div>`;
+    container.innerHTML = `<div style="color:var(--text3);font-size:12px;padding:8px 0;text-align:center">Nenhum c\u00E1lculo salvo. Use o bot\u00E3o \u201CSalvar no hist\u00F3rico\u201D para guardar um c\u00E1lculo.</div>`;
     return;
   }
   container.innerHTML = history.map((entry, idx) => {
@@ -2634,17 +2834,24 @@ function calcRestoreState() {
   } catch (_) { return false; }
 }
 
-// Auto-save on every state change (wrap handlers)
+// Persist current state on every change (does NOT save to history — that's manual).
 const _origCalcCompute = calcCompute;
-let _calcHistoryDebounce = null;
 calcCompute = function() {
   _origCalcCompute();
   calcSaveState();
-  // Debounce history save: only saves 2s after the last compute, so rapid typing
-  // creates a single history entry instead of one per keystroke.
-  clearTimeout(_calcHistoryDebounce);
-  _calcHistoryDebounce = setTimeout(() => { calcSaveToHistory(); }, 2000);
 };
+
+function calcManualSaveToHistory() {
+  if (!calcResult || !calcResult.isSurebet) {
+    toast('Nada para salvar: insira uma surebet v\u00E1lida primeiro', 'error');
+    return;
+  }
+  const before = calcGetHistory().length;
+  calcSaveToHistory();
+  const after = calcGetHistory().length;
+  if (after > before) toast('C\u00E1lculo salvo no hist\u00F3rico', 'success');
+  else toast('Esse c\u00E1lculo j\u00E1 est\u00E1 no hist\u00F3rico', 'info');
+}
 
 // -- Load shared odds from URL --
 function calcLoadFromURL() {
@@ -2755,6 +2962,7 @@ function renderCalculator() {
     <div class="c-actions">
       <button class="c-btn c-primary" onclick="calcShareOdds()" id="calc-share-btn">\uD83D\uDD17 Share odds</button>
       <button class="c-btn c-primary" onclick="calcImportToOperation()" id="calc-import-btn">\uD83D\uDCE5 Importar p/ Opera\u00E7\u00E3o</button>
+      <button class="c-btn" onclick="calcManualSaveToHistory()" id="calc-save-history-btn">\uD83D\uDCBE Salvar no hist\u00F3rico</button>
       <button class="c-btn" onclick="calcResetAll()">Reset all</button>
     </div>
 
@@ -3010,6 +3218,367 @@ async function bgPoll() {
     }
   } catch (_) {}
   pollInProgress = false;
+
+  // Also refresh notifications badge in background
+  refreshNotificationsBadge();
+}
+
+// ===== NOTIFICATIONS =====
+
+let notifUnseenCount = 0;
+let notifTab = 'general'; // 'general' | 'system'
+
+function updateNotifBadge() {
+  const badge = document.getElementById('notif-badge');
+  if (!badge) return;
+  if (notifUnseenCount > 0) {
+    badge.textContent = notifUnseenCount > 99 ? '99+' : notifUnseenCount;
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+async function refreshNotificationsBadge() {
+  if (!currentUser) return;
+  try {
+    const data = await api('/api/notifications?limit=1');
+    notifUnseenCount = (data.general_unseen || 0) + (data.system_unseen || 0);
+    updateNotifBadge();
+    return data;
+  } catch (_) { return null; }
+}
+
+async function renderNotifications() {
+  const mc = document.getElementById('main-content');
+  mc.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Notifica\u00E7\u00F5es</h1>
+        <p class="page-description">Alertas da sua atividade e avisos do sistema</p>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="markAllNotifsSeen()">Marcar tudo como lido</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearNotifs()" style="color:var(--danger)">Limpar</button>
+      </div>
+    </div>
+
+    <div class="watcher-tabs">
+      <button class="watcher-tab ${notifTab === 'general' ? 'active' : ''}" onclick="switchNotifTab('general')">
+        Geral <span class="notif-tab-count" id="notif-count-general" style="display:none"></span>
+      </button>
+      <button class="watcher-tab ${notifTab === 'system' ? 'active' : ''}" onclick="switchNotifTab('system')">
+        Sistema <span class="notif-tab-count" id="notif-count-system" style="display:none"></span>
+      </button>
+    </div>
+
+    <div id="notif-content">
+      <div style="text-align:center;color:var(--text-muted);padding:40px">Carregando...</div>
+    </div>
+  `;
+  switchNotifTab(notifTab);
+}
+
+async function switchNotifTab(tab) {
+  notifTab = tab;
+  document.querySelectorAll('.watcher-tab').forEach(el => {
+    el.classList.toggle('active', el.textContent.trim().toLowerCase().startsWith(tab === 'general' ? 'geral' : 'sistema'));
+  });
+  await loadNotifList();
+}
+
+async function loadNotifList() {
+  const container = document.getElementById('notif-content');
+  if (!container) return;
+  try {
+    const data = await api(`/api/notifications?category=${notifTab}&limit=100`);
+
+    // Update per-tab counters
+    const genEl = document.getElementById('notif-count-general');
+    const sysEl = document.getElementById('notif-count-system');
+    if (genEl) { if (data.general_unseen > 0) { genEl.textContent = data.general_unseen; genEl.style.display = ''; } else genEl.style.display = 'none'; }
+    if (sysEl) { if (data.system_unseen > 0) { sysEl.textContent = data.system_unseen; sysEl.style.display = ''; } else sysEl.style.display = 'none'; }
+
+    const list = data.notifications || [];
+    if (!list.length) {
+      container.innerHTML = `<div style="text-align:center;color:var(--text-muted);padding:40px;font-size:14px">
+        Nenhuma notifica\u00E7\u00E3o${notifTab === 'general' ? ' geral' : ' de sistema'}.
+      </div>`;
+    } else {
+      container.innerHTML = list.map(n => renderNotifItem(n)).join('');
+    }
+
+    // Mark this tab's unseen notifications as seen
+    const unseenIds = list.filter(n => !n.seen).map(n => n.id);
+    if (unseenIds.length) {
+      try {
+        await api('/api/notifications/seen', { method: 'POST', body: { ids: unseenIds } });
+      } catch (_) {}
+      refreshNotificationsBadge();
+    }
+  } catch (err) {
+    container.innerHTML = `<div style="color:var(--danger);padding:20px">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderNotifItem(n) {
+  const iconMap = {
+    fill_order: '\u{1F4B0}',
+    fill_limit_order: '\u{1F3AF}',
+    redeem: '\u{1F3C6}',
+    system_update: '\u{1F527}',
+  };
+  const icon = iconMap[n.type] || '\u{1F4E2}';
+  const date = new Date(n.created_at + (n.created_at.includes('Z') ? '' : 'Z'));
+  const dateStr = date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' +
+    date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return `
+    <div class="alert-card ${n.seen ? '' : 'unseen'}" style="display:flex;gap:12px;padding:14px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:${n.seen ? 'transparent' : 'var(--bg-hover, rgba(255,255,255,0.03))'}">
+      <div style="font-size:24px">${icon}</div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+          <strong style="font-size:14px">${escapeHtml(n.title)}</strong>
+          <span style="color:var(--text-muted);font-size:11px;white-space:nowrap">${dateStr}</span>
+        </div>
+        ${n.body ? `<div style="color:var(--text-muted);font-size:13px;margin-top:4px">${escapeHtml(n.body)}</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function markAllNotifsSeen() {
+  try {
+    await api('/api/notifications/seen', { method: 'POST', body: { ids: 'all' } });
+    await refreshNotificationsBadge();
+    loadNotifList();
+    toast('Notifica\u00E7\u00F5es marcadas como lidas');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function clearNotifs() {
+  if (!confirm(`Limpar todas as notifica\u00E7\u00F5es da aba ${notifTab === 'general' ? 'Geral' : 'Sistema'}?`)) return;
+  try {
+    await api(`/api/notifications?category=${notifTab}`, { method: 'DELETE' });
+    await refreshNotificationsBadge();
+    loadNotifList();
+    toast('Notificações limpas');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ===== ADMIN PANEL =====
+
+let adminTab = 'notify'; // 'notify' | 'operations' | 'audit'
+let adminUsers = [];
+
+async function renderAdmin() {
+  if (!currentUser?.is_admin) {
+    const mc = document.getElementById('main-content');
+    mc.innerHTML = `<div style="padding:40px;text-align:center;color:var(--danger)">Acesso restrito.</div>`;
+    return;
+  }
+  try { adminUsers = await api('/api/admin/users'); } catch (err) { adminUsers = []; }
+
+  const mc = document.getElementById('main-content');
+  mc.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Admin</h1>
+        <p class="page-description">Painel administrativo — ações ficam registradas no audit log</p>
+      </div>
+    </div>
+
+    <div class="watcher-tabs">
+      <button class="watcher-tab ${adminTab === 'notify' ? 'active' : ''}" onclick="switchAdminTab('notify')">Enviar notificação</button>
+      <button class="watcher-tab ${adminTab === 'operations' ? 'active' : ''}" onclick="switchAdminTab('operations')">Operações</button>
+      <button class="watcher-tab ${adminTab === 'audit' ? 'active' : ''}" onclick="switchAdminTab('audit')">Audit log</button>
+    </div>
+
+    <div id="admin-content"></div>
+  `;
+  switchAdminTab(adminTab);
+}
+
+function switchAdminTab(tab) {
+  adminTab = tab;
+  document.querySelectorAll('.watcher-tab').forEach(el => {
+    const txt = el.textContent.trim().toLowerCase();
+    el.classList.toggle('active',
+      (tab === 'notify' && txt.startsWith('enviar')) ||
+      (tab === 'operations' && txt.startsWith('operações')) ||
+      (tab === 'audit' && txt.startsWith('audit'))
+    );
+  });
+  if (tab === 'notify') renderAdminNotify();
+  else if (tab === 'operations') renderAdminOperations();
+  else renderAdminAudit();
+}
+
+function renderAdminNotify() {
+  const container = document.getElementById('admin-content');
+  if (!container) return;
+  const userOpts = adminUsers.map(u =>
+    `<option value="${u.id}">${escapeHtml(u.display_name)} (${escapeHtml(u.username)})</option>`
+  ).join('');
+  container.innerHTML = `
+    <div class="chart-container" style="max-width:640px">
+      <h3 class="chart-title" style="margin-bottom:16px">Enviar notificação de sistema</h3>
+      <div class="form-group">
+        <label class="form-label">Destinatário</label>
+        <select class="form-select" id="admin-notif-target">
+          <option value="">Todos os usuários</option>
+          ${userOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Título</label>
+        <input type="text" class="form-input" id="admin-notif-title" maxlength="200" placeholder="Ex: Nova atualização disponível">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Corpo (opcional)</label>
+        <textarea class="form-input" id="admin-notif-body" maxlength="2000" rows="4" placeholder="Detalhes da mensagem..."></textarea>
+      </div>
+      <button class="btn btn-primary" onclick="submitAdminNotif()">Enviar</button>
+    </div>
+  `;
+}
+
+async function submitAdminNotif() {
+  const target = document.getElementById('admin-notif-target').value;
+  const title = document.getElementById('admin-notif-title').value.trim();
+  const body = document.getElementById('admin-notif-body').value.trim();
+  if (!title) { toast('Título é obrigatório', 'error'); return; }
+  try {
+    const r = await api('/api/admin/notifications', {
+      method: 'POST',
+      body: { title, body, user_id: target || null },
+    });
+    toast(`Notificação enviada para ${r.inserted} usuário(s)`);
+    document.getElementById('admin-notif-title').value = '';
+    document.getElementById('admin-notif-body').value = '';
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function renderAdminOperations() {
+  const container = document.getElementById('admin-content');
+  if (!container) return;
+  const userOpts = adminUsers.map(u =>
+    `<option value="${u.id}">${escapeHtml(u.display_name)} (${escapeHtml(u.username)})</option>`
+  ).join('');
+  container.innerHTML = `
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+      <label style="font-size:13px;color:var(--text-muted)">Usuário:</label>
+      <select class="form-select" id="admin-op-user" onchange="loadAdminOps()" style="min-width:220px">
+        <option value="">Todos</option>
+        ${userOpts}
+      </select>
+      <button class="btn btn-ghost btn-sm" onclick="loadAdminOps()">⟳ Recarregar</button>
+    </div>
+    <div id="admin-ops-list"><div style="padding:20px;color:var(--text-muted)">Carregando...</div></div>
+  `;
+  loadAdminOps();
+}
+
+async function loadAdminOps() {
+  const userId = document.getElementById('admin-op-user')?.value || '';
+  const listEl = document.getElementById('admin-ops-list');
+  if (!listEl) return;
+  try {
+    const q = userId ? `?user_id=${userId}&limit=200` : '?limit=200';
+    const { operations, total } = await api(`/api/admin/operations${q}`);
+    if (!operations.length) {
+      listEl.innerHTML = `<div style="padding:20px;color:var(--text-muted)">Nenhuma operação encontrada.</div>`;
+      return;
+    }
+    listEl.innerHTML = `
+      <div style="color:var(--text-muted);font-size:12px;margin-bottom:8px">${total} operação(ões)</div>
+      <table class="table">
+        <thead><tr>
+          <th>Data</th><th>Usuário</th><th>Tipo</th><th>Jogo</th><th>Resultado</th><th>Lucro</th><th></th>
+        </tr></thead>
+        <tbody>
+          ${operations.map(op => `
+            <tr>
+              <td>${new Date(op.created_at + (op.created_at.includes('Z') ? '' : 'Z')).toLocaleDateString('pt-BR')}</td>
+              <td>${escapeHtml(op.user_display_name || '')}</td>
+              <td>${escapeHtml(op.type)}</td>
+              <td>${escapeHtml(op.game || '')}</td>
+              <td>${escapeHtml(op.result || '')}</td>
+              <td style="color:${op.profit >= 0 ? 'var(--success)' : 'var(--danger)'}">${formatBRL(op.profit || 0)}</td>
+              <td style="white-space:nowrap">
+                <button class="btn btn-ghost btn-sm" onclick="openAdminEditOp(${op.id})">Editar</button>
+                <button class="btn btn-ghost btn-sm" onclick="adminDeleteOp(${op.id})" style="color:var(--danger)">Excluir</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (err) {
+    listEl.innerHTML = `<div style="color:var(--danger);padding:20px">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function openAdminEditOp(id) {
+  try {
+    const { operations } = await api(`/api/admin/operations?limit=500`);
+    const op = operations.find(o => o.id === id);
+    if (!op) { toast('Operação não encontrada', 'error'); return; }
+    const newProfit = prompt(`Lucro atual: ${op.profit}\nNovo lucro (R$):`, op.profit);
+    if (newProfit === null) return;
+    const parsed = parseFloat(newProfit);
+    if (isNaN(parsed)) { toast('Valor inválido', 'error'); return; }
+    await api(`/api/admin/operations/${id}`, { method: 'PUT', body: { profit: parsed } });
+    toast('Operação atualizada');
+    loadAdminOps();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function adminDeleteOp(id) {
+  if (!confirm('Excluir esta operação? A ação será registrada no audit log.')) return;
+  try {
+    await api(`/api/admin/operations/${id}`, { method: 'DELETE' });
+    toast('Operação excluída');
+    loadAdminOps();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function renderAdminAudit() {
+  const container = document.getElementById('admin-content');
+  if (!container) return;
+  try {
+    const { actions } = await api('/api/admin/actions?limit=200');
+    if (!actions.length) {
+      container.innerHTML = `<div style="padding:20px;color:var(--text-muted)">Nenhuma ação registrada ainda.</div>`;
+      return;
+    }
+    container.innerHTML = `
+      <table class="table">
+        <thead><tr>
+          <th>Quando</th><th>Admin</th><th>Ação</th><th>Alvo</th><th>IP</th><th>Detalhes</th>
+        </tr></thead>
+        <tbody>
+          ${actions.map(a => {
+            const when = new Date(a.created_at + (a.created_at.includes('Z') ? '' : 'Z'));
+            const whenStr = when.toLocaleDateString('pt-BR') + ' ' + when.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+            const target = a.target_display_name
+              ? `${escapeHtml(a.target_display_name)}${a.target_operation_id ? ` (op #${a.target_operation_id})` : ''}`
+              : (a.target_operation_id ? `op #${a.target_operation_id}` : '—');
+            const detStr = a.details ? JSON.stringify(a.details) : '';
+            return `<tr>
+              <td style="white-space:nowrap">${whenStr}</td>
+              <td>${escapeHtml(a.admin_display_name || '')}</td>
+              <td>${escapeHtml(a.action)}</td>
+              <td>${target}</td>
+              <td style="font-family:monospace;font-size:11px">${escapeHtml(a.ip || '')}</td>
+              <td style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(detStr)}">${escapeHtml(detStr.slice(0,80))}${detStr.length > 80 ? '…' : ''}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (err) {
+    container.innerHTML = `<div style="color:var(--danger);padding:20px">${escapeHtml(err.message)}</div>`;
+  }
 }
 
 function startBgPolling() {

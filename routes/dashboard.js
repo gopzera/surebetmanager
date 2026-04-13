@@ -104,8 +104,11 @@ router.get('/stats', async (req, res) => {
         a.max_stake_aumentada,
         COALESCE(SUM(
           CASE WHEN o.odd_bet365 >= 2.0 AND DATE(o.created_at) >= ?
-          THEN o.stake_bet365 * 1.0 / (
-            SELECT COUNT(*) FROM operation_accounts oa2 WHERE oa2.operation_id = o.id
+          THEN COALESCE(
+            oa.stake_bet365,
+            o.stake_bet365 * 1.0 / (
+              SELECT COUNT(*) FROM operation_accounts oa2 WHERE oa2.operation_id = o.id
+            )
           )
           ELSE 0 END
         ), 0) as volume
@@ -140,7 +143,7 @@ router.get('/stats', async (req, res) => {
 
     for (const op of recentOps) {
       op.accounts = await db.all(
-        `SELECT a.id, a.name FROM operation_accounts oa
+        `SELECT a.id, a.name, oa.stake_bet365 as stake FROM operation_accounts oa
          JOIN accounts a ON a.id = oa.account_id
          WHERE oa.operation_id = ?`,
         op.id
