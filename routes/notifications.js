@@ -1,10 +1,17 @@
 const express = require('express');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
 const POLY_DATA_API = 'https://data-api.polymarket.com';
+
+// Limit outbound Polymarket hits per user to protect the server IP from being flagged.
+const polyPollLimiter = rateLimit({
+  name: 'poly-poll', windowMs: 60 * 1000, max: 6, keyBy: 'user',
+  message: 'Aguarde antes de fazer novo poll da Polymarket.',
+});
 
 // ===== LIST / SEEN / CLEAR (auth required) =====
 
@@ -165,7 +172,7 @@ async function pollUserPolyActivity(user) {
 }
 
 // User-triggered poll (auth)
-router.post('/poly-poll', auth, async (req, res) => {
+router.post('/poly-poll', auth, polyPollLimiter, async (req, res) => {
   try {
     const user = await db.get(
       `SELECT id, poly_wallet_address, notify_fill_order, notify_fill_limit_order,

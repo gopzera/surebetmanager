@@ -234,6 +234,10 @@ const db = {
         try {
           await client.execute(`ALTER TABLE operation_accounts ADD COLUMN stake_bet365 REAL`);
         } catch (_) {}
+        // Migration: add hidden flag to accounts (soft-delete — preserves FK to historical ops)
+        try {
+          await client.execute(`ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`);
+        } catch (_) {}
         // Migration: add Polymarket wallet + notification prefs to users
         for (const col of [
           'poly_wallet_address TEXT',

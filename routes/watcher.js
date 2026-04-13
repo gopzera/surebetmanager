@@ -6,6 +6,12 @@ const router = express.Router();
 
 const POLY_DATA_API = 'https://data-api.polymarket.com';
 
+const { rateLimit } = require('../middleware/rateLimit');
+const watcherPollLimiter = rateLimit({
+  name: 'watcher-poll', windowMs: 60 * 1000, max: 6, keyBy: 'user',
+  message: 'Aguarde antes de fazer novo poll do watcher.',
+});
+
 // ===== WATCHED WALLETS CRUD (auth required) =====
 
 router.get('/wallets', auth, async (req, res) => {
@@ -267,7 +273,7 @@ async function pollWallet(wallet) {
 // ===== POLL ENDPOINTS =====
 
 // User-triggered poll (auth required)
-router.post('/poll', auth, async (req, res) => {
+router.post('/poll', auth, watcherPollLimiter, async (req, res) => {
   try {
     const wallets = await db.all(
       'SELECT * FROM watched_wallets WHERE user_id = ? AND active = 1',

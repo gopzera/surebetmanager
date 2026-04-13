@@ -1656,9 +1656,10 @@ function renderAccountsList() {
       </div>
       <div class="account-card-actions">
         <button class="btn btn-ghost btn-sm" onclick="editAccount(${acc.id})">Editar</button>
-        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteAccount(${acc.id})">
-          ${acc.active ? 'Remover' : 'Reativar'}
-        </button>
+        ${acc.active
+          ? `<button class="btn btn-ghost btn-sm" style="color:var(--warning, #ffa726)" onclick="toggleAccountActive(${acc.id}, false)">Desativar</button>`
+          : `<button class="btn btn-ghost btn-sm" onclick="toggleAccountActive(${acc.id}, true)">Reativar</button>`}
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteAccount(${acc.id})">Remover</button>
       </div>
     </div>
   `).join('');
@@ -1683,25 +1684,22 @@ async function editAccount(id) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+async function toggleAccountActive(id, active) {
+  try {
+    await api(`/api/accounts/${id}`, { method: 'PUT', body: { active } });
+    toast(active ? 'Conta reativada!' : 'Conta desativada');
+    await loadAccounts();
+    renderAccountsList();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 async function deleteAccount(id) {
   const acc = userAccounts.find(a => a.id === id);
   if (!acc) return;
-
-  if (!acc.active) {
-    // Reactivate
-    try {
-      await api(`/api/accounts/${id}`, { method: 'PUT', body: { active: true } });
-      toast('Conta reativada!');
-      await loadAccounts();
-      renderAccountsList();
-    } catch (err) { toast(err.message, 'error'); }
-    return;
-  }
-
-  if (!confirm(`Remover a conta "${acc.name}"? Se já tiver operações vinculadas, será desativada.`)) return;
+  if (!confirm(`Remover a conta "${acc.name}"?\n\nO histórico de operações vinculadas será mantido, mas a conta deixará de aparecer nas listagens.`)) return;
   try {
     await api(`/api/accounts/${id}`, { method: 'DELETE' });
-    toast('Conta removida!');
+    toast('Conta removida');
     await loadAccounts();
     renderAccountsList();
   } catch (err) { toast(err.message, 'error'); }
@@ -2598,37 +2596,21 @@ function calcRenderSimulator() {
   // Breakeven: at what margin does profit = 0? margin = 1.0
   // Find how much one odd can drop before margin hits 1
   const effArr = r.effArr;
-  const breakevens = effArr.map((eff, i) => {
-    // margin = sum(1/eff_j) = 1 at breakeven
-    // 1/eff_i_new = 1 - sum(1/eff_j for j != i)
+  const breakevens = effArr.map((_, i) => {
     const otherSum = effArr.reduce((s, o, j) => j === i ? s : s + 1/o, 0);
     const neededInv = 1 - otherSum;
-    if (neededInv <= 0) return null; // always profitable regardless
-    return 1 / neededInv; // breakeven effective odd
+    if (neededInv <= 0) return null;
+    return 1 / neededInv;
   });
 
-  // Simulate different total stakes
   const currentTotal = r.totalUSD;
-  const simStakes = [50, 100, 250, 500, 1000, 2500, 5000].filter(s => s !== Math.round(currentTotal));
-  simStakes.push(Math.round(currentTotal));
-  simStakes.sort((a, b) => a - b);
 
-  const simRows = simStakes.map(total => {
-    const profit = total * (r.roi / 100);
-    const profitBRL = profit * fx;
-    const isCurrent = Math.abs(total - currentTotal) < 1;
-    return { total, profit, profitBRL, isCurrent };
-  });
-
-  // Breakeven display
   const beRows = breakevens.map((be, i) => {
     if (!be) return null;
-    const row = calcRows[i];
-    const rawOdd = parseFloat(row.odds) || 0;
     const currentEff = effArr[i];
     const drop = currentEff - be;
     const dropPct = currentEff > 1 ? (drop / (currentEff - 1) * 100) : 0;
-    return { idx: i, rawOdd, currentEff, breakeven: be, drop, dropPct };
+    return { idx: i, currentEff, breakeven: be, drop, dropPct };
   }).filter(Boolean);
 
   container.innerHTML = `
@@ -2639,52 +2621,30 @@ function calcRenderSimulator() {
     ">
       <h3 style="margin:0 0 12px;font-size:14px;font-weight:600;opacity:.85">\uD83D\uDD2C Simulador de Cen\u00E1rios</h3>
 
-      <div style="display:flex;gap:24px;flex-wrap:wrap">
-        <div style="flex:1;min-width:220px">
-          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">Lucro por Stake Total</div>
-          <table style="width:100%;font-size:12px;border-collapse:collapse">
-            <thead><tr style="color:var(--text3)">
-              <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">Stake (USD)</th>
-              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Lucro (USD)</th>
-              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Lucro (BRL)</th>
-            </tr></thead>
-            <tbody>
-              ${simRows.map(s => `
-                <tr style="${s.isCurrent ? 'font-weight:700;color:var(--green-bright);' : ''}">
-                  <td style="padding:3px 8px;font-family:var(--mono)">$${s.total.toLocaleString()}${s.isCurrent ? ' \u25C0' : ''}</td>
-                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:var(--green-bright)">$${s.profit.toFixed(2)}</td>
-                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:var(--green-bright)">R$${s.profitBRL.toFixed(2)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-
-        <div style="flex:1;min-width:220px">
-          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">Breakeven por Linha</div>
-          <table style="width:100%;font-size:12px;border-collapse:collapse">
-            <thead><tr style="color:var(--text3)">
-              <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">#</th>
-              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Odd Atual</th>
-              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Odd Breakeven</th>
-              <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Margem</th>
-            </tr></thead>
-            <tbody>
-              ${beRows.map(b => `
-                <tr>
-                  <td style="padding:3px 8px;font-family:var(--mono)">${b.idx + 1}</td>
-                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono)">${b.currentEff.toFixed(3)}</td>
-                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:var(--yellow)">${b.breakeven.toFixed(3)}</td>
-                  <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:${b.dropPct > 10 ? 'var(--green-bright)' : 'var(--red)'}">
-                    ${b.dropPct.toFixed(1)}%
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-          <div style="font-size:10px;color:var(--text3);margin-top:6px">
-            Margem = quanto a odd efetiva pode cair antes de perder a surebet
-          </div>
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">Breakeven por Linha</div>
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead><tr style="color:var(--text3)">
+            <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">#</th>
+            <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Odd Atual</th>
+            <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Odd Breakeven</th>
+            <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Margem</th>
+          </tr></thead>
+          <tbody>
+            ${beRows.map(b => `
+              <tr>
+                <td style="padding:3px 8px;font-family:var(--mono)">${b.idx + 1}</td>
+                <td style="padding:3px 8px;text-align:right;font-family:var(--mono)">${b.currentEff.toFixed(3)}</td>
+                <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:var(--yellow)">${b.breakeven.toFixed(3)}</td>
+                <td style="padding:3px 8px;text-align:right;font-family:var(--mono);color:${b.dropPct > 10 ? 'var(--green-bright)' : 'var(--red)'}">
+                  ${b.dropPct.toFixed(1)}%
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        <div style="font-size:10px;color:var(--text3);margin-top:6px">
+          Margem = quanto a odd efetiva pode cair antes de perder a surebet
         </div>
       </div>
 

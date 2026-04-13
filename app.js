@@ -1,11 +1,20 @@
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const path = require('path');
+const { rateLimit } = require('./middleware/rateLimit');
 
 const app = express();
 
-app.use(express.json());
+// Behind Vercel/Nginx — trust first hop so x-forwarded-for is honored.
+app.set('trust proxy', 1);
+
+app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
+
+// Light global throttle — catches broad scraping/abuse without hitting normal users.
+app.use('/api', rateLimit({
+  name: 'global-api', windowMs: 60 * 1000, max: 300,
+}));
 
 // API routes
 app.use('/api/auth', require('./routes/auth'));

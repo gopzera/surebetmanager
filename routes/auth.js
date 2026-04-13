@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
@@ -13,7 +14,20 @@ const cookieOpts = {
   sameSite: 'lax',
 };
 
-router.post('/register', async (req, res) => {
+// Brute-force protection: tight window on credential endpoints.
+const loginLimiter = rateLimit({
+  name: 'auth-login', windowMs: 5 * 60 * 1000, max: 10,
+  message: 'Muitas tentativas de login. Aguarde alguns minutos antes de tentar novamente.',
+});
+const registerLimiter = rateLimit({
+  name: 'auth-register', windowMs: 60 * 60 * 1000, max: 5,
+  message: 'Muitas tentativas de registro. Tente novamente mais tarde.',
+});
+const discordLimiter = rateLimit({
+  name: 'auth-discord', windowMs: 60 * 1000, max: 20,
+});
+
+router.post('/register', registerLimiter, async (req, res) => {
   const { username, password, display_name } = req.body;
   if (!username || !password || !display_name) {
     return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
@@ -40,7 +54,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Usuário e senha são obrigatórios' });
@@ -98,7 +112,7 @@ function getDiscordRedirectUri(req) {
 
 // Redirect to Discord OAuth2
 // ?action=login (default) or ?action=link (requires auth cookie)
-router.get('/discord', (req, res) => {
+router.get('/discord', discordLimiter, (req, res) => {
   const clientId = process.env.DISCORD_CLIENT_ID;
   if (!clientId) return res.status(500).json({ error: 'Discord OAuth não configurado' });
 
@@ -113,7 +127,7 @@ router.get('/discord', (req, res) => {
 });
 
 // Discord OAuth2 callback
-router.get('/discord/callback', async (req, res) => {
+router.get('/discord/callback', discordLimiter, async (req, res) => {
   const { code, state } = req.query;
   if (!code) return res.redirect('/?discord_error=no_code');
 
