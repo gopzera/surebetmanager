@@ -3687,7 +3687,7 @@ function renderNotifItem(n) {
           <strong style="font-size:14px">${escapeHtml(n.title)}</strong>
           <span style="color:var(--text-muted);font-size:11px;white-space:nowrap">${dateStr}</span>
         </div>
-        ${n.body ? `<div style="color:var(--text-muted);font-size:13px;margin-top:4px">${escapeHtml(n.body)}</div>` : ''}
+        ${n.body ? `<div style="color:var(--text-muted);font-size:13px;margin-top:4px;white-space:pre-wrap">${escapeHtml(n.body)}</div>` : ''}
       </div>
     </div>
   `;
