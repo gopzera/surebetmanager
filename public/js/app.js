@@ -3219,7 +3219,9 @@ async function bgPoll() {
   } catch (_) {}
   pollInProgress = false;
 
-  // Also refresh notifications badge in background
+  // Poll user's own Polymarket wallet for fill/redeem notifications
+  try { await api('/api/notifications/poly-poll', { method: 'POST', body: {} }); } catch (_) {}
+  // Refresh notifications badge after polling
   refreshNotificationsBadge();
 }
 

@@ -24,7 +24,7 @@
     },
     {
       "path": "/api/notifications/cron-poly-poll",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }
