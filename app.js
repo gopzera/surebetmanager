@@ -2,12 +2,15 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const { rateLimit } = require('./middleware/rateLimit');
+const securityHeaders = require('./middleware/securityHeaders');
+const { csrfProtection } = require('./middleware/csrf');
 
 const app = express();
 
 // Behind Vercel/Nginx — trust first hop so x-forwarded-for is honored.
 app.set('trust proxy', 1);
 
+app.use(securityHeaders);
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
@@ -15,6 +18,9 @@ app.use(cookieParser());
 app.use('/api', rateLimit({
   name: 'global-api', windowMs: 60 * 1000, max: 300,
 }));
+
+// CSRF on all /api state-changing requests (exemptions declared in csrf.js).
+app.use('/api', csrfProtection);
 
 // API routes
 app.use('/api/auth', require('./routes/auth'));

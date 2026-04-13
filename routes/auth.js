@@ -1,18 +1,39 @@
+const crypto = require('crypto');
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
+const { invalidateSession } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
+const V = require('../utils/validate');
 
 const router = express.Router();
 
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30d, matches JWT expiry
+
 const cookieOpts = {
   httpOnly: true,
-  maxAge: 30 * 24 * 60 * 60 * 1000,
+  maxAge: SESSION_TTL_MS,
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'lax',
 };
+
+// Mints a JWT and persists a matching session row. The jti lets us revoke
+// individual sessions (logout, logout-all) without waiting for JWT expiry.
+async function issueSession(req, res, payload) {
+  const jti = crypto.randomBytes(16).toString('hex');
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+  const ua = (req.headers['user-agent'] || '').slice(0, 255);
+  const ip = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim().slice(0, 64);
+  await db.run(
+    'INSERT INTO sessions (jti, user_id, expires_at, user_agent, ip) VALUES (?, ?, ?, ?, ?)',
+    jti, payload.id, expiresAt, ua, ip
+  );
+  const token = jwt.sign({ ...payload, jti }, process.env.JWT_SECRET, { expiresIn: '30d' });
+  res.cookie('token', token, cookieOpts);
+  return token;
+}
 
 // Brute-force protection: tight window on credential endpoints.
 const loginLimiter = rateLimit({
@@ -27,11 +48,10 @@ const discordLimiter = rateLimit({
   name: 'auth-discord', windowMs: 60 * 1000, max: 20,
 });
 
-router.post('/register', registerLimiter, async (req, res) => {
-  const { username, password, display_name } = req.body;
-  if (!username || !password || !display_name) {
-    return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
-  }
+router.post('/register', registerLimiter, V.handle(async (req, res) => {
+  const username = V.username(req.body.username);
+  const password = V.password(req.body.password);
+  const display_name = V.str(req.body.display_name, { min: 1, max: 64, name: 'Nome' });
   try {
     const existing = await db.get('SELECT id FROM users WHERE username = ?', username);
     if (existing) {
@@ -42,23 +62,19 @@ router.post('/register', registerLimiter, async (req, res) => {
       'INSERT INTO users (username, password, display_name) VALUES (?, ?, ?)',
       username, hash, display_name
     );
-    const token = jwt.sign(
-      { id: result.lastInsertRowid, username, display_name },
-      process.env.JWT_SECRET, { expiresIn: '30d' }
-    );
-    res.cookie('token', token, cookieOpts);
+    await issueSession(req, res, { id: result.lastInsertRowid, username, display_name });
     res.json({ id: result.lastInsertRowid, username, display_name });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });
   }
-});
+}));
 
-router.post('/login', loginLimiter, async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Usuário e senha são obrigatórios' });
-  }
+router.post('/login', loginLimiter, V.handle(async (req, res) => {
+  // Login stays case-sensitive to preserve existing accounts registered
+  // before username normalization was added. Only the format is validated.
+  const username = V.str(req.body.username, { min: 1, max: 64, name: 'Usuário' });
+  const password = V.password(req.body.password);
   try {
     const user = await db.get('SELECT * FROM users WHERE username = ?', username);
     if (!user) {
@@ -68,21 +84,48 @@ router.post('/login', loginLimiter, async (req, res) => {
     if (!valid) {
       return res.status(401).json({ error: 'Credenciais inválidas' });
     }
-    const token = jwt.sign(
-      { id: user.id, username: user.username, display_name: user.display_name },
-      process.env.JWT_SECRET, { expiresIn: '30d' }
-    );
-    res.cookie('token', token, cookieOpts);
+    await issueSession(req, res, {
+      id: user.id, username: user.username, display_name: user.display_name,
+    });
     res.json({ id: user.id, username: user.username, display_name: user.display_name });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });
   }
-});
+}));
 
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
+  // Best-effort revoke: decode without requiring a valid session (user may
+  // be logging out because the session is already dead).
+  try {
+    const token = req.cookies?.token;
+    if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.jti) {
+        await db.run('UPDATE sessions SET revoked = 1 WHERE jti = ?', decoded.jti);
+        invalidateSession(decoded.jti);
+      }
+    }
+  } catch (_) { /* invalid/expired token — nothing to revoke */ }
   res.clearCookie('token');
   res.json({ ok: true });
+});
+
+// Revokes every session for the current user. Useful if the user suspects
+// their account was accessed from another device.
+router.post('/logout-all', auth, async (req, res) => {
+  try {
+    await db.run(
+      'UPDATE sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0',
+      req.user.id
+    );
+    if (req.user.jti) invalidateSession(req.user.jti);
+    res.clearCookie('token');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
 });
 
 router.get('/me', auth, async (req, res) => {
@@ -202,11 +245,9 @@ router.get('/discord/callback', discordLimiter, async (req, res) => {
 
       // Re-issue JWT with updated info
       const user = await db.get('SELECT * FROM users WHERE id = ?', userId);
-      const token = jwt.sign(
-        { id: user.id, username: user.username, display_name: user.display_name },
-        process.env.JWT_SECRET, { expiresIn: '30d' }
-      );
-      res.cookie('token', token, cookieOpts);
+      await issueSession(req, res, {
+        id: user.id, username: user.username, display_name: user.display_name,
+      });
       return res.redirect('/?discord_linked=1');
 
     } else {
@@ -230,11 +271,9 @@ router.get('/discord/callback', discordLimiter, async (req, res) => {
         );
       }
 
-      const token = jwt.sign(
-        { id: user.id, username: user.username, display_name: user.display_name },
-        process.env.JWT_SECRET, { expiresIn: '30d' }
-      );
-      res.cookie('token', token, cookieOpts);
+      await issueSession(req, res, {
+        id: user.id, username: user.username, display_name: user.display_name,
+      });
       return res.redirect('/?discord_login=1');
     }
   } catch (err) {

@@ -191,6 +191,20 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_giros_platform ON giros(platform_id);
   CREATE INDEX IF NOT EXISTS idx_giros_operation ON giros(operation_id);
   CREATE INDEX IF NOT EXISTS idx_giros_platforms_user ON giros_platforms(user_id);
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    jti TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    user_agent TEXT,
+    ip TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_revoked ON sessions(revoked);
 `;
 
 let initPromise = null;
