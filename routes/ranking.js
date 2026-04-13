@@ -45,7 +45,7 @@ router.get('/sortudos', async (req, res) => {
         COALESCE(SUM(g.quantity), 0) as total_quantity
       FROM users u
       LEFT JOIN giros g ON g.user_id = u.id
-      WHERE u.show_in_ranking = 1
+      WHERE u.show_in_giros_ranking = 1
       GROUP BY u.id
       HAVING total_giros > 0
       ORDER BY total_profit DESC`
@@ -60,8 +60,14 @@ router.get('/sortudos', async (req, res) => {
 // Get/update current user's ranking preference
 router.get('/me', async (req, res) => {
   try {
-    const user = await db.get('SELECT show_in_ranking FROM users WHERE id = ?', req.user.id);
-    res.json({ show_in_ranking: user ? user.show_in_ranking : 1 });
+    const user = await db.get(
+      'SELECT show_in_ranking, show_in_giros_ranking FROM users WHERE id = ?',
+      req.user.id
+    );
+    res.json({
+      show_in_ranking: user ? user.show_in_ranking : 1,
+      show_in_giros_ranking: user ? user.show_in_giros_ranking : 1,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });
@@ -70,11 +76,21 @@ router.get('/me', async (req, res) => {
 
 router.put('/me', async (req, res) => {
   try {
-    const { show_in_ranking } = req.body;
-    await db.run(
-      'UPDATE users SET show_in_ranking = ? WHERE id = ?',
-      show_in_ranking ? 1 : 0, req.user.id
-    );
+    const { show_in_ranking, show_in_giros_ranking } = req.body;
+    const sets = [];
+    const params = [];
+    if (show_in_ranking !== undefined) {
+      sets.push('show_in_ranking = ?');
+      params.push(show_in_ranking ? 1 : 0);
+    }
+    if (show_in_giros_ranking !== undefined) {
+      sets.push('show_in_giros_ranking = ?');
+      params.push(show_in_giros_ranking ? 1 : 0);
+    }
+    if (sets.length) {
+      params.push(req.user.id);
+      await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, ...params);
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error(err);

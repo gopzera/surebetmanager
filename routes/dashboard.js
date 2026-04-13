@@ -5,12 +5,23 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 router.use(auth);
 
-function getWeekStart(d) {
-  const date = d ? new Date(d) : new Date();
-  const dayOfWeek = date.getDay();
-  const monday = new Date(date);
-  monday.setDate(date.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
-  return monday.toISOString().split('T')[0];
+// Users are in BRT (UTC-3). Server (Vercel / local) stores created_at as UTC,
+// so shifting -3h before DATE() buckets by the user's calendar day.
+const BR_TZ_OFFSET_MS = -3 * 60 * 60 * 1000;
+function brtDateStr(d) {
+  return new Date((d ? d.getTime() : Date.now()) + BR_TZ_OFFSET_MS)
+    .toISOString().split('T')[0];
+}
+
+// Effective date for an operation: user-set event_date takes priority, otherwise
+// the BRT calendar day of created_at. Used for every period bucket below.
+const OP_DATE_EXPR = `COALESCE(o.event_date, DATE(o.created_at, '-3 hours'))`;
+
+function getWeekStart(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const dayOfWeek = d.getDay();
+  d.setDate(d.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+  return d.toISOString().split('T')[0];
 }
 
 function getPrevMonthRange(todayStr) {
@@ -26,14 +37,12 @@ function getPrevMonthRange(todayStr) {
 router.get('/stats', async (req, res) => {
   try {
     const userId = req.user.id;
-    const today = new Date().toISOString().split('T')[0];
-    const weekStart = getWeekStart();
+    const today = brtDateStr();
+    const weekStart = getWeekStart(today);
     const monthStart = today.substring(0, 7) + '-01';
 
     // Previous periods for comparison
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
+    const yesterdayStr = brtDateStr(new Date(Date.now() - 86400000));
 
     const prevWeekMonday = new Date(weekStart + 'T00:00:00');
     prevWeekMonday.setDate(prevWeekMonday.getDate() - 7);
@@ -45,38 +54,38 @@ router.get('/stats', async (req, res) => {
     const prevMonth = getPrevMonthRange(today);
 
     const todayStats = await db.get(
-      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM operations WHERE user_id = ? AND DATE(created_at) = ?`,
+      `SELECT COALESCE(SUM(o.profit), 0) as profit, COUNT(*) as count
+       FROM operations o WHERE o.user_id = ? AND ${OP_DATE_EXPR} = ?`,
       userId, today
     );
 
     const yesterdayStats = await db.get(
-      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM operations WHERE user_id = ? AND DATE(created_at) = ?`,
+      `SELECT COALESCE(SUM(o.profit), 0) as profit, COUNT(*) as count
+       FROM operations o WHERE o.user_id = ? AND ${OP_DATE_EXPR} = ?`,
       userId, yesterdayStr
     );
 
     const weekStats = await db.get(
-      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM operations WHERE user_id = ? AND DATE(created_at) >= ?`,
+      `SELECT COALESCE(SUM(o.profit), 0) as profit, COUNT(*) as count
+       FROM operations o WHERE o.user_id = ? AND ${OP_DATE_EXPR} >= ?`,
       userId, weekStart
     );
 
     const prevWeekStats = await db.get(
-      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM operations WHERE user_id = ? AND DATE(created_at) >= ? AND DATE(created_at) <= ?`,
+      `SELECT COALESCE(SUM(o.profit), 0) as profit, COUNT(*) as count
+       FROM operations o WHERE o.user_id = ? AND ${OP_DATE_EXPR} >= ? AND ${OP_DATE_EXPR} <= ?`,
       userId, prevWeekStart, prevWeekEndStr
     );
 
     const monthStats = await db.get(
-      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM operations WHERE user_id = ? AND DATE(created_at) >= ?`,
+      `SELECT COALESCE(SUM(o.profit), 0) as profit, COUNT(*) as count
+       FROM operations o WHERE o.user_id = ? AND ${OP_DATE_EXPR} >= ?`,
       userId, monthStart
     );
 
     const prevMonthStats = await db.get(
-      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM operations WHERE user_id = ? AND DATE(created_at) >= ? AND DATE(created_at) <= ?`,
+      `SELECT COALESCE(SUM(o.profit), 0) as profit, COUNT(*) as count
+       FROM operations o WHERE o.user_id = ? AND ${OP_DATE_EXPR} >= ? AND ${OP_DATE_EXPR} <= ?`,
       userId, prevMonth.start, prevMonth.end
     );
 
@@ -89,17 +98,17 @@ router.get('/stats', async (req, res) => {
     // Giros profit (all-time + per period) — kept separate so the frontend can toggle inclusion
     const girosTodayRow = await db.get(
       `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM giros WHERE user_id = ? AND DATE(created_at) = ?`,
+       FROM giros WHERE user_id = ? AND DATE(created_at, '-3 hours') = ?`,
       userId, today
     );
     const girosWeekRow = await db.get(
       `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM giros WHERE user_id = ? AND DATE(created_at) >= ?`,
+       FROM giros WHERE user_id = ? AND DATE(created_at, '-3 hours') >= ?`,
       userId, weekStart
     );
     const girosMonthRow = await db.get(
       `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
-       FROM giros WHERE user_id = ? AND DATE(created_at) >= ?`,
+       FROM giros WHERE user_id = ? AND DATE(created_at, '-3 hours') >= ?`,
       userId, monthStart
     );
     const girosAllRow = await db.get(
@@ -110,7 +119,8 @@ router.get('/stats', async (req, res) => {
 
     // Average daily profit (for all-time comparison)
     const firstOp = await db.get(
-      `SELECT DATE(created_at) as first_date FROM operations WHERE user_id = ? ORDER BY created_at ASC LIMIT 1`,
+      `SELECT ${OP_DATE_EXPR} as first_date FROM operations o WHERE o.user_id = ?
+       ORDER BY first_date ASC LIMIT 1`,
       userId
     );
     let avgDailyProfit = 0;
@@ -119,25 +129,31 @@ router.get('/stats', async (req, res) => {
       avgDailyProfit = allTimeStats.profit / daysSinceFirst;
     }
 
+    // Weekly volume per account (freebet rule: Bet365 odd >= 3.0 counts; freebet-funded
+    // bets do not, since the user isn't wagering their own money).
     const accountVolumes = await db.all(
       `SELECT
         a.id as account_id,
         a.name as account_name,
         a.max_stake_aumentada,
         COALESCE(SUM(
-          CASE WHEN o.odd_bet365 >= 2.0 AND DATE(o.created_at) >= ?
-          THEN COALESCE(
-            oa.stake_bet365,
-            o.stake_bet365 * 1.0 / (
-              SELECT COUNT(*) FROM operation_accounts oa2 WHERE oa2.operation_id = o.id
+          CASE
+            WHEN o.odd_bet365 >= 3.0
+              AND COALESCE(o.uses_freebet, 0) = 0
+              AND ${OP_DATE_EXPR} >= ?
+            THEN COALESCE(
+              oa.stake_bet365,
+              o.stake_bet365 * 1.0 / (
+                SELECT COUNT(*) FROM operation_accounts oa2 WHERE oa2.operation_id = o.id
+              )
             )
-          )
-          ELSE 0 END
+            ELSE 0
+          END
         ), 0) as volume
       FROM accounts a
       LEFT JOIN operation_accounts oa ON oa.account_id = a.id
       LEFT JOIN operations o ON o.id = oa.operation_id AND o.user_id = ?
-      WHERE a.user_id = ? AND a.active = 1
+      WHERE a.user_id = ? AND a.active = 1 AND COALESCE(a.hidden, 0) = 0
       GROUP BY a.id
       ORDER BY a.name`,
       weekStart, userId, userId
@@ -151,9 +167,10 @@ router.get('/stats', async (req, res) => {
     );
 
     const dailyProfits = await db.all(
-      `SELECT DATE(created_at) as date, SUM(profit) as profit, COUNT(*) as count
-       FROM operations WHERE user_id = ? AND DATE(created_at) >= DATE('now', '-30 days')
-       GROUP BY DATE(created_at)
+      `SELECT ${OP_DATE_EXPR} as date, SUM(o.profit) as profit, COUNT(*) as count
+       FROM operations o
+       WHERE o.user_id = ? AND ${OP_DATE_EXPR} >= DATE('now', '-3 hours', '-30 days')
+       GROUP BY date
        ORDER BY date`,
       userId
     );
@@ -217,7 +234,10 @@ router.get('/export', async (req, res) => {
       );
     }
     const accounts = await db.all('SELECT * FROM accounts WHERE user_id = ?', userId);
-    const freebets = await db.all('SELECT * FROM freebets WHERE user_id = ? ORDER BY week_start DESC', userId);
+    const freebetAdjustments = await db.all(
+      'SELECT * FROM freebet_adjustments WHERE user_id = ? ORDER BY week_start DESC',
+      userId
+    );
 
     res.setHeader('Content-Disposition', `attachment; filename=surebet-backup-${new Date().toISOString().split('T')[0]}.json`);
     res.json({
@@ -225,7 +245,7 @@ router.get('/export', async (req, res) => {
       user: { id: userId, display_name: req.user.display_name },
       accounts,
       operations,
-      freebets,
+      freebet_adjustments: freebetAdjustments,
     });
   } catch (err) {
     console.error(err);

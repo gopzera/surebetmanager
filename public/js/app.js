@@ -541,7 +541,7 @@ function renderVolumeTracker(data) {
       <div>
         <div class="volume-title">${allComplete ? '&#10003; ' : ''}Volume Semanal por Conta (Freebet)</div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
-          Apostas com odd &ge; 2.0 na Bet365 desde ${formatDate(data.weekStart)} | Meta: ${formatBRL(goal)} por conta
+          Apostas com odd &ge; 3.0 na Bet365 desde ${formatDate(data.weekStart)} | Meta: ${formatBRL(goal)} por conta
         </div>
       </div>
     </div>
@@ -650,9 +650,15 @@ function renderRecentTable(ops) {
 }
 
 // ===== NEW OPERATION =====
+function localDateStr(d) {
+  const dt = d || new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+
 async function renderNewOperation() {
   await loadAccounts();
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDateStr();
   const activeAccounts = userAccounts.filter(a => a.active);
 
   const mc = document.getElementById('main-content');
@@ -738,7 +744,7 @@ async function renderNewOperation() {
         </div>
       </div>
 
-      <h3 class="chart-title" style="margin:24px 0 16px">Bet365 (BRL)</h3>
+      <h3 class="chart-title" style="margin:24px 0 16px">Bet365 (BRL) <span id="new-bet365-label" style="font-size:12px;font-weight:400;color:var(--text-muted)"></span></h3>
       <div class="form-grid">
         <div class="form-group">
           <label class="form-label">Stake Total Bet365 (R$) <span style="font-size:11px;color:var(--text-muted)">(soma de todas as contas)</span></label>
@@ -748,8 +754,23 @@ async function renderNewOperation() {
           <label class="form-label">Odd Bet365</label>
           <input type="number" step="0.01" min="1" class="form-input" id="new-odd-bet365" placeholder="0,00">
         </div>
+        <div class="form-group full">
+          <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 10px">
+            <input type="checkbox" id="new-uses-freebet">
+            <div class="account-check-dot"></div>
+            <div style="font-size:13px">Usar saldo de freebet nesta aposta (n\u00E3o conta no volume e paga s\u00F3 o lucro)</div>
+          </label>
+        </div>
       </div>
       <div id="stake-per-account-info" style="font-size:12px;color:var(--text-muted);margin-bottom:16px"></div>
+
+      <div id="new-extra-bets-section" style="display:none;margin-top:16px">
+        <h3 class="chart-title" style="margin:0 0 12px">Apostas Secund\u00E1rias Bet365
+          <span style="font-size:12px;font-weight:400;color:var(--text-muted)">(fechando as demais op\u00E7\u00F5es)</span>
+        </h3>
+        <div id="new-extra-bets-list"></div>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="addExtraBet()">+ Adicionar aposta</button>
+      </div>
 
       <h3 class="chart-title" style="margin:24px 0 16px">Polymarket (USD)</h3>
       <div class="form-grid">
@@ -913,6 +934,17 @@ async function renderNewOperation() {
     if (imp.oddBet365) document.getElementById('new-odd-bet365').value = imp.oddBet365.toFixed(2);
     if (imp.stakePolyUSD) document.getElementById('new-stake-poly-usd').value = imp.stakePolyUSD.toFixed(2);
     if (imp.oddPoly) document.getElementById('new-odd-poly').value = imp.oddPoly.toFixed(2);
+    if (imp.usesFreebet) {
+      const fb = document.getElementById('new-uses-freebet');
+      if (fb) fb.checked = true;
+    }
+    if (imp.extraBets && imp.extraBets.length) {
+      const list = document.getElementById('new-extra-bets-list');
+      if (list) {
+        list.innerHTML = '';
+        imp.extraBets.forEach(b => addExtraBet(b));
+      }
+    }
     if (imp.exchangeRate) {
       rateInput.value = imp.exchangeRate.toFixed(4);
       rateStatus.textContent = '(da calculadora)';
@@ -958,7 +990,60 @@ async function renderNewOperation() {
 function selectType(el) {
   document.querySelectorAll('.type-option').forEach(e => e.classList.remove('selected'));
   el.classList.add('selected');
-  document.getElementById('new-type').value = el.dataset.type;
+  const t = el.dataset.type;
+  document.getElementById('new-type').value = t;
+  const extraSection = document.getElementById('new-extra-bets-section');
+  const label = document.getElementById('new-bet365-label');
+  if (extraSection) extraSection.style.display = t === 'aumentada25' ? '' : 'none';
+  if (label) label.textContent = t === 'aumentada25' ? '— aposta principal (aumentada)' : '';
+  // Aumentada operations use 4 bets by default — seed two extras if list is empty.
+  if (t === 'aumentada25') {
+    const list = document.getElementById('new-extra-bets-list');
+    if (list && !list.children.length) { addExtraBet(); addExtraBet(); }
+  }
+}
+
+let _extraBetSeq = 0;
+function extraBetRowHtml(idx, data = {}) {
+  const uid = `extra-${++_extraBetSeq}`;
+  return `
+    <div class="form-grid extra-bet-row" data-uid="${uid}" style="align-items:end;padding:8px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">
+      <div class="form-group">
+        <label class="form-label">Stake (R$)</label>
+        <input type="number" step="0.01" min="0" class="form-input extra-bet-stake" value="${data.stake != null ? Number(data.stake).toFixed(2) : ''}" placeholder="0,00">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Odd</label>
+        <input type="number" step="0.01" min="1" class="form-input extra-bet-odd" value="${data.odd != null ? Number(data.odd).toFixed(2) : ''}" placeholder="0,00">
+      </div>
+      <div class="form-group">
+        <label class="account-check" style="cursor:pointer;display:inline-flex;padding:4px 8px">
+          <input type="checkbox" class="extra-bet-freebet" ${data.uses_freebet ? 'checked' : ''}>
+          <div class="account-check-dot"></div>
+          <div style="font-size:12px">Freebet</div>
+        </label>
+      </div>
+      <div class="form-group" style="text-align:right">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.extra-bet-row').remove()">Remover</button>
+      </div>
+    </div>
+  `;
+}
+function addExtraBet(data) {
+  const list = document.getElementById('new-extra-bets-list');
+  if (!list) return;
+  list.insertAdjacentHTML('beforeend', extraBetRowHtml(list.children.length, data));
+}
+function collectExtraBets(containerId = 'new-extra-bets-list') {
+  const rows = document.querySelectorAll(`#${containerId} .extra-bet-row`);
+  const out = [];
+  for (const row of rows) {
+    const stake = parseFloat(row.querySelector('.extra-bet-stake')?.value) || 0;
+    const odd = parseFloat(row.querySelector('.extra-bet-odd')?.value) || 0;
+    const uses_freebet = !!row.querySelector('.extra-bet-freebet')?.checked;
+    if (stake > 0 || odd > 0) out.push({ stake, odd, uses_freebet });
+  }
+  return out;
 }
 
 async function submitNewOperation(e) {
@@ -998,7 +1083,11 @@ async function submitNewOperation(e) {
     profit: parseFloat(document.getElementById('new-profit').value) || 0,
     notes: document.getElementById('new-notes').value.trim(),
     tags: getTagsFromInput('new-tags'),
+    uses_freebet: document.getElementById('new-uses-freebet')?.checked || false,
   };
+  if (type === 'aumentada25') {
+    body.extra_bets = collectExtraBets();
+  }
   if (account_stakes) body.account_stakes = account_stakes;
   else body.account_ids = account_ids;
 
@@ -1195,10 +1284,16 @@ async function duplicateOperation(id) {
     if (!op) { toast('Opera\u00E7\u00E3o n\u00E3o encontrada', 'error'); return; }
 
     const accs = op.accounts || [];
+    let extras = [];
+    if (op.extra_bets) {
+      try { extras = JSON.parse(op.extra_bets) || []; } catch { extras = []; }
+    }
     window._calcImport = {
       type: op.type,
       stakeBet365: op.stake_bet365,
       oddBet365: op.odd_bet365,
+      usesFreebet: !!op.uses_freebet,
+      extraBets: extras,
       stakePolyUSD: op.stake_poly_usd,
       oddPoly: op.odd_poly,
       exchangeRate: op.exchange_rate,
@@ -1412,9 +1507,11 @@ async function renderSettings() {
 
   // Fetch ranking preference
   let showInRanking = true;
+  let showInGirosRanking = true;
   try {
     const pref = await api('/api/ranking/me');
     showInRanking = !!pref.show_in_ranking;
+    showInGirosRanking = pref.show_in_giros_ranking === undefined ? true : !!pref.show_in_giros_ranking;
   } catch (_) {}
 
   // Fetch Polymarket wallet/notification prefs
@@ -1460,16 +1557,22 @@ async function renderSettings() {
     <!-- Ranking toggle -->
     <div class="chart-container" style="margin-bottom:20px">
       <h3 class="chart-title" style="margin-bottom:12px">Ranking</h3>
-      <div style="display:flex;align-items:center;gap:12px">
+      <div style="display:flex;flex-direction:column;gap:10px">
         <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px">
           <input type="checkbox" id="setting-show-ranking" ${showInRanking ? 'checked' : ''}
             style="width:18px;height:18px;accent-color:var(--primary);cursor:pointer"
-            onchange="toggleRankingVisibility(this.checked)">
+            onchange="toggleRankingVisibility('show_in_ranking', this.checked)">
           Exibir meu lucro no ranking do grupo
+        </label>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px">
+          <input type="checkbox" id="setting-show-giros-ranking" ${showInGirosRanking ? 'checked' : ''}
+            style="width:18px;height:18px;accent-color:var(--primary);cursor:pointer"
+            onchange="toggleRankingVisibility('show_in_giros_ranking', this.checked)">
+          Exibir meu lucro no ranking de Giros (Sortudos)
         </label>
       </div>
       <p style="color:var(--text-muted);font-size:12px;margin-top:6px">
-        Quando desativado, seu perfil n\u00E3o aparecer\u00E1 na p\u00E1gina de Ranking.
+        Quando desativado, seu perfil n\u00E3o aparecer\u00E1 no ranking correspondente.
       </p>
     </div>
 
@@ -1570,10 +1673,11 @@ async function renderSettings() {
   });
 }
 
-async function toggleRankingVisibility(checked) {
+async function toggleRankingVisibility(field, checked) {
   try {
-    await api('/api/ranking/me', { method: 'PUT', body: { show_in_ranking: checked } });
-    toast(checked ? 'Seu lucro agora aparece no ranking' : 'Seu lucro foi ocultado do ranking');
+    await api('/api/ranking/me', { method: 'PUT', body: { [field]: checked } });
+    const label = field === 'show_in_giros_ranking' ? 'ranking de Giros' : 'ranking';
+    toast(checked ? `Seu lucro agora aparece no ${label}` : `Seu lucro foi ocultado do ${label}`);
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1871,7 +1975,8 @@ function makeCalcRow(id) {
     usePoly: false, cat: "Sports",
     currency: "USD", isFixed: false, fixedStake: "",
     manualStake: null,    // user-typed override when another row is the fixed anchor
-    customRate: null      // custom BRL/USD rate for display on USD rows
+    customRate: null,     // custom BRL/USD rate for display on USD rows
+    usesFreebet: false    // freebet rows use (eff - 1) and don't count in the stake total
   };
 }
 
@@ -2019,15 +2124,19 @@ function calcToggleShowComm() {
 }
 
 // -- Core calculation --
+// Freebet rows: stake is the bookie's credit (not user's money). Row contribution
+// when won is S*(eff-1) rather than S*eff. Real outlay and invSum exclude them.
 function calcCompute() {
   const effArr = calcRows.map(r =>
     calcEffOdds(parseFloat(r.odds), parseFloat(r.comm)||0, r.betType, r.usePoly, r.cat)
   );
   if (!effArr.every(o => o !== null && o > 1)) { calcResult = null; return; }
+  // A freebet row needs eff > 1 which also ensures (eff-1) > 0 — no extra guard needed.
 
-  const invSum = effArr.reduce((s, o) => s + 1/o, 0);
+  const payoutFactor = i => calcRows[i].usesFreebet ? (effArr[i] - 1) : effArr[i];
+  const invSum = calcRows.reduce((s, r, i) => r.usesFreebet ? s : s + 1/effArr[i], 0);
   const margin = invSum;
-  const isSurebet = margin < 1;
+  const isSurebet = margin < 1 && invSum > 0;
 
   const fixIdx = calcRows.findIndex(r => r.isFixed);
   let target;
@@ -2038,13 +2147,15 @@ function calcCompute() {
     if (fRow.currency === "USD") usdFixed = raw;
     else if (fRow.currency === "BRL") usdFixed = calcUsdcBrl ? raw / calcUsdcBrl : raw;
     else usdFixed = raw;
-    target = usdFixed * effArr[fixIdx];
+    target = usdFixed * payoutFactor(fixIdx);
   } else {
+    // totalStakeOverride represents real money out. Without freebets this reduces
+    // to the classic target = total/invSum; freebet rows just drop from invSum.
     const desiredTotal = calcTotalStakeOverride !== null ? calcTotalStakeOverride : 100;
-    target = desiredTotal / invSum;
+    target = invSum > 0 ? desiredTotal / invSum : 0;
   }
 
-  let stakesUSD = effArr.map(o => target / o);
+  let stakesUSD = calcRows.map((_, i) => target / payoutFactor(i));
 
   // Apply manual stake overrides
   calcRows.forEach((r, i) => {
@@ -2072,9 +2183,10 @@ function calcCompute() {
     });
   }
 
-  const totalUSD   = stakesUSD.reduce((a,b)=>a+b,0);
-  const returnsUSD = stakesUSD.map((s,i)=>s*effArr[i]);
-  const profitsUSD = returnsUSD.map(r=>r-totalUSD);
+  // Real money out: freebet stakes are the bookie's credit, so exclude them.
+  const totalUSD = stakesUSD.reduce((a, b, i) => a + (calcRows[i].usesFreebet ? 0 : b), 0);
+  const returnsUSD = stakesUSD.map((s, i) => s * payoutFactor(i));
+  const profitsUSD = returnsUSD.map(r => r - totalUSD);
   const minProfit  = Math.min(...profitsUSD);
   const roi        = totalUSD ? (minProfit / totalUSD) * 100 : 0;
 
@@ -2132,6 +2244,7 @@ function calcBuildTable() {
     <th class="c-poly-th c-num-col">Taker Fee</th>
     <th class="c-ctr-col">Currency</th>
     <th>Stake</th>
+    <th class="c-ctr-col" style="width:44px" title="Usar saldo de freebet">FB</th>
     <th class="c-ctr-col" style="width:44px">Fix</th>
     <th class="c-num-col">Profit</th>
   </tr>`;
@@ -2234,6 +2347,10 @@ function calcBuildTable() {
           <div id="calc-shares-${row.id}" class="c-shares-wrap">${polySharesHint}</div>
           <div id="calc-brl-hint-${row.id}" class="c-dim" style="padding-left:2px;display:none"></div>
         </div>
+      </td>
+      <td class="c-ctr-col">
+        <input type="checkbox" ${row.usesFreebet?"checked":""} onchange="calcOnFreebetChange(${row.id},this.checked)"
+          title="Usar saldo de freebet nesta linha (odd cai 1 e stake n\u00E3o entra no total)">
       </td>
       <td class="c-ctr-col" id="calc-fixcell-${row.id}">
         <button class="c-fix-btn ${row.isFixed?"c-fix-on":"c-fix-off"}" onclick="calcToggleFix(${row.id})"
@@ -2422,6 +2539,17 @@ function calcOnPolyChange(id, checked) {
   if (sel) sel.disabled = !checked;
   calcCompute(); calcBuildTable();
 }
+
+function calcOnFreebetChange(id, checked) {
+  const row = calcRows.find(r => r.id === id);
+  if (!row) return;
+  row.usesFreebet = checked;
+  // Manual / fixed overrides don't survive a freebet toggle — the stake basis changed.
+  row.manualStake = null;
+  if (row.isFixed) { row.isFixed = false; row.fixedStake = ""; }
+  calcCompute(); calcBuildTable();
+  calcSaveState();
+}
 function calcOnCatChange(id, val) { calcRows.find(r=>r.id===id).cat = val; calcCompute(); calcUpdateDisplay(); }
 
 function calcOnStakeInput(id, val) {
@@ -2543,6 +2671,7 @@ function calcImportToOperation() {
       stakeBRL: calcResult.stakesUSD[i] * (calcUsdcBrl || 5),
       currency: row.currency,
       usePoly: row.usePoly,
+      usesFreebet: !!row.usesFreebet,
     };
     if (row.usePoly) polyRows.push(data);
     else bet365Rows.push(data);
@@ -2556,35 +2685,30 @@ function calcImportToOperation() {
   const polyStakeUSD = poly.stakeUSD;
   const polyOdd = poly.odds;
 
-  // Bet365 side: sum of BRL stakes, and the odd from the row with the HIGHEST BRL STAKE (the aumentada)
-  const totalStakeBet365BRL = bet365Rows.reduce((s, r) => s + r.stakeBRL, 0);
+  // Aumentada itself = the Bet365 row with the highest BRL stake. Other Bet365
+  // rows are the regulating bets, shipped separately as extra_bets so they're
+  // structured data instead of freeform notes.
   const aumentadaRow = bet365Rows.reduce((best, r) => r.stakeBRL > best.stakeBRL ? r : best, bet365Rows[0]);
-  const aumentadaOdd = aumentadaRow.odds;
+  const mainStakeBRL = aumentadaRow.stakeBRL;
+  const extras = bet365Rows.filter(r => r !== aumentadaRow).map(r => ({
+    stake: Number(r.stakeBRL.toFixed(2)),
+    odd: Number(r.odds.toFixed(2)),
+    uses_freebet: r.usesFreebet,
+  }));
 
   const isAumentada = bet365Rows.length >= 3 && polyRows.length >= 1;
   const type = isAumentada ? 'aumentada25' : 'arbitragem';
 
-  let notes = '';
-  if (isAumentada) {
-    const sorted = [...bet365Rows].sort((a, b) => b.stakeBRL - a.stakeBRL);
-    notes = sorted.map((r, i) => {
-      const label = i === 0 ? 'Aumentada' : `Aposta ${i + 1}`;
-      const stakeDisplay = r.currency === 'BRL'
-        ? `R$${r.stakeBRL.toFixed(2)}`
-        : `$${r.stakeUSD.toFixed(2)} (R$${r.stakeBRL.toFixed(2)})`;
-      return `${label}: odd ${r.odds.toFixed(2)} / stake ${stakeDisplay}`;
-    }).join(' | ');
-    notes += ` | Poly: odd ${polyOdd.toFixed(2)} / $${polyStakeUSD.toFixed(2)}`;
-  }
-
   window._calcImport = {
     type,
-    stakeBet365: totalStakeBet365BRL,
-    oddBet365: aumentadaOdd,
+    stakeBet365: mainStakeBRL,
+    oddBet365: aumentadaRow.odds,
+    usesFreebet: aumentadaRow.usesFreebet,
+    extraBets: extras,
     stakePolyUSD: polyStakeUSD,
     oddPoly: polyOdd,
     exchangeRate: calcUsdcBrl || 5,
-    notes,
+    notes: '',
   };
 
   navigate('new-operation');
@@ -2606,10 +2730,15 @@ function calcRenderSimulator() {
   const fx = calcUsdcBrl || 5.0;
 
   // Breakeven: at what margin does profit = 0? margin = 1.0
-  // Find how much one odd can drop before margin hits 1
+  // Find how much one odd can drop before margin hits 1. Freebet rows aren't in
+  // the margin (they don't cost real money), so exclude them from both sides.
   const effArr = r.effArr;
   const breakevens = effArr.map((_, i) => {
-    const otherSum = effArr.reduce((s, o, j) => j === i ? s : s + 1/o, 0);
+    if (calcRows[i].usesFreebet) return null;
+    const otherSum = effArr.reduce((s, o, j) => {
+      if (j === i || calcRows[j].usesFreebet) return s;
+      return s + 1/o;
+    }, 0);
     const neededInv = 1 - otherSum;
     if (neededInv <= 0) return null;
     return 1 / neededInv;
@@ -2723,7 +2852,7 @@ function calcSaveToHistory() {
     rows: calcRows.map(r => ({
       odds: r.odds, comm: r.comm, betType: r.betType,
       usePoly: r.usePoly, cat: r.cat, currency: r.currency,
-      customRate: r.customRate,
+      customRate: r.customRate, usesFreebet: r.usesFreebet,
     })),
   };
   const history = calcGetHistory();
@@ -2753,6 +2882,7 @@ function calcLoadFromHistory(idx) {
     cat: r.cat || "Sports", currency: r.currency || "USD",
     isFixed: false, fixedStake: "", manualStake: null,
     customRate: r.customRate !== undefined ? r.customRate : null,
+    usesFreebet: !!r.usesFreebet,
   }));
   calcNextId = calcRows.length + 1;
 
@@ -2831,7 +2961,8 @@ function calcSaveState() {
       id: r.id, odds: r.odds, comm: r.comm, betType: r.betType,
       usePoly: r.usePoly, cat: r.cat, currency: r.currency,
       isFixed: r.isFixed, fixedStake: r.fixedStake,
-      manualStake: r.manualStake, customRate: r.customRate
+      manualStake: r.manualStake, customRate: r.customRate,
+      usesFreebet: r.usesFreebet
     })),
   };
   sessionStorage.setItem('calcState', JSON.stringify(state));
@@ -2856,7 +2987,8 @@ function calcRestoreState() {
         cat: r.cat || "Sports", currency: r.currency || "USD",
         isFixed: !!r.isFixed, fixedStake: r.fixedStake || "",
         manualStake: r.manualStake !== undefined ? r.manualStake : null,
-        customRate: r.customRate !== undefined ? r.customRate : null
+        customRate: r.customRate !== undefined ? r.customRate : null,
+        usesFreebet: !!r.usesFreebet
       }));
     } else {
       return false;
@@ -3029,6 +3161,9 @@ function renderCalculator() {
 }
 
 // ===== FREEBETS =====
+// Availability is derived from operation volume — the user only interacts with
+// this tab to dismiss weeks where the freebet didn't actually land or to log
+// partial usage of the R$100 credit.
 async function renderFreebets() {
   await loadAccounts();
   const mc = document.getElementById('main-content');
@@ -3036,136 +3171,165 @@ async function renderFreebets() {
     <div class="page-header">
       <div>
         <h1 class="page-title">Freebets</h1>
-        <p class="page-description">Registro semanal de volume e freebets por conta</p>
+        <p class="page-description">Freebets concedidas automaticamente ao bater R$1.500 semanais por conta</p>
       </div>
-      <button class="btn btn-primary" onclick="showFreebetForm()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Registrar Semana
-      </button>
     </div>
-    <div id="freebet-form-area"></div>
-    <div class="table-container">
-      <div class="table-header"><h3 class="table-title">Histórico de Freebets</h3></div>
-      <div id="freebets-list"></div>
-    </div>
+    <div id="freebets-content"><div class="empty-state"><div class="empty-state-text">Carregando...</div></div></div>
   `;
   loadFreebets();
 }
 
 async function loadFreebets() {
   try {
-    const freebets = await api('/api/freebets');
-    const container = document.getElementById('freebets-list');
-    if (!freebets.length) {
-      container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">&#127873;</div><div class="empty-state-text">Nenhuma freebet registrada</div></div>`;
-      return;
+    const data = await api('/api/freebets');
+    const container = document.getElementById('freebets-content');
+    const goal = data.weekly_goal;
+    const freebetValue = data.freebet_value;
+
+    const availableByAcc = {};
+    let totalRemaining = 0, totalValue = 0, totalUsed = 0;
+    for (const w of data.weeks) {
+      for (const a of w.accounts) {
+        if (a.available) {
+          if (!availableByAcc[a.account_id]) {
+            availableByAcc[a.account_id] = { name: a.account_name, weeks: [] };
+          }
+          availableByAcc[a.account_id].weeks.push({ ...a, week_start: w.week_start });
+          totalRemaining += a.remaining;
+          totalValue += freebetValue;
+          totalUsed += a.used_amount;
+        }
+      }
     }
-    container.innerHTML = freebets.map(fb => {
-      const accName = userAccounts.find(a => a.id === fb.account_id)?.name || 'Conta removida';
-      return `
-        <div class="freebet-card">
-          <div>
-            <div class="freebet-week">Semana de ${formatDate(fb.week_start)} - ${escapeHtml(accName)}</div>
-            <div class="freebet-detail">Volume: ${formatBRL(fb.volume_accumulated)} | Lucro freebet: ${formatBRL(fb.freebet_profit)}</div>
-            ${fb.notes ? `<div class="freebet-detail">${escapeHtml(fb.notes)}</div>` : ''}
-          </div>
-          <div class="freebet-status">
-            <div class="freebet-dot ${fb.freebet_earned ? 'earned' : 'not-earned'}"></div>
-            <span style="font-size:12px;color:var(--text-muted)">${fb.freebet_earned ? (fb.freebet_used ? 'Usada' : 'Pendente') : 'Não ganhou'}</span>
-            <button class="btn btn-ghost btn-sm" onclick="deleteFreebet(${fb.id})" style="margin-left:8px">&#128465;</button>
-          </div>
+
+    const currentWeek = data.weeks.find(w => w.is_current);
+    const pastWeeks = data.weeks.filter(w => !w.is_current);
+
+    container.innerHTML = `
+      <div class="stats-grid" style="margin-bottom:20px">
+        <div class="stat-card">
+          <div class="stat-card-label">Saldo disponível</div>
+          <div class="stat-card-value">${formatBRL(totalRemaining)}</div>
+          <div class="stat-card-change neutral">de ${formatBRL(totalValue)} concedidos</div>
         </div>
-      `;
-    }).join('');
+        <div class="stat-card">
+          <div class="stat-card-label">Total usado</div>
+          <div class="stat-card-value">${formatBRL(totalUsed)}</div>
+        </div>
+      </div>
+
+      <div class="chart-container" style="margin-bottom:20px">
+        <h3 class="chart-title">Freebets disponíveis</h3>
+        ${Object.keys(availableByAcc).length === 0
+          ? `<div class="empty-state"><div class="empty-state-text">Nenhuma freebet disponível no momento</div></div>`
+          : Object.entries(availableByAcc).map(([accId, info]) => `
+            <div style="padding:12px 0;border-bottom:1px solid var(--border)">
+              <div style="font-weight:600;margin-bottom:8px">${escapeHtml(info.name)}</div>
+              ${info.weeks.map(w => freebetRow(w)).join('')}
+            </div>
+          `).join('')}
+      </div>
+
+      ${currentWeek && currentWeek.accounts.length ? `
+      <div class="chart-container" style="margin-bottom:20px">
+        <h3 class="chart-title">Progresso da semana atual (${formatDate(currentWeek.week_start)})</h3>
+        ${currentWeek.accounts.map(a => {
+          const pct = Math.min(100, (a.volume / goal) * 100);
+          const missing = Math.max(0, goal - a.volume);
+          return `
+            <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <div style="font-weight:500">${escapeHtml(a.account_name)}</div>
+                <div style="font-size:13px;color:${a.earned ? 'var(--success)' : 'var(--text-muted)'}">${a.earned ? '&#10003; Freebet garantida!' : `Faltam ${formatBRL(missing)}`}</div>
+              </div>
+              <div style="background:var(--bg);border-radius:4px;overflow:hidden;height:6px">
+                <div style="background:${a.earned ? 'var(--success)' : 'var(--primary)'};height:100%;width:${pct}%"></div>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${formatBRL(a.volume)} de ${formatBRL(goal)}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+      ` : ''}
+
+      <div class="chart-container">
+        <h3 class="chart-title">Histórico</h3>
+        ${pastWeeks.filter(w => w.accounts.length).length === 0
+          ? `<div class="empty-state"><div class="empty-state-text">Sem histórico ainda</div></div>`
+          : pastWeeks.filter(w => w.accounts.length).map(w => `
+            <div style="padding:12px 0;border-bottom:1px solid var(--border)">
+              <div style="font-weight:600;margin-bottom:8px;color:var(--text-muted);font-size:13px">Semana de ${formatDate(w.week_start)}</div>
+              ${w.accounts.map(a => freebetHistoryRow(a, w.week_start)).join('')}
+            </div>
+          `).join('')}
+      </div>
+    `;
   } catch (err) { toast(err.message, 'error'); }
 }
 
-function showFreebetForm() {
-  const now = new Date();
-  const dayOfWeek = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
-  const weekStart = monday.toISOString().split('T')[0];
-  const activeAccounts = userAccounts.filter(a => a.active);
-
-  document.getElementById('freebet-form-area').innerHTML = `
-    <div class="chart-container">
-      <h3 class="chart-title">Registrar Freebet Semanal</h3>
-      <form id="freebet-form" class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Conta Bet365</label>
-          <select class="form-select" id="fb-account" required>
-            <option value="">Selecione a conta</option>
-            ${activeAccounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Início da Semana (segunda)</label>
-          <input type="date" class="form-input" id="fb-week-start" value="${weekStart}" required>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Volume Acumulado (R$)</label>
-          <input type="number" step="0.01" class="form-input" id="fb-volume" placeholder="0,00">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Ganhou Freebet?</label>
-          <select class="form-select" id="fb-earned">
-            <option value="0">Não</option>
-            <option value="1">Sim</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Usou Freebet?</label>
-          <select class="form-select" id="fb-used">
-            <option value="0">Não</option>
-            <option value="1">Sim</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Lucro da Freebet (R$)</label>
-          <input type="number" step="0.01" class="form-input" id="fb-profit" placeholder="0,00">
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Notas</label>
-          <input type="text" class="form-input" id="fb-notes" placeholder="Observações">
-        </div>
-        <div class="form-group full" style="display:flex;gap:12px;justify-content:flex-end">
-          <button type="button" class="btn btn-ghost" onclick="document.getElementById('freebet-form-area').innerHTML=''">Cancelar</button>
-          <button type="submit" class="btn btn-primary">Salvar</button>
-        </div>
-      </form>
+function freebetRow(a) {
+  return `
+    <div style="display:flex;gap:12px;align-items:center;padding:8px 0;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-size:13px">Semana de ${formatDate(a.week_start)}</div>
+        <div style="font-size:12px;color:var(--text-muted)">Volume: ${formatBRL(a.volume)}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:12px;color:var(--text-muted)">Usado:</span>
+        <input type="number" step="0.01" min="0" max="100" value="${a.used_amount}"
+          style="width:90px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)"
+          onchange="updateFreebetUsed(${a.account_id}, '${a.week_start}', this.value)">
+        <span style="font-size:12px;color:var(--text-muted)">/ R$ 100</span>
+      </div>
+      <div style="font-size:13px;color:var(--success);font-weight:500">Resta ${formatBRL(a.remaining)}</div>
+      <button class="btn btn-ghost btn-sm" onclick="dismissFreebet(${a.account_id}, '${a.week_start}')" title="Não recebi a freebet">Descartar</button>
     </div>
   `;
-
-  document.getElementById('freebet-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const accountId = document.getElementById('fb-account').value;
-    if (!accountId) { toast('Selecione uma conta', 'error'); return; }
-    try {
-      await api('/api/freebets', {
-        method: 'POST',
-        body: {
-          account_id: Number(accountId),
-          week_start: document.getElementById('fb-week-start').value,
-          volume_accumulated: parseFloat(document.getElementById('fb-volume').value) || 0,
-          freebet_earned: document.getElementById('fb-earned').value === '1',
-          freebet_used: document.getElementById('fb-used').value === '1',
-          freebet_profit: parseFloat(document.getElementById('fb-profit').value) || 0,
-          notes: document.getElementById('fb-notes').value,
-        }
-      });
-      toast('Freebet registrada!');
-      document.getElementById('freebet-form-area').innerHTML = '';
-      loadFreebets();
-    } catch (err) { toast(err.message, 'error'); }
-  });
 }
 
-async function deleteFreebet(id) {
-  if (!confirm('Excluir este registro de freebet?')) return;
+function freebetHistoryRow(a, weekStart) {
+  let status;
+  if (a.dismissed) {
+    status = `<span style="color:var(--text-muted)">Descartada</span> <a href="#" onclick="undismissFreebet(${a.account_id}, '${weekStart}');return false" style="font-size:11px;color:var(--primary)">restaurar</a>`;
+  } else if (a.earned) {
+    status = a.used_amount >= 100
+      ? `<span style="color:var(--success)">Usada integralmente</span>`
+      : a.used_amount > 0
+        ? `<span style="color:var(--warning)">Parcial: ${formatBRL(a.used_amount)} / R$100</span>`
+        : `<span style="color:var(--warning)">Não usada</span>`;
+  } else {
+    status = `<span style="color:var(--text-muted)">Volume insuficiente (${formatBRL(a.volume)})</span>`;
+  }
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0">
+      <div style="font-size:13px">${escapeHtml(a.account_name)}</div>
+      <div style="font-size:12px">${status}</div>
+    </div>
+  `;
+}
+
+async function updateFreebetUsed(account_id, week_start, value) {
   try {
-    await api(`/api/freebets/${id}`, { method: 'DELETE' });
-    toast('Registro excluído');
+    const used_amount = Math.max(0, Math.min(100, parseFloat(value) || 0));
+    await api('/api/freebets/adjust', { method: 'POST', body: { account_id, week_start, used_amount } });
+    toast('Atualizado');
+    loadFreebets();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function dismissFreebet(account_id, week_start) {
+  if (!confirm('Marcar essa freebet como não recebida? Ela sai do saldo disponível.')) return;
+  try {
+    await api('/api/freebets/adjust', { method: 'POST', body: { account_id, week_start, dismissed: true } });
+    toast('Descartada');
+    loadFreebets();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function undismissFreebet(account_id, week_start) {
+  try {
+    await api('/api/freebets/adjust', { method: 'POST', body: { account_id, week_start, dismissed: false } });
+    toast('Restaurada');
     loadFreebets();
   } catch (err) { toast(err.message, 'error'); }
 }

@@ -205,6 +205,24 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_revoked ON sessions(revoked);
+
+  -- Freebet overrides: volume-based earning is derived from operations; this
+  -- table only records exceptions (user didn't receive the freebet) and
+  -- partial usage.
+  CREATE TABLE IF NOT EXISTS freebet_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    week_start DATE NOT NULL,
+    dismissed INTEGER NOT NULL DEFAULT 0,
+    used_amount REAL NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (account_id) REFERENCES accounts(id),
+    UNIQUE(user_id, account_id, week_start)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_freebet_adj_user ON freebet_adjustments(user_id);
 `;
 
 let initPromise = null;
@@ -233,6 +251,22 @@ const db = {
           await client.execute(
             `ALTER TABLE users ADD COLUMN show_in_ranking INTEGER NOT NULL DEFAULT 1`
           );
+        } catch (_) {}
+        // Migration: separate giros ranking opt-in from the main surebet ranking.
+        try {
+          await client.execute(
+            `ALTER TABLE users ADD COLUMN show_in_giros_ranking INTEGER NOT NULL DEFAULT 1`
+          );
+        } catch (_) {}
+        // Migration: aumentadas with 3+ Bet365 bets — extra bets as JSON
+        // instead of being smuggled into notes.
+        try {
+          await client.execute(`ALTER TABLE operations ADD COLUMN extra_bets TEXT`);
+        } catch (_) {}
+        // Migration: flag Bet365 stake on an operation as paid with freebet
+        // credit (affects volume counting and profit calc).
+        try {
+          await client.execute(`ALTER TABLE operations ADD COLUMN uses_freebet INTEGER NOT NULL DEFAULT 0`);
         } catch (_) {}
         // Migration: add Discord columns if missing
         for (const col of [
