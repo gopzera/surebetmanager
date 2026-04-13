@@ -826,6 +826,47 @@ tbody tr:last-child td { border-bottom: none; }
 .freebet-dot.earned { background: var(--success); }
 .freebet-dot.not-earned { background: var(--danger); }
 
+/* Giros list */
+.giro-card {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.giro-card:last-child { border-bottom: none; }
+.giro-card-head { display: flex; justify-content: space-between; align-items: center; }
+.giro-title { font-weight: 700; font-size: 15px; color: var(--primary); }
+.giro-date { font-size: 12px; color: var(--text-muted); }
+.giro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px 20px;
+}
+.giro-k { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+.giro-v { font-size: 14px; font-weight: 600; }
+.giro-notes-row { grid-column: 1 / -1; }
+.giro-breakdown {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--bg-input, rgba(255,255,255,0.03));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.giro-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.giros-breakdown {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
 /* Responsive */
 @media (max-width: 900px) {
   .sidebar { transform: translateX(-100%); }

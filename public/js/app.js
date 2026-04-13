@@ -358,6 +358,7 @@ function navigate(page) {
     'watcher': renderWatcher,
     'notifications': renderNotifications,
     'admin': renderAdmin,
+    'giros': renderGiros,
   };
   (pages[page] || renderDashboard)();
 }
@@ -373,6 +374,16 @@ function destroyCharts() {
 }
 
 // ===== DASHBOARD =====
+let dashIncludeGiros = localStorage.getItem('dashIncludeGiros') !== '0';
+
+function toggleDashGiros() {
+  dashIncludeGiros = !dashIncludeGiros;
+  localStorage.setItem('dashIncludeGiros', dashIncludeGiros ? '1' : '0');
+  if (window._dashStatsData) renderStats(window._dashStatsData);
+  const btn = document.getElementById('dash-giros-toggle');
+  if (btn) btn.textContent = dashIncludeGiros ? 'Incluindo giros' : 'Sem giros';
+}
+
 async function renderDashboard() {
   const mc = document.getElementById('main-content');
   mc.innerHTML = `
@@ -381,10 +392,13 @@ async function renderDashboard() {
         <h1 class="page-title">Dashboard</h1>
         <p class="page-description">Resumo das suas operações</p>
       </div>
-      <button class="btn btn-primary" onclick="navigate('new-operation')">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Nova Operação
-      </button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="dash-giros-toggle" onclick="toggleDashGiros()" title="Alternar inclusão de giros no lucro">${dashIncludeGiros ? 'Incluindo giros' : 'Sem giros'}</button>
+        <button class="btn btn-primary" onclick="navigate('new-operation')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Nova Operação
+        </button>
+      </div>
     </div>
     <div class="stats-grid" id="stats-grid"></div>
     <div class="volume-card" id="volume-card"></div>
@@ -409,6 +423,7 @@ async function renderDashboard() {
 
   try {
     const data = await api('/api/dashboard/stats');
+    window._dashStatsData = data;
     renderStats(data);
     renderVolumeTracker(data);
     renderProfitChart(data.dailyProfits);
@@ -436,39 +451,57 @@ function renderStats(data) {
   const prevWeekProfit = data.prevWeek ? data.prevWeek.profit : 0;
   const prevMonthProfit = data.prevMonth ? data.prevMonth.profit : 0;
   const avgDaily = data.avgDailyProfit || 0;
+  const giros = data.giros || { today: {profit:0}, week: {profit:0}, month: {profit:0}, allTime: {profit:0} };
+
+  const mkLine = (opsProfit, girosProfit) => {
+    if (!girosProfit) return '';
+    if (dashIncludeGiros) {
+      return `<div class="giros-breakdown">Ops: <b class="${profitClass(opsProfit)}">${formatBRL(opsProfit)}</b> · Giros: <b class="${profitClass(girosProfit)}">${formatBRL(girosProfit)}</b></div>`;
+    }
+    return `<div class="giros-breakdown">Giros (não incluso): <b class="${profitClass(girosProfit)}">${formatBRL(girosProfit)}</b></div>`;
+  };
+
+  const todayTotal = data.today.profit + (dashIncludeGiros ? (giros.today.profit || 0) : 0);
+  const weekTotal = data.week.profit + (dashIncludeGiros ? (giros.week.profit || 0) : 0);
+  const monthTotal = data.month.profit + (dashIncludeGiros ? (giros.month.profit || 0) : 0);
+  const allTotal = data.allTime.profit + (dashIncludeGiros ? (giros.allTime.profit || 0) : 0);
 
   document.getElementById('stats-grid').innerHTML = `
     <div class="stat-card">
       <div class="stat-label">Lucro Hoje</div>
-      <div class="stat-value ${profitClass(data.today.profit)}">${formatBRL(data.today.profit)}</div>
+      <div class="stat-value ${profitClass(todayTotal)}">${formatBRL(todayTotal)}</div>
       <div class="stat-sub">
         ${data.today.count} operação(ões)
-        ${statDelta(data.today.profit, yesterdayProfit, 'ontem')}
+        ${statDelta(todayTotal, yesterdayProfit, 'ontem')}
       </div>
+      ${mkLine(data.today.profit, giros.today.profit || 0)}
     </div>
     <div class="stat-card">
       <div class="stat-label">Lucro na Semana</div>
-      <div class="stat-value ${profitClass(data.week.profit)}">${formatBRL(data.week.profit)}</div>
+      <div class="stat-value ${profitClass(weekTotal)}">${formatBRL(weekTotal)}</div>
       <div class="stat-sub">
         ${data.week.count} operação(ões)
-        ${statDelta(data.week.profit, prevWeekProfit, 'semana anterior')}
+        ${statDelta(weekTotal, prevWeekProfit, 'semana anterior')}
       </div>
+      ${mkLine(data.week.profit, giros.week.profit || 0)}
     </div>
     <div class="stat-card">
       <div class="stat-label">Lucro no Mês</div>
-      <div class="stat-value ${profitClass(data.month.profit)}">${formatBRL(data.month.profit)}</div>
+      <div class="stat-value ${profitClass(monthTotal)}">${formatBRL(monthTotal)}</div>
       <div class="stat-sub">
         ${data.month.count} operação(ões)
-        ${statDelta(data.month.profit, prevMonthProfit, 'mês anterior')}
+        ${statDelta(monthTotal, prevMonthProfit, 'mês anterior')}
       </div>
+      ${mkLine(data.month.profit, giros.month.profit || 0)}
     </div>
     <div class="stat-card">
       <div class="stat-label">Lucro Total</div>
-      <div class="stat-value ${profitClass(data.allTime.profit)}">${formatBRL(data.allTime.profit)}</div>
+      <div class="stat-value ${profitClass(allTotal)}">${formatBRL(allTotal)}</div>
       <div class="stat-sub">
         ${data.allTime.count} operação(ões)
         ${avgDaily > 0 ? `<span class="stat-avg" title="Média diária desde a primeira operação">\u00D8 ${formatBRL(avgDaily)}/dia</span>` : ''}
       </div>
+      ${mkLine(data.allTime.profit, giros.allTime.profit || 0)}
     </div>
   `;
 }
@@ -1675,25 +1708,48 @@ async function deleteAccount(id) {
 }
 
 // ===== RANKING =====
+let rankingTab = 'general'; // 'general' | 'sortudos'
+
 async function renderRanking() {
   const mc = document.getElementById('main-content');
   mc.innerHTML = `
     <div class="page-header">
       <div>
         <h1 class="page-title">Ranking</h1>
-        <p class="page-description">Membros do grupo ranqueados por lucro total</p>
+        <p class="page-description">Membros do grupo ranqueados por lucro</p>
       </div>
+    </div>
+    <div class="watcher-tabs" style="margin-bottom:16px">
+      <button class="watcher-tab ${rankingTab === 'general' ? 'active' : ''}" onclick="switchRankingTab('general')">Ranking Geral</button>
+      <button class="watcher-tab ${rankingTab === 'sortudos' ? 'active' : ''}" onclick="switchRankingTab('sortudos')">Sortudos (Giros)</button>
     </div>
     <div class="table-container">
       <div id="ranking-content"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
     </div>
   `;
+  loadRankingTab();
+}
 
+function switchRankingTab(tab) {
+  rankingTab = tab;
+  document.querySelectorAll('.watcher-tabs .watcher-tab').forEach(b => {
+    b.classList.toggle('active',
+      (tab === 'general' && b.textContent.includes('Geral')) ||
+      (tab === 'sortudos' && b.textContent.includes('Sortudos')));
+  });
+  loadRankingTab();
+}
+
+async function loadRankingTab() {
+  const container = document.getElementById('ranking-content');
+  if (!container) return;
+  container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div>`;
   try {
-    const data = await api('/api/ranking');
-    const container = document.getElementById('ranking-content');
+    const endpoint = rankingTab === 'sortudos' ? '/api/ranking/sortudos' : '/api/ranking';
+    const data = await api(endpoint);
     if (!data.length) {
-      container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">&#127942;</div><div class="empty-state-text">Nenhum membro visivel no ranking</div><div class="empty-state-sub">Ative a visibilidade nas Configura\u00E7\u00F5es</div></div>`;
+      const emptyText = rankingTab === 'sortudos' ? 'Nenhum giro registrado ainda' : 'Nenhum membro visivel no ranking';
+      container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">&#127942;</div><div class="empty-state-text">${emptyText}</div><div class="empty-state-sub">${rankingTab === 'sortudos' ? 'Registre giros na aba Giros' : 'Ative a visibilidade nas Configura\u00E7\u00F5es'}</div></div>`;
       return;
     }
 
@@ -1709,6 +1765,9 @@ async function renderRanking() {
           const avatarInner = dAvatar
             ? `<img src="${dAvatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" onerror="this.parentElement.textContent='${escapeHtml(dName.charAt(0).toUpperCase())}'"/>`
             : escapeHtml(dName.charAt(0).toUpperCase());
+          const subLine = rankingTab === 'sortudos'
+            ? `${u.total_giros} giro(s) registrado(s) · ${u.total_quantity || 0} giros grátis`
+            : `${u.total_ops} opera\u00E7\u00F5es`;
           return `
             <div class="ranking-row ${isMe ? 'ranking-me' : ''}" style="
               display:flex;align-items:center;gap:16px;
@@ -1728,7 +1787,7 @@ async function renderRanking() {
               ">${avatarInner}</div>
               <div style="flex:1;min-width:0">
                 <div style="font-weight:600;font-size:15px;${isMe ? 'color:var(--primary)' : ''}">${escapeHtml(dName)}${isMe ? ' (voc\u00EA)' : ''}</div>
-                <div style="font-size:12px;color:var(--text-muted)">${u.total_ops} opera\u00E7\u00F5es</div>
+                <div style="font-size:12px;color:var(--text-muted)">${subLine}</div>
               </div>
               <div style="text-align:right">
                 <div class="${profitClass(profitVal)}" style="font-weight:700;font-size:17px;font-family:'JetBrains Mono',monospace">${formatBRL(profitVal)}</div>
@@ -1739,7 +1798,7 @@ async function renderRanking() {
       </div>
     `;
   } catch (err) {
-    document.getElementById('ranking-content').innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
+    container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -3137,6 +3196,292 @@ async function deleteFreebet(id) {
     toast('Registro excluído');
     loadFreebets();
   } catch (err) { toast(err.message, 'error'); }
+}
+
+// ===== GIROS =====
+
+let girosPlatforms = [];
+let girosList = [];
+let girosRecentOps = [];
+let girosEditingId = null;
+
+async function renderGiros() {
+  const mc = document.getElementById('main-content');
+  mc.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Giros</h1>
+        <p class="page-description">Registre giros grátis recebidos das plataformas</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost" onclick="openGirosPlatformsModal()">Plataformas</button>
+        <button class="btn btn-primary" onclick="showGiroForm()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Novo Giro
+        </button>
+      </div>
+    </div>
+    <div id="giros-form-area"></div>
+    <div class="table-container">
+      <div class="table-header"><h3 class="table-title">Histórico de Giros</h3></div>
+      <div id="giros-list"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+    </div>
+  `;
+  await loadGirosData();
+  renderGirosList();
+}
+
+async function loadGirosData() {
+  try {
+    const [platforms, list, ops] = await Promise.all([
+      api('/api/giros/platforms'),
+      api('/api/giros'),
+      api('/api/operations?limit=50').catch(() => ({ operations: [] })),
+    ]);
+    girosPlatforms = platforms || [];
+    girosList = list || [];
+    girosRecentOps = (ops && ops.operations) ? ops.operations : (Array.isArray(ops) ? ops : []);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function renderGirosList() {
+  const container = document.getElementById('giros-list');
+  if (!container) return;
+  if (!girosList.length) {
+    container.innerHTML = `<div class="empty-state">
+      <div class="empty-state-icon">&#127775;</div>
+      <div class="empty-state-text">Nenhum giro registrado</div>
+      <div class="empty-state-sub">Clique em "Novo Giro" para começar</div>
+    </div>`;
+    return;
+  }
+  const total = girosList.length;
+  container.innerHTML = girosList.map((g, idx) => {
+    const num = total - idx;
+    const opLoss = (g.operation && Number(g.operation.profit) < 0) ? Number(g.operation.profit) : 0;
+    const giroProfit = Number(g.profit) || 0;
+    const hasOp = !!g.operation;
+    const netTotal = giroProfit + opLoss;
+    const breakdown = hasOp
+      ? `<div class="giro-breakdown">
+           <span>Lucro giro: <b class="${profitClass(giroProfit)}">${formatBRL(giroProfit)}</b></span>
+           <span>${opLoss < 0 ? 'Perda operação' : 'Resultado operação'}: <b class="${profitClass(Number(g.operation.profit))}">${formatBRL(Number(g.operation.profit))}</b></span>
+           <span>Total: <b class="${profitClass(netTotal)}">${formatBRL(netTotal)}</b></span>
+         </div>`
+      : '';
+    return `
+      <div class="giro-card">
+        <div class="giro-card-head">
+          <div class="giro-title">Giros grátis #${num}</div>
+          <div class="giro-date">${formatDate(g.created_at)}</div>
+        </div>
+        <div class="giro-grid">
+          <div><div class="giro-k">Plataforma</div><div class="giro-v">${escapeHtml(g.platform_name || '-')}</div></div>
+          <div><div class="giro-k">Quantidade</div><div class="giro-v">${g.quantity}</div></div>
+          <div><div class="giro-k">Lucro giro</div><div class="giro-v ${profitClass(giroProfit)}">${formatBRL(giroProfit)}</div></div>
+          <div><div class="giro-k">Operação</div><div class="giro-v">${hasOp ? escapeHtml(g.operation.game || ('#' + g.operation.id)) : '—'}</div></div>
+          ${g.notes ? `<div class="giro-notes-row"><div class="giro-k">Notas</div><div class="giro-v">${escapeHtml(g.notes)}</div></div>` : ''}
+        </div>
+        ${breakdown}
+        <div class="giro-actions">
+          <button class="btn btn-ghost btn-sm" onclick="editGiro(${g.id})">Editar</button>
+          <button class="btn btn-ghost btn-sm" onclick="deleteGiro(${g.id})" style="color:var(--danger)">Excluir</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function showGiroForm(existing) {
+  girosEditingId = existing ? existing.id : null;
+  const area = document.getElementById('giros-form-area');
+  if (!area) return;
+
+  const platformOpts = girosPlatforms.length
+    ? girosPlatforms.map(p => `<option value="${p.id}" ${existing && existing.platform_id === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')
+    : '';
+
+  const opOpts = girosRecentOps.map(op => {
+    const sel = existing && existing.operation_id === op.id ? 'selected' : '';
+    const label = `#${op.id} — ${op.game || ''} (${formatBRL(op.profit)})`;
+    return `<option value="${op.id}" ${sel}>${escapeHtml(label)}</option>`;
+  }).join('');
+
+  area.innerHTML = `
+    <div class="chart-container">
+      <h3 class="chart-title">${existing ? 'Editar giro' : 'Registrar giro grátis'}</h3>
+      <form id="giro-form" class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Plataforma</label>
+          ${girosPlatforms.length
+            ? `<select class="form-select" id="giro-platform" required><option value="">Selecione</option>${platformOpts}</select>`
+            : `<div style="display:flex;gap:8px">
+                 <input type="text" class="form-input" id="giro-new-platform" placeholder="Nome da plataforma" required>
+                 <button type="button" class="btn btn-ghost" onclick="addGiroPlatformInline()">Adicionar</button>
+               </div>
+               <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Nenhuma plataforma cadastrada — adicione a primeira acima.</div>`}
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantidade</label>
+          <input type="number" min="0" step="1" class="form-input" id="giro-qty" value="${existing ? existing.quantity : ''}" placeholder="0" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Lucro do giro (R$)</label>
+          <input type="number" step="0.01" class="form-input" id="giro-profit" value="${existing ? existing.profit : ''}" placeholder="0,00" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Operação vinculada (opcional)</label>
+          <select class="form-select" id="giro-op">
+            <option value="">Nenhuma</option>
+            ${opOpts}
+          </select>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Útil quando os giros vieram de uma promoção cumprida em uma operação.</div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notas (opcional)</label>
+          <textarea class="form-textarea" id="giro-notes" rows="2" placeholder="Observações">${existing && existing.notes ? escapeHtml(existing.notes) : ''}</textarea>
+        </div>
+        <div class="form-group full" style="display:flex;gap:12px;justify-content:flex-end">
+          <button type="button" class="btn btn-ghost" onclick="closeGiroForm()">Cancelar</button>
+          <button type="submit" class="btn btn-primary">${existing ? 'Salvar' : 'Registrar giro'}</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  document.getElementById('giro-form').addEventListener('submit', saveGiro);
+}
+
+function closeGiroForm() {
+  const area = document.getElementById('giros-form-area');
+  if (area) area.innerHTML = '';
+  girosEditingId = null;
+}
+
+async function addGiroPlatformInline() {
+  const input = document.getElementById('giro-new-platform');
+  if (!input) return;
+  const name = input.value.trim();
+  if (!name) { toast('Informe o nome da plataforma', 'error'); return; }
+  try {
+    await api('/api/giros/platforms', { method: 'POST', body: { name } });
+    girosPlatforms = await api('/api/giros/platforms');
+    showGiroForm(null);
+    toast('Plataforma adicionada');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function saveGiro(e) {
+  e.preventDefault();
+  const platform_id = Number(document.getElementById('giro-platform')?.value) || null;
+  if (!platform_id) { toast('Selecione uma plataforma', 'error'); return; }
+  const quantity = Number(document.getElementById('giro-qty').value) || 0;
+  const profit = Number(document.getElementById('giro-profit').value) || 0;
+  const opVal = document.getElementById('giro-op').value;
+  const operation_id = opVal ? Number(opVal) : null;
+  const notes = document.getElementById('giro-notes').value;
+
+  try {
+    if (girosEditingId) {
+      await api(`/api/giros/${girosEditingId}`, {
+        method: 'PUT',
+        body: { platform_id, quantity, profit, operation_id, notes },
+      });
+      toast('Giro atualizado');
+    } else {
+      await api('/api/giros', {
+        method: 'POST',
+        body: { platform_id, quantity, profit, operation_id, notes },
+      });
+      toast('Giro registrado');
+    }
+    closeGiroForm();
+    await loadGirosData();
+    renderGirosList();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function editGiro(id) {
+  const g = girosList.find(x => x.id === id);
+  if (!g) return;
+  showGiroForm(g);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function deleteGiro(id) {
+  if (!confirm('Excluir este giro?')) return;
+  try {
+    await api(`/api/giros/${id}`, { method: 'DELETE' });
+    toast('Giro excluído');
+    await loadGirosData();
+    renderGirosList();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function openGirosPlatformsModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'giros-platforms-modal';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px">
+      <div class="modal-header">
+        <h3 class="modal-title">Plataformas de giros</h3>
+        <button class="modal-close" onclick="closeGirosPlatformsModal()">&times;</button>
+      </div>
+      <div style="padding:4px 0 12px">
+        <form id="giros-platform-add-form" style="display:flex;gap:8px;margin-bottom:16px">
+          <input type="text" class="form-input" id="giros-new-platform-name" placeholder="Nome da plataforma" required style="flex:1">
+          <button type="submit" class="btn btn-primary">Adicionar</button>
+        </form>
+        <div id="giros-platforms-list"></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById('giros-platform-add-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const inp = document.getElementById('giros-new-platform-name');
+    const name = inp.value.trim();
+    if (!name) return;
+    try {
+      await api('/api/giros/platforms', { method: 'POST', body: { name } });
+      inp.value = '';
+      girosPlatforms = await api('/api/giros/platforms');
+      renderGirosPlatformsModalList();
+      toast('Plataforma adicionada');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  renderGirosPlatformsModalList();
+}
+
+function renderGirosPlatformsModalList() {
+  const el = document.getElementById('giros-platforms-list');
+  if (!el) return;
+  if (!girosPlatforms.length) {
+    el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:16px 0">Nenhuma plataforma cadastrada</div>`;
+    return;
+  }
+  el.innerHTML = girosPlatforms.map(p => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:14px">${escapeHtml(p.name)}</span>
+      <button class="btn btn-ghost btn-sm" onclick="deleteGiroPlatform(${p.id})" style="color:var(--danger)">Excluir</button>
+    </div>
+  `).join('');
+}
+
+async function deleteGiroPlatform(id) {
+  if (!confirm('Excluir esta plataforma?')) return;
+  try {
+    await api(`/api/giros/platforms/${id}`, { method: 'DELETE' });
+    girosPlatforms = await api('/api/giros/platforms');
+    renderGirosPlatformsModalList();
+    toast('Plataforma excluída');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function closeGirosPlatformsModal() {
+  const el = document.getElementById('giros-platforms-modal');
+  if (el) el.remove();
 }
 
 // ===== GROUP =====

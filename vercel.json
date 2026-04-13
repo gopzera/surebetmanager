@@ -20,11 +20,11 @@
   "crons": [
     {
       "path": "/api/watcher/cron-poll",
-      "schedule": "0 12 * * *"
+      "schedule": "0 15 * * *"
     },
     {
       "path": "/api/notifications/cron-poly-poll",
-      "schedule": "0 12 * * *"
+      "schedule": "0 15 * * *"
     }
   ]
 }

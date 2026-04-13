@@ -18,6 +18,7 @@ app.use('/api/ranking', require('./routes/ranking'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/giros', require('./routes/giros'));
 
 // Static files & SPA fallback (local dev only; Vercel handles via CDN + rewrites)
 if (!process.env.VERCEL) {

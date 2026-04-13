@@ -86,6 +86,28 @@ router.get('/stats', async (req, res) => {
       userId
     );
 
+    // Giros profit (all-time + per period) — kept separate so the frontend can toggle inclusion
+    const girosTodayRow = await db.get(
+      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
+       FROM giros WHERE user_id = ? AND DATE(created_at) = ?`,
+      userId, today
+    );
+    const girosWeekRow = await db.get(
+      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
+       FROM giros WHERE user_id = ? AND DATE(created_at) >= ?`,
+      userId, weekStart
+    );
+    const girosMonthRow = await db.get(
+      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
+       FROM giros WHERE user_id = ? AND DATE(created_at) >= ?`,
+      userId, monthStart
+    );
+    const girosAllRow = await db.get(
+      `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
+       FROM giros WHERE user_id = ?`,
+      userId
+    );
+
     // Average daily profit (for all-time comparison)
     const firstOp = await db.get(
       `SELECT DATE(created_at) as first_date FROM operations WHERE user_id = ? ORDER BY created_at ASC LIMIT 1`,
@@ -168,7 +190,13 @@ router.get('/stats', async (req, res) => {
       profitByType,
       dailyProfits,
       recentOps,
-      weekStart
+      weekStart,
+      giros: {
+        today: girosTodayRow,
+        week: girosWeekRow,
+        month: girosMonthRow,
+        allTime: girosAllRow,
+      },
     });
   } catch (err) {
     console.error(err);

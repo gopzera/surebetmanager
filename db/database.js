@@ -163,6 +163,34 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_id);
   CREATE INDEX IF NOT EXISTS idx_admin_actions_target ON admin_actions(target_user_id);
+
+  CREATE TABLE IF NOT EXISTS giros_platforms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(user_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS giros (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    platform_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    profit REAL NOT NULL DEFAULT 0,
+    operation_id INTEGER,
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (platform_id) REFERENCES giros_platforms(id),
+    FOREIGN KEY (operation_id) REFERENCES operations(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_giros_user ON giros(user_id);
+  CREATE INDEX IF NOT EXISTS idx_giros_platform ON giros(platform_id);
+  CREATE INDEX IF NOT EXISTS idx_giros_operation ON giros(operation_id);
+  CREATE INDEX IF NOT EXISTS idx_giros_platforms_user ON giros_platforms(user_id);
 `;
 
 let initPromise = null;

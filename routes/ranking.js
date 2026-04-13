@@ -30,6 +30,33 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Sortudos — ranking based on giros profit only
+router.get('/sortudos', async (req, res) => {
+  try {
+    const rows = await db.all(
+      `SELECT
+        u.id,
+        u.display_name,
+        u.discord_id,
+        u.discord_username,
+        u.discord_avatar,
+        COALESCE(SUM(g.profit), 0) as total_profit,
+        COUNT(g.id) as total_giros,
+        COALESCE(SUM(g.quantity), 0) as total_quantity
+      FROM users u
+      LEFT JOIN giros g ON g.user_id = u.id
+      WHERE u.show_in_ranking = 1
+      GROUP BY u.id
+      HAVING total_giros > 0
+      ORDER BY total_profit DESC`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
 // Get/update current user's ranking preference
 router.get('/me', async (req, res) => {
   try {
