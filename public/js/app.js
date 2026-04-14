@@ -54,13 +54,39 @@ function profitClass(val) {
 }
 
 function typeLabel(type) {
-  const labels = { aquecimento: 'Aquecimento', arbitragem: 'Arbitragem', aumentada25: 'Aumentada 25%' };
+  const labels = {
+    aquecimento: 'Aquecimento',
+    arbitragem: 'Arbitragem',
+    aumentada25: 'Aumentada 25%',
+    arbitragem_br: 'Arbitragem BR',
+  };
   return labels[type] || type;
 }
 
 function resultLabel(result) {
-  const labels = { pending: 'Pendente', bet365_won: 'Bet365', poly_won: 'Poly', void: 'Anulado' };
+  const labels = {
+    pending: 'Pendente',
+    bet365_won: 'Bet365',
+    poly_won: 'Poly',
+    won: 'Concluída',
+    void: 'Anulado',
+  };
   return labels[result] || result;
+}
+
+// Parse extra_bets JSON safely — operations may store it as string or already-parsed.
+function parseExtraBets(op) {
+  if (!op || op.extra_bets == null) return [];
+  if (Array.isArray(op.extra_bets)) return op.extra_bets;
+  try { return JSON.parse(op.extra_bets) || []; } catch { return []; }
+}
+
+// Totals/labels for an arbitragem_br op — all legs live in extra_bets.
+function brLegsSummary(op) {
+  const legs = parseExtraBets(op);
+  const totalStake = legs.reduce((s, l) => s + (Number(l.stake) || 0), 0);
+  const bookmakers = legs.map(l => (l.bookmaker || '').trim()).filter(Boolean);
+  return { legs, totalStake, bookmakers };
 }
 
 function formatDate(d) {
@@ -595,7 +621,7 @@ function renderProfitChart(dailyProfits) {
 function renderTypeChart(profitByType) {
   const ctx = document.getElementById('type-chart');
   if (!ctx) return;
-  const typeColors = { aquecimento: '#ffa726', arbitragem: '#00c853', aumentada25: '#6c5ce7' };
+  const typeColors = { aquecimento: '#ffa726', arbitragem: '#00c853', aumentada25: '#6c5ce7', arbitragem_br: '#26c6da' };
   if (!profitByType.length) {
     charts.type = new Chart(ctx, {
       type: 'doughnut',
@@ -633,17 +659,21 @@ function renderRecentTable(ops) {
         <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake B365</th><th>Stake Poly</th><th>Lucro</th><th>Contas</th><th>Status</th>
       </tr></thead>
       <tbody>
-        ${ops.map(op => `<tr>
+        ${ops.map(op => {
+          const isBR = op.type === 'arbitragem_br';
+          const br = isBR ? brLegsSummary(op) : null;
+          return `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
           <td>${renderTagsDisplay(op.tags)}</td>
-          <td>${formatBRL(op.stake_bet365)}</td>
-          <td>${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span></td>
+          <td>${isBR ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
+          <td>${isBR ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
-          <td>${(op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-'}</td>
+          <td>${isBR ? (br.bookmakers.map(escapeHtml).join(', ') || '-') : ((op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-')}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
-        </tr>`).join('')}
+        </tr>`;
+        }).join('')}
       </tbody>
     </table>
   `;
@@ -692,6 +722,11 @@ async function renderNewOperation() {
           <div class="type-option-name">Aumentada 25%</div>
           <div class="type-option-desc">Promoção de odds aumentadas</div>
         </div>
+        <div class="type-option" data-type="arbitragem_br" onclick="selectType(this)">
+          <div class="type-option-icon">&#127463;&#127479;</div>
+          <div class="type-option-name">Arbitragem BR</div>
+          <div class="type-option-desc">Casas brasileiras variadas (só R$)</div>
+        </div>
       </div>
       <input type="hidden" id="new-type">
 
@@ -701,30 +736,32 @@ async function renderNewOperation() {
       </div>
 
       ${activeAccounts.length ? `
-      <h3 class="chart-title" style="margin:24px 0 12px">Contas Utilizadas</h3>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Selecione quais contas Bet365 foram usadas nesta operação</p>
-      <label class="account-check" style="margin-bottom:12px;cursor:pointer;display:inline-flex">
-        <input type="checkbox" id="new-custom-stakes-toggle" onchange="toggleCustomStakes('new')">
-        <div class="account-check-dot"></div>
-        <div style="font-size:13px">Usar stake personalizado por conta</div>
-      </label>
-      <div class="accounts-checklist" id="new-accounts-list">
-        ${activeAccounts.map(acc => `
-          <label class="account-check" onclick="accountCheckClick(event, this)">
-            <input type="checkbox" name="accounts" value="${acc.id}" data-account-id="${acc.id}">
-            <div class="account-check-dot"></div>
-            <div style="flex:1">
-              <div>${escapeHtml(acc.name)}</div>
-              <div class="account-check-info">Max aumentada: ${formatBRL(acc.max_stake_aumentada)}</div>
-            </div>
-            <input type="number" step="0.01" min="0" class="form-input per-account-stake"
-              data-account-id="${acc.id}"
-              placeholder="R$"
-              style="display:none;width:100px;margin-left:8px"
-              onclick="event.stopPropagation()"
-              oninput="onPerAccountStakeChange('new')">
-          </label>
-        `).join('')}
+      <div id="new-accounts-section">
+        <h3 class="chart-title" style="margin:24px 0 12px">Contas Utilizadas</h3>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Selecione quais contas Bet365 foram usadas nesta operação</p>
+        <label class="account-check" style="margin-bottom:12px;cursor:pointer;display:inline-flex">
+          <input type="checkbox" id="new-custom-stakes-toggle" onchange="toggleCustomStakes('new')">
+          <div class="account-check-dot"></div>
+          <div style="font-size:13px">Usar stake personalizado por conta</div>
+        </label>
+        <div class="accounts-checklist" id="new-accounts-list">
+          ${activeAccounts.map(acc => `
+            <label class="account-check" onclick="accountCheckClick(event, this)">
+              <input type="checkbox" name="accounts" value="${acc.id}" data-account-id="${acc.id}">
+              <div class="account-check-dot"></div>
+              <div style="flex:1">
+                <div>${escapeHtml(acc.name)}</div>
+                <div class="account-check-info">Max aumentada: ${formatBRL(acc.max_stake_aumentada)}</div>
+              </div>
+              <input type="number" step="0.01" min="0" class="form-input per-account-stake"
+                data-account-id="${acc.id}"
+                placeholder="R$"
+                style="display:none;width:100px;margin-left:8px"
+                onclick="event.stopPropagation()"
+                oninput="onPerAccountStakeChange('new')">
+            </label>
+          `).join('')}
+        </div>
       </div>
       ` : ''}
 
@@ -737,59 +774,72 @@ async function renderNewOperation() {
           <label class="form-label">Resultado</label>
           <select class="form-select" id="new-result">
             <option value="pending">Pendente</option>
-            <option value="bet365_won">Bet365 Ganhou</option>
-            <option value="poly_won">Polymarket Ganhou</option>
+            <option value="bet365_won" data-for="bet365-poly">Bet365 Ganhou</option>
+            <option value="poly_won" data-for="bet365-poly">Polymarket Ganhou</option>
+            <option value="won" data-for="br" hidden>Concluída</option>
             <option value="void">Anulado</option>
           </select>
         </div>
       </div>
 
-      <h3 class="chart-title" style="margin:24px 0 16px">Bet365 (BRL) <span id="new-bet365-label" style="font-size:12px;font-weight:400;color:var(--text-muted)"></span></h3>
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Stake Total Bet365 (R$) <span style="font-size:11px;color:var(--text-muted)">(soma de todas as contas)</span></label>
-          <input type="number" step="0.01" min="0" class="form-input" id="new-stake-bet365" placeholder="0,00">
+      <div id="new-bet365-section">
+        <h3 class="chart-title" style="margin:24px 0 16px">Bet365 (BRL) <span id="new-bet365-label" style="font-size:12px;font-weight:400;color:var(--text-muted)"></span></h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Stake Total Bet365 (R$) <span style="font-size:11px;color:var(--text-muted)">(soma de todas as contas)</span></label>
+            <input type="number" step="0.01" min="0" class="form-input" id="new-stake-bet365" placeholder="0,00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Odd Bet365</label>
+            <input type="number" step="0.01" min="1" class="form-input" id="new-odd-bet365" placeholder="0,00">
+          </div>
+          <div class="form-group full">
+            <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 10px">
+              <input type="checkbox" id="new-uses-freebet">
+              <div class="account-check-dot"></div>
+              <div style="font-size:13px">Usar saldo de freebet nesta aposta (n\u00E3o conta no volume e paga s\u00F3 o lucro)</div>
+            </label>
+          </div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Odd Bet365</label>
-          <input type="number" step="0.01" min="1" class="form-input" id="new-odd-bet365" placeholder="0,00">
-        </div>
-        <div class="form-group full">
-          <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 10px">
-            <input type="checkbox" id="new-uses-freebet">
-            <div class="account-check-dot"></div>
-            <div style="font-size:13px">Usar saldo de freebet nesta aposta (n\u00E3o conta no volume e paga s\u00F3 o lucro)</div>
-          </label>
+        <div id="stake-per-account-info" style="font-size:12px;color:var(--text-muted);margin-bottom:16px"></div>
+
+        <div id="new-extra-bets-section" style="display:none;margin-top:16px">
+          <h3 class="chart-title" style="margin:0 0 12px">Apostas Secund\u00E1rias Bet365
+            <span style="font-size:12px;font-weight:400;color:var(--text-muted)">(fechando as demais op\u00E7\u00F5es)</span>
+          </h3>
+          <div id="new-extra-bets-list"></div>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="addExtraBet()">+ Adicionar aposta</button>
         </div>
       </div>
-      <div id="stake-per-account-info" style="font-size:12px;color:var(--text-muted);margin-bottom:16px"></div>
 
-      <div id="new-extra-bets-section" style="display:none;margin-top:16px">
-        <h3 class="chart-title" style="margin:0 0 12px">Apostas Secund\u00E1rias Bet365
-          <span style="font-size:12px;font-weight:400;color:var(--text-muted)">(fechando as demais op\u00E7\u00F5es)</span>
+      <div id="new-poly-section">
+        <h3 class="chart-title" style="margin:24px 0 16px">Polymarket (USD)</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Stake Polymarket (USD)</label>
+            <input type="number" step="0.01" min="0" class="form-input" id="new-stake-poly-usd" placeholder="0,00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Odd Polymarket</label>
+            <input type="number" step="0.01" min="1" class="form-input" id="new-odd-poly" placeholder="0,00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Cotação USD/BRL <span id="new-rate-status" style="font-size:11px"></span></label>
+            <input type="number" step="0.0001" min="0" class="form-input" id="new-exchange-rate" placeholder="Buscando...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Equivalente em BRL</label>
+            <input type="text" class="form-input" id="new-poly-brl" readonly style="opacity:0.7">
+          </div>
+        </div>
+      </div>
+
+      <div id="new-br-legs-section" style="display:none">
+        <h3 class="chart-title" style="margin:24px 0 12px">Apostas (R$)
+          <span style="font-size:12px;font-weight:400;color:var(--text-muted)">uma linha por casa de aposta</span>
         </h3>
-        <div id="new-extra-bets-list"></div>
-        <button type="button" class="btn btn-ghost btn-sm" onclick="addExtraBet()">+ Adicionar aposta</button>
-      </div>
-
-      <h3 class="chart-title" style="margin:24px 0 16px">Polymarket (USD)</h3>
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Stake Polymarket (USD)</label>
-          <input type="number" step="0.01" min="0" class="form-input" id="new-stake-poly-usd" placeholder="0,00">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Odd Polymarket</label>
-          <input type="number" step="0.01" min="1" class="form-input" id="new-odd-poly" placeholder="0,00">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Cotação USD/BRL <span id="new-rate-status" style="font-size:11px"></span></label>
-          <input type="number" step="0.0001" min="0" class="form-input" id="new-exchange-rate" placeholder="Buscando...">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Equivalente em BRL</label>
-          <input type="text" class="form-input" id="new-poly-brl" readonly style="opacity:0.7">
-        </div>
+        <div id="new-br-legs-list"></div>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="addBrLeg()">+ Adicionar aposta</button>
       </div>
 
       <h3 class="chart-title" style="margin:24px 0 16px">Resultado Financeiro</h3>
@@ -883,7 +933,9 @@ async function renderNewOperation() {
 
   function updateAutoProfit() {
     const result = resultSelect?.value;
-    if (result === 'pending') {
+    const type = document.getElementById('new-type')?.value;
+    // BR arbitrage doesn't fit the bet365/poly profit formula — leave to manual entry.
+    if (result === 'pending' || type === 'arbitragem_br') {
       autoProfitInfo.style.display = 'none';
       return;
     }
@@ -939,10 +991,18 @@ async function renderNewOperation() {
       if (fb) fb.checked = true;
     }
     if (imp.extraBets && imp.extraBets.length) {
-      const list = document.getElementById('new-extra-bets-list');
-      if (list) {
-        list.innerHTML = '';
-        imp.extraBets.forEach(b => addExtraBet(b));
+      if (imp.type === 'arbitragem_br') {
+        const list = document.getElementById('new-br-legs-list');
+        if (list) {
+          list.innerHTML = '';
+          imp.extraBets.forEach(b => addBrLeg(b));
+        }
+      } else {
+        const list = document.getElementById('new-extra-bets-list');
+        if (list) {
+          list.innerHTML = '';
+          imp.extraBets.forEach(b => addExtraBet(b));
+        }
       }
     }
     if (imp.exchangeRate) {
@@ -992,14 +1052,40 @@ function selectType(el) {
   el.classList.add('selected');
   const t = el.dataset.type;
   document.getElementById('new-type').value = t;
+  const isBR = t === 'arbitragem_br';
+
+  // Toggle bet365/poly/accounts sections (hidden for BR).
+  const setDisplay = (id, show) => { const n = document.getElementById(id); if (n) n.style.display = show ? '' : 'none'; };
+  setDisplay('new-bet365-section', !isBR);
+  setDisplay('new-poly-section', !isBR);
+  setDisplay('new-accounts-section', !isBR);
+  setDisplay('new-br-legs-section', isBR);
+
   const extraSection = document.getElementById('new-extra-bets-section');
   const label = document.getElementById('new-bet365-label');
   if (extraSection) extraSection.style.display = t === 'aumentada25' ? '' : 'none';
   if (label) label.textContent = t === 'aumentada25' ? '— aposta principal (aumentada)' : '';
+
+  // Result dropdown: BR uses generic "Concluída"; others use bet365_won / poly_won.
+  const resultSel = document.getElementById('new-result');
+  if (resultSel) {
+    for (const opt of resultSel.options) {
+      if (opt.dataset.for === 'bet365-poly') opt.hidden = isBR;
+      if (opt.dataset.for === 'br') opt.hidden = !isBR;
+    }
+    const curOpt = resultSel.selectedOptions[0];
+    if (curOpt && curOpt.hidden) resultSel.value = 'pending';
+  }
+
   // Aumentada operations use 4 bets by default — seed two extras if list is empty.
   if (t === 'aumentada25') {
     const list = document.getElementById('new-extra-bets-list');
     if (list && !list.children.length) { addExtraBet(); addExtraBet(); }
+  }
+  // BR arbitrage defaults to 2 legs.
+  if (isBR) {
+    const list = document.getElementById('new-br-legs-list');
+    if (list && !list.children.length) { addBrLeg(); addBrLeg(); }
   }
 }
 
@@ -1046,6 +1132,46 @@ function collectExtraBets(containerId = 'new-extra-bets-list') {
   return out;
 }
 
+// BR arbitrage legs: free-text bookmaker name, BRL stake, odd. All legs live in
+// extra_bets for this type; stake_bet365/odd_bet365/poly columns stay at 0.
+function brLegRowHtml(data = {}) {
+  return `
+    <div class="form-grid br-leg-row" style="align-items:end;padding:8px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">
+      <div class="form-group">
+        <label class="form-label">Casa</label>
+        <input type="text" class="form-input br-leg-bookmaker" value="${data.bookmaker ? escapeHtml(data.bookmaker) : ''}" placeholder="Ex: Superbet, KTO...">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Stake (R$)</label>
+        <input type="number" step="0.01" min="0" class="form-input br-leg-stake" value="${data.stake != null ? Number(data.stake).toFixed(2) : ''}" placeholder="0,00">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Odd</label>
+        <input type="number" step="0.01" min="1" class="form-input br-leg-odd" value="${data.odd != null ? Number(data.odd).toFixed(2) : ''}" placeholder="0,00">
+      </div>
+      <div class="form-group" style="text-align:right">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.br-leg-row').remove()">Remover</button>
+      </div>
+    </div>
+  `;
+}
+function addBrLeg(data) {
+  const list = document.getElementById('new-br-legs-list');
+  if (!list) return;
+  list.insertAdjacentHTML('beforeend', brLegRowHtml(data));
+}
+function collectBrLegs() {
+  const rows = document.querySelectorAll('#new-br-legs-list .br-leg-row');
+  const out = [];
+  for (const row of rows) {
+    const bookmaker = (row.querySelector('.br-leg-bookmaker')?.value || '').trim();
+    const stake = parseFloat(row.querySelector('.br-leg-stake')?.value) || 0;
+    const odd = parseFloat(row.querySelector('.br-leg-odd')?.value) || 0;
+    if (stake > 0 || odd > 0) out.push({ bookmaker, stake, odd });
+  }
+  return out;
+}
+
 async function submitNewOperation(e) {
   e.preventDefault();
   const type = document.getElementById('new-type').value;
@@ -1070,26 +1196,36 @@ async function submitNewOperation(e) {
     totalStakeBet365 = sum;
   }
 
+  const isBR = type === 'arbitragem_br';
   const body = {
     type,
     game: document.getElementById('new-game').value.trim(),
     event_date: document.getElementById('new-event-date').value,
-    stake_bet365: totalStakeBet365,
-    odd_bet365: parseFloat(document.getElementById('new-odd-bet365').value) || 0,
-    stake_poly_usd: parseFloat(document.getElementById('new-stake-poly-usd').value) || 0,
-    odd_poly: parseFloat(document.getElementById('new-odd-poly').value) || 0,
-    exchange_rate: parseFloat(document.getElementById('new-exchange-rate').value) || 5.0,
+    stake_bet365: isBR ? 0 : totalStakeBet365,
+    odd_bet365: isBR ? 0 : (parseFloat(document.getElementById('new-odd-bet365').value) || 0),
+    stake_poly_usd: isBR ? 0 : (parseFloat(document.getElementById('new-stake-poly-usd').value) || 0),
+    odd_poly: isBR ? 0 : (parseFloat(document.getElementById('new-odd-poly').value) || 0),
+    exchange_rate: isBR ? 1 : (parseFloat(document.getElementById('new-exchange-rate').value) || 5.0),
     result: document.getElementById('new-result').value,
     profit: parseFloat(document.getElementById('new-profit').value) || 0,
     notes: document.getElementById('new-notes').value.trim(),
     tags: getTagsFromInput('new-tags'),
-    uses_freebet: document.getElementById('new-uses-freebet')?.checked || false,
+    uses_freebet: isBR ? false : (document.getElementById('new-uses-freebet')?.checked || false),
   };
   if (type === 'aumentada25') {
     body.extra_bets = collectExtraBets();
+  } else if (isBR) {
+    const legs = collectBrLegs();
+    if (legs.length < 2) { toast('Registre pelo menos 2 apostas', 'error'); return; }
+    body.extra_bets = legs;
   }
-  if (account_stakes) body.account_stakes = account_stakes;
-  else body.account_ids = account_ids;
+  if (isBR) {
+    body.account_ids = [];
+  } else if (account_stakes) {
+    body.account_stakes = account_stakes;
+  } else {
+    body.account_ids = account_ids;
+  }
 
   try {
     await api('/api/operations', { method: 'POST', body });
@@ -1169,6 +1305,7 @@ async function renderHistory() {
         <option value="aquecimento">Aquecimento</option>
         <option value="arbitragem">Arbitragem</option>
         <option value="aumentada25">Aumentada 25%</option>
+        <option value="arbitragem_br">Arbitragem BR</option>
       </select>
       <select class="form-select" id="filter-tag" onchange="loadHistory()">
         <option value="">Todas tags</option>
@@ -1233,14 +1370,17 @@ function renderHistoryTable(ops) {
         <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake B365</th><th>Stake Poly</th><th>Contas</th><th>Lucro</th><th>Status</th><th></th>
       </tr></thead>
       <tbody>
-        ${ops.map(op => `<tr>
+        ${ops.map(op => {
+          const isBR = op.type === 'arbitragem_br';
+          const br = isBR ? brLegsSummary(op) : null;
+          return `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
           <td>${renderTagsDisplay(op.tags)}</td>
-          <td>${formatBRL(op.stake_bet365)}</td>
-          <td>${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span></td>
-          <td style="font-size:12px">${(op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-'}</td>
+          <td>${isBR ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
+          <td>${isBR ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
+          <td style="font-size:12px">${isBR ? (br.bookmakers.map(escapeHtml).join(', ') || '-') : ((op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-')}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
           <td>
@@ -1250,7 +1390,8 @@ function renderHistoryTable(ops) {
               <button class="delete" onclick="deleteOperation(${op.id})" title="Excluir">&#128465;</button>
             </div>
           </td>
-        </tr>`).join('')}
+        </tr>`;
+        }).join('')}
       </tbody>
     </table>
   `;
@@ -1325,6 +1466,7 @@ async function openEditModal(id) {
 }
 
 function fillEditModal(op) {
+  const isBR = op.type === 'arbitragem_br';
   document.getElementById('edit-id').value = op.id;
   document.getElementById('edit-type').value = op.type;
   document.getElementById('edit-game').value = op.game;
@@ -1337,6 +1479,34 @@ function fillEditModal(op) {
   document.getElementById('edit-exchange-rate').value = op.exchange_rate;
   document.getElementById('edit-profit').value = op.profit;
   document.getElementById('edit-notes').value = op.notes || '';
+
+  // Toggle bet365/poly fields vs BR leg summary.
+  document.querySelectorAll('#edit-form .edit-bp-field').forEach(el => { el.style.display = isBR ? 'none' : ''; });
+  const brWrap = document.getElementById('edit-br-legs-wrap');
+  if (brWrap) brWrap.style.display = isBR ? '' : 'none';
+  if (isBR) {
+    const { legs, totalStake } = brLegsSummary(op);
+    const view = document.getElementById('edit-br-legs-view');
+    if (view) {
+      view.innerHTML = legs.length
+        ? legs.map(l => `
+          <div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+            <span>${escapeHtml(l.bookmaker || '—')}</span>
+            <span>${formatBRL(l.stake)} @ ${Number(l.odd || 0).toFixed(2)}</span>
+          </div>
+        `).join('') + `<div style="display:flex;justify-content:space-between;padding-top:6px;font-weight:600"><span>Total</span><span>${formatBRL(totalStake)}</span></div>`
+        : '<span>Sem apostas registradas.</span>';
+    }
+  }
+
+  // Result select: hide bet365/poly options for BR, show won option.
+  const resSel = document.getElementById('edit-result');
+  if (resSel) {
+    for (const opt of resSel.options) {
+      if (opt.dataset.for === 'bet365-poly') opt.hidden = isBR;
+      if (opt.dataset.for === 'br') opt.hidden = !isBR;
+    }
+  }
 
   // Reset auto-profit info
   const autoProfitInfo = document.getElementById('edit-auto-profit-info');
@@ -1418,7 +1588,8 @@ function wireEditAutoProfit(_originalResult) {
   function updateEditAutoProfit() {
     if (!autoProfitInfo) return;
     const result = resultSelect?.value;
-    if (result === 'pending') { autoProfitInfo.style.display = 'none'; return; }
+    const type = document.getElementById('edit-type')?.value;
+    if (result === 'pending' || type === 'arbitragem_br') { autoProfitInfo.style.display = 'none'; return; }
     const p = computeProfit(
       stakeBet365?.value, oddBet365?.value,
       stakePolyUsd?.value, oddPoly?.value,

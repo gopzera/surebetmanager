@@ -5,9 +5,9 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 router.use(auth);
 
-// Aumentadas frequently use 3+ Bet365 bets. Main bet stays in stake_bet365/odd_bet365;
-// the rest go here as JSON: [{stake, odd, uses_freebet}]. Kept loose so the shape can
-// evolve without migrations — validation is at the boundary only.
+// Flexible JSON column. Shape varies by operation type:
+//   aumentada25:  [{stake, odd, uses_freebet}]         (extra Bet365 legs)
+//   arbitragem_br: [{stake, odd, bookmaker}]           (all legs; bet365/poly cols stay 0)
 function serializeExtraBets(val) {
   if (val == null) return null;
   if (typeof val === 'string') {
@@ -15,11 +15,18 @@ function serializeExtraBets(val) {
   }
   if (!Array.isArray(val)) return null;
   const cleaned = val
-    .map(b => ({
-      stake: Number(b?.stake) || 0,
-      odd: Number(b?.odd) || 0,
-      uses_freebet: b?.uses_freebet ? 1 : 0,
-    }))
+    .map(b => {
+      const entry = {
+        stake: Number(b?.stake) || 0,
+        odd: Number(b?.odd) || 0,
+      };
+      if (b?.uses_freebet !== undefined) entry.uses_freebet = b.uses_freebet ? 1 : 0;
+      if (b?.bookmaker != null) {
+        const bk = String(b.bookmaker).trim().slice(0, 80);
+        if (bk) entry.bookmaker = bk;
+      }
+      return entry;
+    })
     .filter(b => b.stake > 0 || b.odd > 0);
   return cleaned.length ? JSON.stringify(cleaned) : null;
 }

@@ -157,6 +157,7 @@
               <option value="aquecimento">Aquecimento/Clube</option>
               <option value="arbitragem">Arbitragem</option>
               <option value="aumentada25">Aumentada 25%</option>
+              <option value="arbitragem_br">Arbitragem BR</option>
             </select>
           </div>
           <div class="form-group">
@@ -171,28 +172,29 @@
             <label class="form-label">Resultado</label>
             <select class="form-select" id="edit-result">
               <option value="pending">Pendente</option>
-              <option value="bet365_won">Bet365 Ganhou</option>
-              <option value="poly_won">Polymarket Ganhou</option>
+              <option value="bet365_won" data-for="bet365-poly">Bet365 Ganhou</option>
+              <option value="poly_won" data-for="bet365-poly">Polymarket Ganhou</option>
+              <option value="won" data-for="br" hidden>Concluída</option>
               <option value="void">Anulado</option>
             </select>
           </div>
-          <div class="form-group">
+          <div class="form-group edit-bp-field">
             <label class="form-label">Stake Bet365 Total (R$)</label>
             <input type="number" step="0.01" class="form-input" id="edit-stake-bet365">
           </div>
-          <div class="form-group">
+          <div class="form-group edit-bp-field">
             <label class="form-label">Odd Bet365</label>
             <input type="number" step="0.01" class="form-input" id="edit-odd-bet365">
           </div>
-          <div class="form-group">
+          <div class="form-group edit-bp-field">
             <label class="form-label">Stake Polymarket (USD)</label>
             <input type="number" step="0.01" class="form-input" id="edit-stake-poly-usd">
           </div>
-          <div class="form-group">
+          <div class="form-group edit-bp-field">
             <label class="form-label">Odd Polymarket</label>
             <input type="number" step="0.01" class="form-input" id="edit-odd-poly">
           </div>
-          <div class="form-group">
+          <div class="form-group edit-bp-field">
             <label class="form-label">Cotação USD/BRL</label>
             <input type="number" step="0.0001" class="form-input" id="edit-exchange-rate">
           </div>
@@ -203,7 +205,12 @@
           <div class="form-group full">
             <div id="edit-auto-profit-info" style="display:none;font-size:12px;margin-bottom:4px"></div>
           </div>
-          <div class="form-group full">
+          <div class="form-group full edit-br-field" id="edit-br-legs-wrap" style="display:none">
+            <label class="form-label">Apostas registradas</label>
+            <div id="edit-br-legs-view" style="font-size:13px;color:var(--text-muted);border:1px dashed var(--border);border-radius:var(--r-sm);padding:10px"></div>
+            <p style="font-size:11px;color:var(--text-muted);margin-top:6px">Para alterar as apostas, duplique a operação e registre uma nova.</p>
+          </div>
+          <div class="form-group full edit-bp-field">
             <label class="form-label">Contas Utilizadas</label>
             <div id="edit-accounts-list" class="accounts-checklist"></div>
           </div>

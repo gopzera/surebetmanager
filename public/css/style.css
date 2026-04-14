@@ -14,6 +14,7 @@
   --aquecimento: #ffa726;
   --arbitragem: #00c853;
   --aumentada: #6c5ce7;
+  --arbitragem-br: #26c6da;
   --radius: 12px;
   --shadow: 0 4px 24px rgba(0,0,0,0.3);
 }
@@ -324,6 +325,7 @@ tbody tr:last-child td { border-bottom: none; }
 .badge-aquecimento { background: rgba(255,167,38,0.15); color: var(--aquecimento); }
 .badge-arbitragem { background: rgba(0,200,83,0.15); color: var(--arbitragem); }
 .badge-aumentada25 { background: rgba(108,92,231,0.15); color: var(--aumentada); }
+.badge-arbitragem_br { background: rgba(38,198,218,0.15); color: var(--arbitragem-br); }
 .badge-pending { background: rgba(41,182,246,0.15); color: var(--info); }
 .badge-won { background: rgba(0,200,83,0.15); color: var(--success); }
 .badge-void { background: rgba(139,143,163,0.15); color: var(--text-muted); }
