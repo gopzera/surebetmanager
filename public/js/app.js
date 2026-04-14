@@ -1479,6 +1479,8 @@ function fillEditModal(op) {
   document.getElementById('edit-exchange-rate').value = op.exchange_rate;
   document.getElementById('edit-profit').value = op.profit;
   document.getElementById('edit-notes').value = op.notes || '';
+  const editFb = document.getElementById('edit-uses-freebet');
+  if (editFb) editFb.checked = !!op.uses_freebet;
 
   // Toggle bet365/poly fields vs BR leg summary.
   document.querySelectorAll('#edit-form .edit-bp-field').forEach(el => { el.style.display = isBR ? 'none' : ''; });
@@ -1651,6 +1653,7 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     profit: parseFloat(document.getElementById('edit-profit').value) || 0,
     notes: document.getElementById('edit-notes').value,
     tags: getTagsFromInput('edit-tags'),
+    uses_freebet: !!document.getElementById('edit-uses-freebet')?.checked,
   };
   if (account_stakes) body.account_stakes = account_stakes;
   else body.account_ids = account_ids;
