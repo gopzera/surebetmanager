@@ -2088,20 +2088,21 @@ async function loadRankingTab() {
 }
 
 // ===== CALCULATOR =====
-// -- Polymarket fee categories (effective from 30/03/2026) --
+// -- Polymarket taker fees (docs.polymarket.com/trading/fees) --
+// Formula: fee_shares = C * feeRate * p * (1 - p). Makers are free.
 const POLY_CATS = {
-  "None (free)":   { feeRate: 0,     exponent: 0   },
-  "Crypto":        { feeRate: 0.072, exponent: 1   },
-  "Sports":        { feeRate: 0.03,  exponent: 1   },
-  "Finance":       { feeRate: 0.04,  exponent: 1   },
-  "Politics":      { feeRate: 0.04,  exponent: 1   },
-  "Tech":          { feeRate: 0.04,  exponent: 1   },
-  "Culture":       { feeRate: 0.05,  exponent: 1   },
-  "Economics":     { feeRate: 0.03,  exponent: 0.5 },
-  "Weather":       { feeRate: 0.025, exponent: 0.5 },
-  "Other/General": { feeRate: 0.2,   exponent: 2   },
-  "Mentions":      { feeRate: 0.25,  exponent: 2   },
-  "Geopolitical":  { feeRate: 0,     exponent: 0   },
+  "None (free)":   { feeRate: 0     },
+  "Crypto":        { feeRate: 0.072 },
+  "Sports":        { feeRate: 0.03  },
+  "Finance":       { feeRate: 0.04  },
+  "Politics":      { feeRate: 0.04  },
+  "Tech":          { feeRate: 0.04  },
+  "Mentions":      { feeRate: 0.04  },
+  "Culture":       { feeRate: 0.05  },
+  "Economics":     { feeRate: 0.05  },
+  "Weather":       { feeRate: 0.05  },
+  "Other/General": { feeRate: 0.05  },
+  "Geopolitical":  { feeRate: 0     },
 };
 const CAT_KEYS = Object.keys(POLY_CATS);
 
@@ -2156,7 +2157,9 @@ function makeCalcRow(id) {
  * Effective odds taking commission and bet type into account.
  * Back bet: eff = 1 + (raw-1)*(1 - c%)  [commission on profit only]
  * Lay  bet: eff = raw - c%              [lay formula]
- * Then apply Polymarket taker fee on top (back only).
+ * For Polymarket takers, the fee is charged in shares at buy time
+ * (fee_shares = C * feeRate * p * (1-p)), so the effective payout-per-dollar
+ * drops by the same fraction: adjEff = eff * (1 - feeRate * p * (1-p)).
  */
 function calcEffOdds(raw, commPct, betType, usePoly, catKey) {
   if (!raw || raw <= 1) return null;
@@ -2169,10 +2172,10 @@ function calcEffOdds(raw, commPct, betType, usePoly, catKey) {
   }
   if (eff <= 1) return null;
   if (!usePoly || betType === "lay") return eff;
-  const { feeRate, exponent } = POLY_CATS[catKey];
+  const { feeRate } = POLY_CATS[catKey];
   if (!feeRate) return eff;
   const p = 1 / eff;
-  const adjEff = 1 / (p * (1 + feeRate * Math.pow(p * (1 - p), exponent)));
+  const adjEff = eff * (1 - feeRate * p * (1 - p));
   return adjEff > 1 ? adjEff : null;
 }
 
@@ -2181,10 +2184,10 @@ function calcTakerFeePct(raw, commPct, catKey) {
   const c = (parseFloat(commPct) || 0) / 100;
   const eff = 1 + (raw - 1) * (1 - c);
   if (eff <= 1) return 0;
-  const { feeRate, exponent } = POLY_CATS[catKey];
+  const { feeRate } = POLY_CATS[catKey];
   if (!feeRate) return 0;
   const p = 1 / eff;
-  return feeRate * Math.pow(p * (1 - p), exponent) * 100;
+  return feeRate * p * (1 - p) * 100;
 }
 
 function cf2(n) { return (typeof n === "number" && isFinite(n)) ? n.toFixed(2) : "\u2014"; }
