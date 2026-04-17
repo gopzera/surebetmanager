@@ -188,10 +188,18 @@
           </div>
           <div class="form-group full edit-bp-field">
             <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 10px">
-              <input type="checkbox" id="edit-uses-freebet">
+              <input type="checkbox" id="edit-uses-freebet" onchange="toggleMainFreebetAccount('edit')">
               <div class="account-check-dot"></div>
               <div style="font-size:13px">Usar saldo de freebet nesta aposta (não conta no volume e paga só o lucro)</div>
             </label>
+            <div id="edit-freebet-account-wrap" style="display:none;margin-left:32px;margin-top:6px">
+              <select class="form-select" id="edit-freebet-account" style="max-width:240px"></select>
+            </div>
+          </div>
+          <div class="form-group full edit-bp-field" id="edit-extra-bets-section" style="display:none">
+            <label class="form-label">Apostas Secundárias Bet365</label>
+            <div id="edit-extra-bets-list"></div>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="addExtraBet({},'edit-extra-bets-list')">+ Adicionar aposta</button>
           </div>
           <div class="form-group edit-bp-field">
             <label class="form-label">Stake Polymarket (USD)</label>

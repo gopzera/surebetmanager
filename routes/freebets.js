@@ -68,6 +68,49 @@ router.get('/', async (req, res) => {
       volumeByKey[key] = (volumeByKey[key] || 0) + Number(r.stake_share || 0);
     }
 
+    // Derive freebet usage from operations.
+    // Main bet: uses_freebet=1 + freebet_account_id → charge stake_bet365 to that account.
+    // Extra bets: JSON entries with uses_freebet=1 + account_id → charge entry.stake.
+    // Attribution goes to the EARNING week = op's week − 1 (freebet earned in W, used in W+1).
+    const fbOps = await db.all(
+      `SELECT
+         o.stake_bet365,
+         o.freebet_account_id,
+         COALESCE(o.uses_freebet, 0) as uses_freebet,
+         o.extra_bets,
+         ${OP_DATE_EXPR} as eff_date
+       FROM operations o
+       WHERE o.user_id = ? AND ${OP_DATE_EXPR} >= ?
+         AND (o.uses_freebet = 1 OR o.extra_bets IS NOT NULL)`,
+      userId, oldestStr
+    );
+    const derivedUsedByKey = {};
+    function addUsed(accId, earningWeek, amount) {
+      if (!accId || !earningWeek || !amount) return;
+      const key = `${accId}|${earningWeek}`;
+      derivedUsedByKey[key] = (derivedUsedByKey[key] || 0) + amount;
+    }
+    for (const fbOp of fbOps) {
+      const spendWeek = getWeekStart(fbOp.eff_date);
+      // Earning week = the Monday before the spending week.
+      const spendDate = new Date(spendWeek + 'T00:00:00');
+      spendDate.setDate(spendDate.getDate() - 7);
+      const earningWeek = spendDate.toISOString().split('T')[0];
+
+      if (fbOp.uses_freebet && fbOp.freebet_account_id) {
+        addUsed(fbOp.freebet_account_id, earningWeek, Number(fbOp.stake_bet365) || 0);
+      }
+      if (fbOp.extra_bets) {
+        let extras = [];
+        try { extras = JSON.parse(fbOp.extra_bets) || []; } catch {}
+        for (const eb of extras) {
+          if (eb.uses_freebet && eb.account_id) {
+            addUsed(eb.account_id, earningWeek, Number(eb.stake) || 0);
+          }
+        }
+      }
+    }
+
     const adjRows = await db.all(
       `SELECT account_id, week_start, dismissed, used_amount
        FROM freebet_adjustments
@@ -109,14 +152,24 @@ router.get('/', async (req, res) => {
       for (const a of adjRows) {
         if (a.week_start === week_start) accIds.add(a.account_id);
       }
+      // Include accounts with derived freebet usage.
+      for (const key of Object.keys(derivedUsedByKey)) {
+        const [accId, ws] = key.split('|');
+        if (ws === week_start) accIds.add(Number(accId));
+      }
 
       const accounts = [...accIds].map(accId => {
         const meta = accountMeta[accId] || { name: 'Conta', hidden: false };
         const volume = volumeByKey[`${accId}|${week_start}`] || 0;
         const earned = volume >= WEEKLY_VOLUME_GOAL;
-        const adj = adjByKey[`${accId}|${week_start}`] || { dismissed: 0, used_amount: 0 };
-        const dismissed = !!adj.dismissed;
-        const used_amount = Number(adj.used_amount || 0);
+        const adj = adjByKey[`${accId}|${week_start}`];
+        const dismissed = !!(adj?.dismissed);
+        // Manual override (used_amount > 0 in adjustments) takes precedence;
+        // otherwise derive from operations that flagged freebet usage.
+        const derived = derivedUsedByKey[`${accId}|${week_start}`] || 0;
+        const used_amount = (adj && Number(adj.used_amount) > 0)
+          ? Number(adj.used_amount)
+          : derived;
         return {
           account_id: accId,
           account_name: meta.name,

@@ -6,14 +6,18 @@ const router = express.Router();
 router.use(auth);
 
 // Flexible JSON column. Shape varies by operation type:
-//   aumentada25:  [{stake, odd, uses_freebet}]         (extra Bet365 legs)
-//   arbitragem_br: [{stake, odd, bookmaker}]           (all legs; bet365/poly cols stay 0)
-function serializeExtraBets(val) {
+//   aumentada25:  [{stake, odd, uses_freebet, account_id}]   (extra Bet365 legs;
+//                                                             account_id attributes
+//                                                             freebet spend when
+//                                                             uses_freebet=1)
+//   arbitragem_br: [{stake, odd, bookmaker}]                 (all legs; bet365/poly cols stay 0)
+function serializeExtraBets(val, validAccountIds) {
   if (val == null) return null;
   if (typeof val === 'string') {
     try { JSON.parse(val); return val; } catch { return null; }
   }
   if (!Array.isArray(val)) return null;
+  const allowed = Array.isArray(validAccountIds) ? new Set(validAccountIds.map(Number)) : null;
   const cleaned = val
     .map(b => {
       const entry = {
@@ -24,6 +28,12 @@ function serializeExtraBets(val) {
       if (b?.bookmaker != null) {
         const bk = String(b.bookmaker).trim().slice(0, 80);
         if (bk) entry.bookmaker = bk;
+      }
+      if (b?.account_id != null) {
+        const accId = Number(b.account_id);
+        if (Number.isFinite(accId) && (!allowed || allowed.has(accId))) {
+          entry.account_id = accId;
+        }
       }
       return entry;
     })
@@ -86,17 +96,20 @@ router.get('/', async (req, res) => {
 // Create operation
 router.post('/', async (req, res) => {
   try {
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet, freebet_account_id } = req.body;
 
     if (!type || !game) {
       return res.status(400).json({ error: 'Tipo e jogo são obrigatórios' });
     }
-    const extraBetsStr = serializeExtraBets(extra_bets);
 
     // Resolve account entries: prefer account_stakes (custom per-account stake),
     // fall back to account_ids (equal split, stake = NULL).
     const userAccountsList = await db.all('SELECT id FROM accounts WHERE user_id = ?', req.user.id);
     const userAccountIds = userAccountsList.map(a => a.id);
+
+    const extraBetsStr = serializeExtraBets(extra_bets, userAccountIds);
+    const freebetAccountId = (uses_freebet && freebet_account_id != null && userAccountIds.includes(Number(freebet_account_id)))
+      ? Number(freebet_account_id) : null;
     const accountEntries = [];
     if (Array.isArray(account_stakes) && account_stakes.length > 0) {
       for (const entry of account_stakes) {
@@ -116,14 +129,14 @@ router.post('/', async (req, res) => {
 
     const id = await db.transaction(async (tx) => {
       const r = await tx.run(
-        `INSERT INTO operations (user_id, type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, extra_bets, uses_freebet)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO operations (user_id, type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, extra_bets, uses_freebet, freebet_account_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         req.user.id, type, game, event_date || null,
         stake_bet365 || 0, odd_bet365 || 0,
         stake_poly_usd || 0, odd_poly || 0,
         exchange_rate || 5.0,
         result || 'pending', profit || 0, notes || null,
-        extraBetsStr, uses_freebet ? 1 : 0
+        extraBetsStr, uses_freebet ? 1 : 0, freebetAccountId
       );
 
       for (const entry of accountEntries) {
@@ -162,26 +175,29 @@ router.put('/:id', async (req, res) => {
     const op = await db.get('SELECT * FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!op) return res.status(404).json({ error: 'Operação não encontrada' });
 
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet, freebet_account_id } = req.body;
 
     const userAccounts = await db.all('SELECT id FROM accounts WHERE user_id = ?', req.user.id);
     const userAccountIds = userAccounts.map(a => a.id);
 
-    const nextExtraBets = extra_bets !== undefined ? serializeExtraBets(extra_bets) : op.extra_bets;
+    const nextExtraBets = extra_bets !== undefined ? serializeExtraBets(extra_bets, userAccountIds) : op.extra_bets;
     const nextUsesFreebet = uses_freebet !== undefined ? (uses_freebet ? 1 : 0) : (op.uses_freebet || 0);
+    const nextFreebetAccountId = freebet_account_id !== undefined
+      ? (freebet_account_id != null && userAccountIds.includes(Number(freebet_account_id)) ? Number(freebet_account_id) : null)
+      : (op.freebet_account_id || null);
 
     await db.transaction(async (tx) => {
       await tx.run(
         `UPDATE operations SET type=?, game=?, event_date=?, stake_bet365=?, odd_bet365=?,
           stake_poly_usd=?, odd_poly=?, exchange_rate=?, result=?, profit=?, notes=?,
-          extra_bets=?, uses_freebet=?
+          extra_bets=?, uses_freebet=?, freebet_account_id=?
         WHERE id = ?`,
         type ?? op.type, game ?? op.game, event_date ?? op.event_date,
         stake_bet365 ?? op.stake_bet365, odd_bet365 ?? op.odd_bet365,
         stake_poly_usd ?? op.stake_poly_usd, odd_poly ?? op.odd_poly,
         exchange_rate ?? op.exchange_rate,
         result ?? op.result, profit ?? op.profit, notes ?? op.notes,
-        nextExtraBets, nextUsesFreebet,
+        nextExtraBets, nextUsesFreebet, nextFreebetAccountId,
         op.id
       );
 

@@ -268,6 +268,11 @@ const db = {
         try {
           await client.execute(`ALTER TABLE operations ADD COLUMN uses_freebet INTEGER NOT NULL DEFAULT 0`);
         } catch (_) {}
+        // Migration: which account's freebet funds the main bet (when uses_freebet=1).
+        // Per-extra-bet attribution lives inside the extra_bets JSON as {account_id}.
+        try {
+          await client.execute(`ALTER TABLE operations ADD COLUMN freebet_account_id INTEGER`);
+        } catch (_) {}
         // Migration: add Discord columns if missing
         for (const col of [
           'discord_id TEXT',

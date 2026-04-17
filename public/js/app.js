@@ -795,10 +795,15 @@ async function renderNewOperation() {
           </div>
           <div class="form-group full">
             <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 10px">
-              <input type="checkbox" id="new-uses-freebet">
+              <input type="checkbox" id="new-uses-freebet" onchange="toggleMainFreebetAccount('new')">
               <div class="account-check-dot"></div>
               <div style="font-size:13px">Usar saldo de freebet nesta aposta (n\u00E3o conta no volume e paga s\u00F3 o lucro)</div>
             </label>
+            <div id="new-freebet-account-wrap" style="display:none;margin-left:32px;margin-top:6px">
+              <select class="form-select" id="new-freebet-account" style="max-width:240px">
+                ${freebetAccountOptions()}
+              </select>
+            </div>
           </div>
         </div>
         <div id="stake-per-account-info" style="font-size:12px;color:var(--text-muted);margin-bottom:16px"></div>
@@ -989,6 +994,11 @@ async function renderNewOperation() {
     if (imp.usesFreebet) {
       const fb = document.getElementById('new-uses-freebet');
       if (fb) fb.checked = true;
+      toggleMainFreebetAccount('new');
+      if (imp.freebetAccountId) {
+        const sel = document.getElementById('new-freebet-account');
+        if (sel) sel.value = imp.freebetAccountId;
+      }
     }
     if (imp.extraBets && imp.extraBets.length) {
       if (imp.type === 'arbitragem_br') {
@@ -1011,6 +1021,16 @@ async function renderNewOperation() {
       rateStatus.style.color = 'var(--success)';
     }
     if (imp.notes) document.getElementById('new-notes').value = imp.notes;
+
+    // Pre-fill profit from calculator (fee-adjusted guaranteed profit).
+    if (imp.minProfitBRL != null) {
+      profitInput.value = imp.minProfitBRL.toFixed(2);
+      if (autoProfitInfo) {
+        autoProfitInfo.textContent = `Lucro garantido da calculadora: ${formatBRL(imp.minProfitBRL)}`;
+        autoProfitInfo.style.display = 'block';
+        autoProfitInfo.style.color = imp.minProfitBRL >= 0 ? 'var(--success)' : 'var(--danger)';
+      }
+    }
 
     // Extra fields from duplicate operation
     if (imp.game) document.getElementById('new-game').value = imp.game;
@@ -1090,8 +1110,14 @@ function selectType(el) {
 }
 
 let _extraBetSeq = 0;
+function freebetAccountOptions(selectedId) {
+  const active = userAccounts.filter(a => a.active);
+  return '<option value="">— conta —</option>' +
+    active.map(a => `<option value="${a.id}" ${a.id === Number(selectedId) ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('');
+}
 function extraBetRowHtml(idx, data = {}) {
   const uid = `extra-${++_extraBetSeq}`;
+  const showAcct = !!data.uses_freebet;
   return `
     <div class="form-grid extra-bet-row" data-uid="${uid}" style="align-items:end;padding:8px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">
       <div class="form-group">
@@ -1104,10 +1130,14 @@ function extraBetRowHtml(idx, data = {}) {
       </div>
       <div class="form-group">
         <label class="account-check" style="cursor:pointer;display:inline-flex;padding:4px 8px">
-          <input type="checkbox" class="extra-bet-freebet" ${data.uses_freebet ? 'checked' : ''}>
+          <input type="checkbox" class="extra-bet-freebet" onchange="toggleExtraBetAccount(this)" ${data.uses_freebet ? 'checked' : ''}>
           <div class="account-check-dot"></div>
           <div style="font-size:12px">Freebet</div>
         </label>
+      </div>
+      <div class="form-group extra-bet-account-wrap" style="display:${showAcct ? '' : 'none'}">
+        <label class="form-label">Conta freebet</label>
+        <select class="form-select extra-bet-account">${freebetAccountOptions(data.account_id)}</select>
       </div>
       <div class="form-group" style="text-align:right">
         <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.extra-bet-row').remove()">Remover</button>
@@ -1115,8 +1145,13 @@ function extraBetRowHtml(idx, data = {}) {
     </div>
   `;
 }
-function addExtraBet(data) {
-  const list = document.getElementById('new-extra-bets-list');
+function toggleExtraBetAccount(cb) {
+  const row = cb.closest('.extra-bet-row');
+  const wrap = row?.querySelector('.extra-bet-account-wrap');
+  if (wrap) wrap.style.display = cb.checked ? '' : 'none';
+}
+function addExtraBet(data, listId = 'new-extra-bets-list') {
+  const list = document.getElementById(listId);
   if (!list) return;
   list.insertAdjacentHTML('beforeend', extraBetRowHtml(list.children.length, data));
 }
@@ -1127,9 +1162,20 @@ function collectExtraBets(containerId = 'new-extra-bets-list') {
     const stake = parseFloat(row.querySelector('.extra-bet-stake')?.value) || 0;
     const odd = parseFloat(row.querySelector('.extra-bet-odd')?.value) || 0;
     const uses_freebet = !!row.querySelector('.extra-bet-freebet')?.checked;
-    if (stake > 0 || odd > 0) out.push({ stake, odd, uses_freebet });
+    const entry = { stake, odd, uses_freebet };
+    if (uses_freebet) {
+      const accSel = row.querySelector('.extra-bet-account');
+      if (accSel?.value) entry.account_id = Number(accSel.value);
+    }
+    if (stake > 0 || odd > 0) out.push(entry);
   }
   return out;
+}
+
+function toggleMainFreebetAccount(prefix) {
+  const cb = document.getElementById(`${prefix}-uses-freebet`);
+  const wrap = document.getElementById(`${prefix}-freebet-account-wrap`);
+  if (wrap) wrap.style.display = cb?.checked ? '' : 'none';
 }
 
 // BR arbitrage legs: free-text bookmaker name, BRL stake, odd. All legs live in
@@ -1211,6 +1257,8 @@ async function submitNewOperation(e) {
     notes: document.getElementById('new-notes').value.trim(),
     tags: getTagsFromInput('new-tags'),
     uses_freebet: isBR ? false : (document.getElementById('new-uses-freebet')?.checked || false),
+    freebet_account_id: (!isBR && document.getElementById('new-uses-freebet')?.checked)
+      ? (document.getElementById('new-freebet-account')?.value || null) : null,
   };
   if (type === 'aumentada25') {
     body.extra_bets = collectExtraBets();
@@ -1434,6 +1482,7 @@ async function duplicateOperation(id) {
       stakeBet365: op.stake_bet365,
       oddBet365: op.odd_bet365,
       usesFreebet: !!op.uses_freebet,
+      freebetAccountId: op.freebet_account_id || null,
       extraBets: extras,
       stakePolyUSD: op.stake_poly_usd,
       oddPoly: op.odd_poly,
@@ -1481,6 +1530,28 @@ function fillEditModal(op) {
   document.getElementById('edit-notes').value = op.notes || '';
   const editFb = document.getElementById('edit-uses-freebet');
   if (editFb) editFb.checked = !!op.uses_freebet;
+
+  // Freebet account picker for main bet
+  const fbAcctSel = document.getElementById('edit-freebet-account');
+  if (fbAcctSel) fbAcctSel.innerHTML = freebetAccountOptions(op.freebet_account_id);
+  const fbAcctWrap = document.getElementById('edit-freebet-account-wrap');
+  if (fbAcctWrap) fbAcctWrap.style.display = op.uses_freebet ? '' : 'none';
+
+  // Extra bets editor (aumentada25 only)
+  const editExtraSection = document.getElementById('edit-extra-bets-section');
+  const editExtraList = document.getElementById('edit-extra-bets-list');
+  const isAumentada = op.type === 'aumentada25';
+  if (editExtraSection) editExtraSection.style.display = isAumentada ? '' : 'none';
+  if (editExtraList && isAumentada) {
+    editExtraList.innerHTML = '';
+    const extras = parseExtraBets(op);
+    if (extras.length) {
+      extras.forEach(b => addExtraBet(b, 'edit-extra-bets-list'));
+    } else {
+      addExtraBet({}, 'edit-extra-bets-list');
+      addExtraBet({}, 'edit-extra-bets-list');
+    }
+  }
 
   // Toggle bet365/poly fields vs BR leg summary.
   document.querySelectorAll('#edit-form .edit-bp-field').forEach(el => { el.style.display = isBR ? 'none' : ''; });
@@ -1654,7 +1725,14 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     notes: document.getElementById('edit-notes').value,
     tags: getTagsFromInput('edit-tags'),
     uses_freebet: !!document.getElementById('edit-uses-freebet')?.checked,
+    freebet_account_id: document.getElementById('edit-uses-freebet')?.checked
+      ? (document.getElementById('edit-freebet-account')?.value || null) : null,
   };
+  // Send extra_bets for aumentada25 edits
+  const editType = document.getElementById('edit-type')?.value;
+  if (editType === 'aumentada25') {
+    body.extra_bets = collectExtraBets('edit-extra-bets-list');
+  }
   if (account_stakes) body.account_stakes = account_stakes;
   else body.account_ids = account_ids;
 
@@ -2160,9 +2238,12 @@ function makeCalcRow(id) {
  * Effective odds taking commission and bet type into account.
  * Back bet: eff = 1 + (raw-1)*(1 - c%)  [commission on profit only]
  * Lay  bet: eff = raw - c%              [lay formula]
- * For Polymarket takers, the fee is charged in shares at buy time
- * (fee_shares = C * feeRate * p * (1-p)), so the effective payout-per-dollar
- * drops by the same fraction: adjEff = eff * (1 - feeRate * p * (1-p)).
+ *
+ * Polymarket taker fees (docs.polymarket.com/trading/fees):
+ *   fee_usdc  = C × feeRate × p × (1-p)          (formula gives USDC)
+ *   On buys, collected in shares: fee_shares = fee_usdc / p = C × feeRate × (1-p)
+ *   Net shares = C × (1 - feeRate × (1-p))
+ *   => adjEff  = eff × (1 - feeRate × (1-p))
  */
 function calcEffOdds(raw, commPct, betType, usePoly, catKey) {
   if (!raw || raw <= 1) return null;
@@ -2178,7 +2259,7 @@ function calcEffOdds(raw, commPct, betType, usePoly, catKey) {
   const { feeRate } = POLY_CATS[catKey];
   if (!feeRate) return eff;
   const p = 1 / eff;
-  const adjEff = eff * (1 - feeRate * p * (1 - p));
+  const adjEff = eff * (1 - feeRate * (1 - p));
   return adjEff > 1 ? adjEff : null;
 }
 
@@ -2190,7 +2271,7 @@ function calcTakerFeePct(raw, commPct, catKey) {
   const { feeRate } = POLY_CATS[catKey];
   if (!feeRate) return 0;
   const p = 1 / eff;
-  return feeRate * p * (1 - p) * 100;
+  return feeRate * (1 - p) * 100;
 }
 
 function cf2(n) { return (typeof n === "number" && isFinite(n)) ? n.toFixed(2) : "\u2014"; }
@@ -2876,6 +2957,10 @@ function calcImportToOperation() {
   const isAumentada = bet365Rows.length >= 3 && polyRows.length >= 1;
   const type = isAumentada ? 'aumentada25' : 'arbitragem';
 
+  // Per-outcome profit in BRL (from calculator, already fee-adjusted).
+  const fx = calcUsdcBrl || 5;
+  const profitsBRL = calcResult.profitsUSD.map(p => p * fx);
+
   window._calcImport = {
     type,
     stakeBet365: mainStakeBRL,
@@ -2884,8 +2969,11 @@ function calcImportToOperation() {
     extraBets: extras,
     stakePolyUSD: polyStakeUSD,
     oddPoly: polyOdd,
-    exchangeRate: calcUsdcBrl || 5,
+    exchangeRate: fx,
     notes: '',
+    // Pre-computed profit per outcome (fee-adjusted).
+    profitsBRL,
+    minProfitBRL: calcResult.minProfit * fx,
   };
 
   navigate('new-operation');
