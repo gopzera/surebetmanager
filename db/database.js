@@ -223,6 +223,61 @@ const SCHEMA = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_freebet_adj_user ON freebet_adjustments(user_id);
+
+  -- Finance operators: people who operate bet365 accounts. Linked 1:N to
+  -- accounts (one account can only belong to one operator). Payments are
+  -- scheduled periodically (monthly/weekly/one-time) or triggered on demand.
+  CREATE TABLE IF NOT EXISTS operators (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    notes TEXT,
+    payment_type TEXT NOT NULL DEFAULT 'monthly' CHECK(payment_type IN ('monthly', 'weekly', 'one_time')),
+    payment_value REAL NOT NULL DEFAULT 0,
+    custom_payment_day INTEGER, -- 1-31 for monthly; 0-6 (0=Sun) for weekly; NULL => fallback to user default
+    pix_key TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  -- account_id UNIQUE: two operators can't share an account.
+  CREATE TABLE IF NOT EXISTS operator_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operator_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL UNIQUE,
+    FOREIGN KEY (operator_id) REFERENCES operators(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+  );
+
+  -- Payments: one row per (operator, period).
+  --   monthly period = YYYY-MM
+  --   weekly period  = YYYY-MM-DD (week-start Monday)
+  --   one_time period= YYYY-MM-DD (scheduled date)
+  CREATE TABLE IF NOT EXISTS operator_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    operator_id INTEGER NOT NULL,
+    period TEXT NOT NULL,
+    due_date DATE,
+    amount REAL NOT NULL DEFAULT 0,
+    tip REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'paid', 'skipped')),
+    paid_at DATETIME,
+    receipt_data TEXT, -- base64 data URL (small images only)
+    receipt_name TEXT,
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (operator_id) REFERENCES operators(id) ON DELETE CASCADE,
+    UNIQUE(operator_id, period)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_operators_user ON operators(user_id);
+  CREATE INDEX IF NOT EXISTS idx_operator_payments_user ON operator_payments(user_id);
+  CREATE INDEX IF NOT EXISTS idx_operator_payments_op ON operator_payments(operator_id);
+  CREATE INDEX IF NOT EXISTS idx_operator_payments_status ON operator_payments(status);
 `;
 
 let initPromise = null;
@@ -299,6 +354,9 @@ const db = {
           'notify_redeem INTEGER NOT NULL DEFAULT 0',
           'poly_last_activity_ts INTEGER NOT NULL DEFAULT 0',
           'is_admin INTEGER NOT NULL DEFAULT 0',
+          // Finanças: default day-of-month (1..31) for operator payments.
+          'default_payment_day INTEGER NOT NULL DEFAULT 5',
+          'notify_operator_payment INTEGER NOT NULL DEFAULT 1',
         ]) {
           try {
             await client.execute(`ALTER TABLE users ADD COLUMN ${col}`);

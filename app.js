@@ -11,6 +11,8 @@ const app = express();
 app.set('trust proxy', 1);
 
 app.use(securityHeaders);
+// Finanças uploads base64 comprovantes — needs a higher limit than other endpoints.
+app.use('/api/finances', express.json({ limit: '1mb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
@@ -34,6 +36,7 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/giros', require('./routes/giros'));
+app.use('/api/finances', require('./routes/finances'));
 
 // Static files & SPA fallback (local dev only; Vercel handles via CDN + rewrites)
 if (!process.env.VERCEL) {
