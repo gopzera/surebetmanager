@@ -6,6 +6,7 @@ let financesSettings = { default_payment_day: 5, notify_operator_payment: true, 
 let financesAvailableAccounts = [];
 let financesPayments = [];
 let financesROI = null;
+let financesAccountPerf = null;
 let financesTags = [];
 let financesFilterOperator = '';
 let financesFilterStatus = '';
@@ -74,6 +75,14 @@ async function renderFinances() {
       <div id="finances-roi-list"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
     </div>
 
+    <div class="chart-container" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+        <h3 class="chart-title" style="margin:0">Performance por conta</h3>
+        <span style="font-size:12px;color:var(--text-muted)">Lucro/volume/ROI por conta Bet365 no mês (ignora pendentes)</span>
+      </div>
+      <div id="finances-account-perf"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+    </div>
+
     <div class="chart-container">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
         <h3 class="chart-title" style="margin:0">Histórico de Pagamentos</h3>
@@ -129,18 +138,29 @@ async function renderFinances() {
 async function loadFinancesData() {
   try {
     const tagParam = financesFilterTag ? `?tag=${encodeURIComponent(financesFilterTag)}` : '';
-    const [operators, summary, settings, tags, roi] = await Promise.all([
+    const month = financesViewMonth || '';
+    const monthStart = month ? `${month}-01` : '';
+    let monthEnd = '';
+    if (month) {
+      const [yy, mm] = month.split('-').map(Number);
+      const lastDay = new Date(yy, mm, 0).getDate();
+      monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
+    }
+    const perfQs = monthStart ? `?from=${monthStart}&to=${monthEnd}` : '';
+    const [operators, summary, settings, tags, roi, accPerf] = await Promise.all([
       api('/api/finances/operators' + tagParam),
-      api(`/api/finances/summary?month=${financesViewMonth || ''}`),
+      api(`/api/finances/summary?month=${month}`),
       api('/api/finances/settings'),
       api('/api/finances/tags'),
-      api(`/api/finances/roi?month=${financesViewMonth || ''}`),
+      api(`/api/finances/roi?month=${month}`),
+      api(`/api/accounts/performance${perfQs}`),
     ]);
     financesOperators = operators || [];
     financesSummary = summary || null;
     financesSettings = settings || financesSettings;
     financesTags = Array.isArray(tags) ? tags : [];
     financesROI = roi || null;
+    financesAccountPerf = accPerf || null;
     await loadFinancesPayments();
   } catch (err) { toast(err.message, 'error'); }
 }
@@ -167,7 +187,45 @@ function renderFinancesUI() {
   renderFinancesOperatorsList();
   renderFinancesOperatorFilter();
   renderFinancesROIList();
+  renderFinancesAccountPerfList();
   renderFinancesPaymentsList();
+}
+
+function renderFinancesAccountPerfList() {
+  const container = document.getElementById('finances-account-perf');
+  if (!container) return;
+  const accounts = (financesAccountPerf?.accounts || []).filter(a => a.op_count > 0);
+  if (!accounts.length) {
+    container.innerHTML = `<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px">Sem operações liquidadas no período.</div>`;
+    return;
+  }
+  container.innerHTML = `
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px">
+            <th style="text-align:left;padding:8px 12px;border-bottom:1px solid var(--border)">Conta</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid var(--border)">Ops</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid var(--border)">Volume</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid var(--border)">Lucro</th>
+            <th style="text-align:right;padding:8px 12px;border-bottom:1px solid var(--border)">ROI</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${accounts.map(a => `
+            <tr>
+              <td style="padding:8px 12px;border-bottom:1px solid var(--border)">
+                ${escapeHtml(a.account_name)}${a.hidden ? ' <span style="font-size:10px;color:var(--text-muted)">(oculta)</span>' : ''}
+              </td>
+              <td style="padding:8px 12px;text-align:right;border-bottom:1px solid var(--border);font-family:var(--mono)">${a.op_count}</td>
+              <td style="padding:8px 12px;text-align:right;border-bottom:1px solid var(--border);font-family:var(--mono)">${formatBRL(a.volume)}</td>
+              <td class="${profitClass(a.attributed_profit)}" style="padding:8px 12px;text-align:right;border-bottom:1px solid var(--border);font-family:var(--mono);font-weight:600">${formatBRL(a.attributed_profit)}</td>
+              <td class="${profitClass(a.roi_pct)}" style="padding:8px 12px;text-align:right;border-bottom:1px solid var(--border);font-family:var(--mono)">${a.roi_pct.toFixed(2)}%</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
 }
 
 function renderFinancesTagFilter() {

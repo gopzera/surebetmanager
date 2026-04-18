@@ -2067,6 +2067,18 @@ async function renderSettings() {
       <div id="wallet-import-result" style="margin-top:10px"></div>
     </div>
 
+    <!-- Tag rules -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:8px">
+        <h3 class="chart-title" style="margin:0">Regras de Tags automáticas</h3>
+        <button class="btn btn-primary btn-sm" onclick="openTagRuleModal()">+ Nova regra</button>
+      </div>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Atribui tags automaticamente a operações que batam com as condições. Avaliado ao criar e editar operação.
+      </p>
+      <div id="tag-rules-list"><div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">Carregando...</div></div>
+    </div>
+
     <!-- Bet365 accounts -->
     <div class="chart-container">
       <h3 class="chart-title" style="margin-bottom:4px">Contas Bet365</h3>
@@ -2096,6 +2108,7 @@ async function renderSettings() {
   `;
 
   renderAccountsList();
+  loadTagRules();
 
   document.getElementById('add-account-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -2257,6 +2270,198 @@ async function deleteAccount(id) {
     toast('Conta removida');
     await loadAccounts();
     renderAccountsList();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ===== TAG RULES =====
+let _tagRulesCache = [];
+const TAG_RULE_FIELDS = [
+  { id: 'type',           label: 'Tipo',           numeric: false },
+  { id: 'game',           label: 'Jogo',           numeric: false },
+  { id: 'notes',          label: 'Notas',          numeric: false },
+  { id: 'result',         label: 'Resultado',      numeric: false },
+  { id: 'odd_bet365',     label: 'Odd Bet365',     numeric: true },
+  { id: 'odd_poly',       label: 'Odd Poly',       numeric: true },
+  { id: 'stake_bet365',   label: 'Stake Bet365',   numeric: true },
+  { id: 'stake_poly_usd', label: 'Stake Poly USD', numeric: true },
+  { id: 'profit',         label: 'Lucro',          numeric: true },
+];
+const TAG_RULE_NUM_OPS = [
+  { id: '>',  label: '>' }, { id: '>=', label: '≥' },
+  { id: '<',  label: '<' }, { id: '<=', label: '≤' },
+  { id: '==', label: '=' }, { id: '!=', label: '≠' },
+];
+const TAG_RULE_STR_OPS = [
+  { id: '==',          label: 'igual a' },
+  { id: '!=',          label: 'diferente de' },
+  { id: 'contains',    label: 'contém' },
+  { id: 'not_contains', label: 'não contém' },
+];
+
+function tagRuleFieldLabel(id) { return (TAG_RULE_FIELDS.find(f => f.id === id) || {}).label || id; }
+function tagRuleOpLabel(id) {
+  return ((TAG_RULE_NUM_OPS.concat(TAG_RULE_STR_OPS)).find(o => o.id === id) || {}).label || id;
+}
+
+async function loadTagRules() {
+  try {
+    _tagRulesCache = await api('/api/tag-rules');
+    renderTagRulesList();
+  } catch (err) {
+    const el = document.getElementById('tag-rules-list');
+    if (el) el.innerHTML = `<div style="color:var(--danger);padding:12px;font-size:13px">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderTagRulesList() {
+  const el = document.getElementById('tag-rules-list');
+  if (!el) return;
+  if (!_tagRulesCache.length) {
+    el.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">Nenhuma regra ainda — clique em "Nova regra".</div>`;
+    return;
+  }
+  el.innerHTML = _tagRulesCache.map(r => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;flex-wrap:wrap">
+      <div style="flex:1;min-width:220px">
+        <div style="font-weight:600;margin-bottom:4px">${escapeHtml(r.name)} → <span class="badge">${escapeHtml(r.tag)}</span></div>
+        <div style="font-size:12px;color:var(--text-muted)">
+          ${(r.conditions || []).map(c => `${escapeHtml(tagRuleFieldLabel(c.field))} ${escapeHtml(tagRuleOpLabel(c.op))} ${escapeHtml(String(c.value))}`).join(' E ')}
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+          <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleTagRule(${r.id}, this.checked)"
+            style="width:16px;height:16px;accent-color:var(--primary)">
+          Ativa
+        </label>
+        <button class="btn btn-ghost btn-sm" onclick="openTagRuleModal(${r.id})">Editar</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteTagRule(${r.id})">Excluir</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function toggleTagRule(id, enabled) {
+  try {
+    await api(`/api/tag-rules/${id}`, { method: 'PUT', body: { enabled } });
+    const r = _tagRulesCache.find(x => x.id === id);
+    if (r) r.enabled = enabled;
+  } catch (err) { toast(err.message, 'error'); loadTagRules(); }
+}
+
+async function deleteTagRule(id) {
+  if (!confirm('Excluir esta regra?')) return;
+  try {
+    await api(`/api/tag-rules/${id}`, { method: 'DELETE' });
+    toast('Regra excluída');
+    loadTagRules();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function openTagRuleModal(id) {
+  const existing = id ? _tagRulesCache.find(r => r.id === id) : null;
+  const rule = existing || { name: '', tag: '', conditions: [{ field: 'odd_bet365', op: '>', value: '' }] };
+
+  const overlay = document.createElement('div');
+  overlay.id = 'tag-rule-modal';
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:640px">
+      <div class="modal-header">
+        <h3 class="modal-title">${existing ? 'Editar regra' : 'Nova regra'}</h3>
+        <button class="modal-close" onclick="closeTagRuleModal()">&times;</button>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Nome da regra</label>
+        <input type="text" class="form-input" id="tr-name" value="${escapeHtml(rule.name)}" placeholder="Ex: Odd alta">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tag a aplicar</label>
+        <input type="text" class="form-input" id="tr-tag" value="${escapeHtml(rule.tag)}" placeholder="Ex: high-odd">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Condições (todas precisam bater)</label>
+        <div id="tr-conds"></div>
+        <button class="btn btn-ghost btn-sm" onclick="tagRuleAddCond()" style="margin-top:8px">+ Adicionar condição</button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeTagRuleModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="saveTagRule(${id || 'null'})">${existing ? 'Salvar' : 'Criar'}</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeTagRuleModal(); });
+  document.body.appendChild(overlay);
+  window._tagRuleDraft = { conditions: JSON.parse(JSON.stringify(rule.conditions || [])) };
+  tagRuleRenderConds();
+}
+
+function closeTagRuleModal() {
+  const el = document.getElementById('tag-rule-modal');
+  if (el) el.remove();
+  delete window._tagRuleDraft;
+}
+
+function tagRuleAddCond() {
+  window._tagRuleDraft.conditions.push({ field: 'odd_bet365', op: '>', value: '' });
+  tagRuleRenderConds();
+}
+
+function tagRuleRemoveCond(idx) {
+  window._tagRuleDraft.conditions.splice(idx, 1);
+  if (!window._tagRuleDraft.conditions.length) tagRuleAddCond();
+  else tagRuleRenderConds();
+}
+
+function tagRuleOnCondChange(idx, key, value) {
+  const c = window._tagRuleDraft.conditions[idx];
+  c[key] = value;
+  if (key === 'field') {
+    const f = TAG_RULE_FIELDS.find(x => x.id === value);
+    const opsList = f?.numeric ? TAG_RULE_NUM_OPS : TAG_RULE_STR_OPS;
+    if (!opsList.some(o => o.id === c.op)) c.op = opsList[0].id;
+    tagRuleRenderConds();
+  }
+}
+
+function tagRuleRenderConds() {
+  const host = document.getElementById('tr-conds');
+  if (!host) return;
+  host.innerHTML = window._tagRuleDraft.conditions.map((c, i) => {
+    const f = TAG_RULE_FIELDS.find(x => x.id === c.field) || TAG_RULE_FIELDS[0];
+    const ops = f.numeric ? TAG_RULE_NUM_OPS : TAG_RULE_STR_OPS;
+    return `
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;flex-wrap:wrap">
+        <select class="form-select" style="max-width:160px" onchange="tagRuleOnCondChange(${i}, 'field', this.value)">
+          ${TAG_RULE_FIELDS.map(x => `<option value="${x.id}" ${x.id === c.field ? 'selected' : ''}>${x.label}</option>`).join('')}
+        </select>
+        <select class="form-select" style="max-width:140px" onchange="tagRuleOnCondChange(${i}, 'op', this.value)">
+          ${ops.map(o => `<option value="${o.id}" ${o.id === c.op ? 'selected' : ''}>${o.label}</option>`).join('')}
+        </select>
+        <input type="${f.numeric ? 'number' : 'text'}" step="0.01" class="form-input" style="flex:1;min-width:120px"
+          value="${escapeHtml(String(c.value ?? ''))}"
+          oninput="tagRuleOnCondChange(${i}, 'value', ${f.numeric ? 'parseFloat(this.value)' : 'this.value'})">
+        <button class="btn btn-ghost btn-sm" onclick="tagRuleRemoveCond(${i})" title="Remover condição">×</button>
+      </div>`;
+  }).join('');
+}
+
+async function saveTagRule(id) {
+  const name = document.getElementById('tr-name').value.trim();
+  const tag = document.getElementById('tr-tag').value.trim().toLowerCase();
+  const conditions = (window._tagRuleDraft.conditions || []).filter(c =>
+    c.field && c.op && c.value !== '' && c.value !== null && !(typeof c.value === 'number' && isNaN(c.value))
+  );
+  if (!name || !tag || !conditions.length) { toast('Nome, tag e condições são obrigatórios', 'error'); return; }
+  try {
+    if (id) {
+      await api(`/api/tag-rules/${id}`, { method: 'PUT', body: { name, tag, conditions } });
+      toast('Regra atualizada');
+    } else {
+      await api('/api/tag-rules', { method: 'POST', body: { name, tag, conditions } });
+      toast('Regra criada');
+    }
+    closeTagRuleModal();
+    loadTagRules();
   } catch (err) { toast(err.message, 'error'); }
 }
 

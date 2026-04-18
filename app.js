@@ -38,6 +38,7 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/giros', require('./routes/giros'));
 app.use('/api/finances', require('./routes/finances'));
 app.use('/api/audit', require('./routes/audit'));
+app.use('/api/tag-rules', require('./routes/tagRules'));
 
 // Static files & SPA fallback (local dev only; Vercel handles via CDN + rewrites)
 if (!process.env.VERCEL) {

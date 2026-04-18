@@ -3,6 +3,7 @@ const db = require('../db/database');
 const auth = require('../middleware/auth');
 const { attachMany, attachScalars } = require('../utils/batch');
 const { audit, diff } = require('../utils/audit');
+const { evaluateRules } = require('../utils/tagRules');
 
 const router = express.Router();
 router.use(auth);
@@ -152,28 +153,34 @@ router.post('/', async (req, res) => {
         );
       }
 
-      // Save tags
-      if (Array.isArray(tags)) {
-        for (const tag of tags) {
-          const t = tag.trim().toLowerCase();
-          if (t) {
-            await tx.run(
-              'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
-              r.lastInsertRowid, t
-            );
-          }
-        }
+      // Save tags — explicit + auto-applied from user's tag_rules. The rule
+      // evaluator reads the payload (type/game/odds/profit/…) and returns
+      // any tags that match; rules fire on create AND update (see PUT).
+      const autoTags = await evaluateRules(db, req.user.id, {
+        type, game, notes, result,
+        odd_bet365, odd_poly,
+        stake_bet365, stake_poly_usd,
+        profit,
+      });
+      const allTags = new Set();
+      if (Array.isArray(tags)) tags.forEach(t => { const v = String(t || '').trim().toLowerCase(); if (v) allTags.add(v); });
+      autoTags.forEach(t => allTags.add(t));
+      for (const t of allTags) {
+        await tx.run(
+          'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
+          r.lastInsertRowid, t
+        );
       }
 
-      return r.lastInsertRowid;
+      return { id: r.lastInsertRowid, tagList: [...allTags] };
     });
 
-    await audit(req, 'operation', id, 'created', {
+    await audit(req, 'operation', id.id, 'created', {
       type, game, event_date, profit, result,
       accounts: accountEntries.map(e => e.accId),
-      tags: Array.isArray(tags) ? tags.slice(0, 10) : [],
+      tags: id.tagList.slice(0, 10),
     });
-    res.json({ id });
+    res.json({ id: id.id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });
@@ -245,16 +252,44 @@ router.put('/:id', async (req, res) => {
         }
       }
 
-      if (tags !== undefined) {
+      // Auto-tags re-evaluated on every edit: the rule fire list tracks the
+      // CURRENT field values, so if the user bumps odd_bet365 above a rule's
+      // threshold the matching tag appears; if they lower it, it disappears.
+      // Only reset tags when the client sent an explicit tags array OR when
+      // any rule-evaluable field was changed (to avoid clobbering manually
+      // added tags on an unrelated field edit).
+      const shouldRetag = tags !== undefined || [
+        'type', 'game', 'notes', 'result',
+        'odd_bet365', 'odd_poly',
+        'stake_bet365', 'stake_poly_usd',
+        'profit',
+      ].some(k => req.body[k] !== undefined);
+
+      if (shouldRetag) {
+        const autoTags = await evaluateRules(db, req.user.id, {
+          type: type ?? op.type, game: game ?? op.game,
+          notes: notes ?? op.notes, result: result ?? op.result,
+          odd_bet365: odd_bet365 ?? op.odd_bet365,
+          odd_poly: odd_poly ?? op.odd_poly,
+          stake_bet365: stake_bet365 ?? op.stake_bet365,
+          stake_poly_usd: stake_poly_usd ?? op.stake_poly_usd,
+          profit: profit ?? op.profit,
+        });
+        const merged = new Set();
+        if (tags !== undefined && Array.isArray(tags)) {
+          tags.forEach(t => { const v = String(t || '').trim().toLowerCase(); if (v) merged.add(v); });
+        } else {
+          const existing = await tx.all('SELECT tag FROM operation_tags WHERE operation_id = ?', op.id);
+          existing.forEach(r => merged.add(r.tag));
+        }
+        autoTags.forEach(t => merged.add(t));
+
         await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', op.id);
-        for (const tag of (tags || [])) {
-          const t = tag.trim().toLowerCase();
-          if (t) {
-            await tx.run(
-              'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
-              op.id, t
-            );
-          }
+        for (const t of merged) {
+          await tx.run(
+            'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
+            op.id, t
+          );
         }
       }
     });
