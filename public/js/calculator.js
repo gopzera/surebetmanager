@@ -1,5 +1,8 @@
 // ===== CALCULATOR =====
 // POLY_CATS, calcEffOdds, calcTakerFeePct live in /js/surebet-math.js (tested via Vitest).
+// Destructured here (not in app.js) because this file loads first; app.js only
+// needs computeProfit and destructures that on its own.
+const { POLY_CATS, calcEffOdds, calcTakerFeePct } = window.SurebetMath;
 const CAT_KEYS = Object.keys(POLY_CATS);
 
 // Fork/formula types

@@ -220,7 +220,9 @@ async function fetchLiveRate() {
 
 // ===== AUTO PROFIT CALCULATION =====
 // Pure math lives in /js/surebet-math.js (shared with Vitest tests).
-const { computeProfit, calcEffOdds, calcTakerFeePct, POLY_CATS } = window.SurebetMath;
+// Destructuring happens in /js/calculator.js (loaded before this file) so the
+// globals are visible here; what we *use directly* in app.js is computeProfit.
+const { computeProfit } = window.SurebetMath;
 
 // ===== AUTH =====
 let isLoginMode = true;
@@ -1472,6 +1474,7 @@ function renderHistoryTable(ops) {
           <td>
             <div class="action-btns">
               <button onclick="duplicateOperation(${op.id})" title="Duplicar">&#128203;</button>
+              <button onclick="openWhatIf(${op.id})" title="Simular what-if">&#128302;</button>
               <button onclick="openEditModal(${op.id})" title="Editar">&#9998;</button>
               <button class="delete" onclick="deleteOperation(${op.id})" title="Excluir">&#128465;</button>
             </div>
@@ -1521,6 +1524,122 @@ function applyDatePreset(preset) {
   document.getElementById('filter-to').value = fmt(to);
   historyPage = 0;
   loadHistory();
+}
+
+// ===== WHAT-IF SIMULATOR =====
+// Non-destructive "o que aconteceria se..." — uses SurebetMath.computeProfit
+// (same math the create/edit form uses for auto-fill) against live inputs.
+// Scoped to the 2-leg types (aquecimento/arbitragem) because computeProfit
+// covers them cleanly; for aumentada25/arbitragem_br the UI explains why.
+let _whatIfOp = null;
+
+async function openWhatIf(id) {
+  try {
+    const { operations } = await api('/api/operations?limit=999');
+    const op = operations.find(o => o.id === id);
+    if (!op) { toast('Operação não encontrada', 'error'); return; }
+    _whatIfOp = op;
+    renderWhatIfModal(op);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function closeWhatIf() {
+  const el = document.getElementById('whatif-modal');
+  if (el) el.remove();
+  _whatIfOp = null;
+}
+
+function renderWhatIfModal(op) {
+  const supported = op.type === 'aquecimento' || op.type === 'arbitragem';
+  const unsupportedNote = supported ? '' : `
+    <div style="padding:12px;background:var(--surface2);border:1px solid var(--warning);border-radius:6px;margin-bottom:12px;font-size:13px">
+      Tipo <b>${escapeHtml(typeLabel(op.type))}</b> usa apostas extras — use a calculadora completa para simular esse cenário.
+    </div>`;
+
+  const fx = op.exchange_rate || 5.0;
+  const body = `
+    ${unsupportedNote}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px">
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px">ORIGINAL</div>
+        <div class="form-group"><label class="form-label">Stake Bet365 (R$)</label>
+          <input type="number" class="form-input" value="${op.stake_bet365}" disabled></div>
+        <div class="form-group"><label class="form-label">Odd Bet365</label>
+          <input type="number" class="form-input" value="${op.odd_bet365}" disabled></div>
+        <div class="form-group"><label class="form-label">Stake Poly (USD)</label>
+          <input type="number" class="form-input" value="${op.stake_poly_usd}" disabled></div>
+        <div class="form-group"><label class="form-label">Odd Poly</label>
+          <input type="number" class="form-input" value="${op.odd_poly}" disabled></div>
+        <div class="form-group"><label class="form-label">Resultado</label>
+          <input type="text" class="form-input" value="${resultLabel(op.result)}" disabled></div>
+        <div class="form-group"><label class="form-label">Lucro</label>
+          <input type="text" class="form-input ${profitClass(op.profit)}" value="${formatBRL(op.profit)}" disabled></div>
+      </div>
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--primary);margin-bottom:8px">WHAT-IF</div>
+        <div class="form-group"><label class="form-label">Stake Bet365 (R$)</label>
+          <input type="number" step="0.01" class="form-input" id="wi-sb" value="${op.stake_bet365}" oninput="whatIfRecompute()" ${supported ? '' : 'disabled'}></div>
+        <div class="form-group"><label class="form-label">Odd Bet365</label>
+          <input type="number" step="0.01" class="form-input" id="wi-ob" value="${op.odd_bet365}" oninput="whatIfRecompute()" ${supported ? '' : 'disabled'}></div>
+        <div class="form-group"><label class="form-label">Stake Poly (USD)</label>
+          <input type="number" step="0.01" class="form-input" id="wi-sp" value="${op.stake_poly_usd}" oninput="whatIfRecompute()" ${supported ? '' : 'disabled'}></div>
+        <div class="form-group"><label class="form-label">Odd Poly</label>
+          <input type="number" step="0.01" class="form-input" id="wi-op" value="${op.odd_poly}" oninput="whatIfRecompute()" ${supported ? '' : 'disabled'}></div>
+        <div class="form-group"><label class="form-label">Resultado</label>
+          <select class="form-select" id="wi-result" onchange="whatIfRecompute()" ${supported ? '' : 'disabled'}>
+            <option value="bet365_won" ${op.result === 'bet365_won' ? 'selected' : ''}>Bet365 ganhou</option>
+            <option value="poly_won" ${op.result === 'poly_won' ? 'selected' : ''}>Poly ganhou</option>
+            <option value="void" ${op.result === 'void' ? 'selected' : ''}>Void</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Lucro simulado</label>
+          <input type="text" class="form-input" id="wi-profit" value="—" disabled></div>
+        <div class="form-group"><label class="form-label">Diferença vs original</label>
+          <input type="text" class="form-input" id="wi-diff" value="—" disabled></div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-muted)">FX: ${fx.toFixed(4)} · simulação não altera dados reais</div>`;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'whatif-modal';
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:760px">
+      <div class="modal-header">
+        <h3 class="modal-title">🔮 Simulador What-If · ${escapeHtml(op.game || '')}</h3>
+        <button class="modal-close" onclick="closeWhatIf()">&times;</button>
+      </div>
+      ${body}
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeWhatIf()">Fechar</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeWhatIf(); });
+  document.body.appendChild(overlay);
+  if (supported) whatIfRecompute();
+}
+
+function whatIfRecompute() {
+  if (!_whatIfOp) return;
+  const sb = parseFloat(document.getElementById('wi-sb').value) || 0;
+  const ob = parseFloat(document.getElementById('wi-ob').value) || 0;
+  const sp = parseFloat(document.getElementById('wi-sp').value) || 0;
+  const op = parseFloat(document.getElementById('wi-op').value) || 0;
+  const result = document.getElementById('wi-result').value;
+  const fx = _whatIfOp.exchange_rate || 5.0;
+  const profit = window.SurebetMath.computeProfit(sb, ob, sp, op, fx, result);
+  const profitEl = document.getElementById('wi-profit');
+  const diffEl = document.getElementById('wi-diff');
+  if (profit == null) {
+    profitEl.value = '—';
+    diffEl.value = '—';
+    return;
+  }
+  profitEl.value = formatBRL(profit);
+  profitEl.className = `form-input ${profitClass(profit)}`;
+  const diff = profit - (_whatIfOp.profit || 0);
+  diffEl.value = (diff >= 0 ? '+' : '') + formatBRL(diff);
+  diffEl.className = `form-input ${profitClass(diff)}`;
 }
 
 // ===== DUPLICATE OPERATION =====
