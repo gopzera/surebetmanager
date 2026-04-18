@@ -440,6 +440,7 @@ async function renderDashboard() {
       </div>
     </div>
     <div class="stats-grid" id="stats-grid"></div>
+    <div id="dash-operators-card"></div>
     <div class="volume-card" id="volume-card"></div>
     <div class="charts-row">
       <div class="chart-container">
@@ -464,6 +465,7 @@ async function renderDashboard() {
     const data = await api('/api/dashboard/stats');
     window._dashStatsData = data;
     renderStats(data);
+    renderDashOperators(data.operators);
     renderVolumeTracker(data);
     renderProfitChart(data.dailyProfits);
     renderTypeChart(data.profitByType);
@@ -471,6 +473,42 @@ async function renderDashboard() {
   } catch (err) {
     toast(err.message, 'error');
   }
+}
+
+function renderDashOperators(op) {
+  const el = document.getElementById('dash-operators-card');
+  if (!el) return;
+  if (!op) { el.innerHTML = ''; return; }
+  const pendingCount = op.pending?.count || 0;
+  const pendingTotal = Number(op.pending?.total || 0);
+  const paidTotal = Number(op.paidMonth?.total || 0);
+  const overdue = op.overdueCount || 0;
+  el.innerHTML = `
+    <div class="chart-container" style="margin-bottom:20px;cursor:pointer" onclick="navigate('finances')" title="Abrir Finanças">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px">
+        <div>
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:4px">Operadores Bet365</div>
+          <div style="font-size:20px;font-weight:700">${op.activeCount} ativo(s)</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Custo mensal estimado: <b>${formatBRL(op.monthlyCost)}</b></div>
+        </div>
+        <div style="display:flex;gap:20px;flex-wrap:wrap">
+          <div>
+            <div style="font-size:11px;color:var(--text-muted)">Pago no mês</div>
+            <div style="font-size:16px;font-weight:600">${formatBRL(paidTotal)}</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-muted)">Pendente</div>
+            <div style="font-size:16px;font-weight:600;${pendingTotal > 0 ? 'color:var(--warning)' : ''}">${formatBRL(pendingTotal)}${pendingCount ? ` <span style="font-size:11px;color:var(--text-muted)">(${pendingCount})</span>` : ''}</div>
+          </div>
+          ${overdue > 0 ? `
+          <div>
+            <div style="font-size:11px;color:var(--text-muted)">Atrasados</div>
+            <div style="font-size:16px;font-weight:600;color:var(--danger)">${overdue}</div>
+          </div>` : ''}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function statDelta(current, previous, label) {
@@ -3892,11 +3930,14 @@ function closeGirosPlatformsModal() {
 
 let financesOperators = [];
 let financesSummary = null;
-let financesSettings = { default_payment_day: 5, notify_operator_payment: true };
+let financesSettings = { default_payment_day: 5, notify_operator_payment: true, dash_include_operators: false };
 let financesAvailableAccounts = [];
 let financesPayments = [];
+let financesROI = null;
+let financesTags = [];
 let financesFilterOperator = '';
 let financesFilterStatus = '';
+let financesFilterTag = '';
 let financesViewMonth = null; // YYYY-MM, null=current
 
 function financesPaymentTypeLabel(t) {
@@ -3940,12 +3981,25 @@ async function renderFinances() {
     <div class="chart-container" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
         <h3 class="chart-title" style="margin:0">Operadores</h3>
-        <div id="finances-month-picker" style="display:flex;gap:8px;align-items:center">
-          <label style="font-size:13px;color:var(--text-muted)">Mês:</label>
-          <input type="month" class="form-input" id="finances-month-input" style="padding:6px 10px;max-width:180px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select class="form-select" id="finances-filter-tag" style="padding:6px 10px;max-width:180px">
+            <option value="">Todas as tags</option>
+          </select>
+          <div id="finances-month-picker" style="display:flex;gap:8px;align-items:center">
+            <label style="font-size:13px;color:var(--text-muted)">Mês:</label>
+            <input type="month" class="form-input" id="finances-month-input" style="padding:6px 10px;max-width:180px">
+          </div>
         </div>
       </div>
       <div id="finances-operators-list"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+    </div>
+
+    <div class="chart-container" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+        <h3 class="chart-title" style="margin:0">ROI por operador</h3>
+        <span style="font-size:12px;color:var(--text-muted)">Lucro atribuído às contas do operador − custo no mês selecionado</span>
+      </div>
+      <div id="finances-roi-list"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
     </div>
 
     <div class="chart-container">
@@ -3986,6 +4040,15 @@ async function renderFinances() {
     financesFilterStatus = e.target.value;
     loadFinancesPayments().then(renderFinancesPaymentsList);
   });
+  const tagFilter = document.getElementById('finances-filter-tag');
+  if (tagFilter) {
+    tagFilter.addEventListener('change', async (e) => {
+      financesFilterTag = e.target.value;
+      await loadFinancesOperators();
+      renderFinancesOperatorsList();
+      renderFinancesOperatorFilter();
+    });
+  }
 
   await loadFinancesData();
   renderFinancesUI();
@@ -3993,15 +4056,27 @@ async function renderFinances() {
 
 async function loadFinancesData() {
   try {
-    const [operators, summary, settings] = await Promise.all([
-      api('/api/finances/operators'),
+    const tagParam = financesFilterTag ? `?tag=${encodeURIComponent(financesFilterTag)}` : '';
+    const [operators, summary, settings, tags, roi] = await Promise.all([
+      api('/api/finances/operators' + tagParam),
       api(`/api/finances/summary?month=${financesViewMonth || ''}`),
       api('/api/finances/settings'),
+      api('/api/finances/tags'),
+      api(`/api/finances/roi?month=${financesViewMonth || ''}`),
     ]);
     financesOperators = operators || [];
     financesSummary = summary || null;
     financesSettings = settings || financesSettings;
+    financesTags = Array.isArray(tags) ? tags : [];
+    financesROI = roi || null;
     await loadFinancesPayments();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function loadFinancesOperators() {
+  try {
+    const tagParam = financesFilterTag ? `?tag=${encodeURIComponent(financesFilterTag)}` : '';
+    financesOperators = await api('/api/finances/operators' + tagParam) || [];
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -4016,9 +4091,18 @@ async function loadFinancesPayments() {
 
 function renderFinancesUI() {
   renderFinancesStats();
+  renderFinancesTagFilter();
   renderFinancesOperatorsList();
   renderFinancesOperatorFilter();
+  renderFinancesROIList();
   renderFinancesPaymentsList();
+}
+
+function renderFinancesTagFilter() {
+  const el = document.getElementById('finances-filter-tag');
+  if (!el) return;
+  el.innerHTML = `<option value="">Todas as tags</option>` +
+    financesTags.map(t => `<option value="${escapeHtml(t)}" ${t === financesFilterTag ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('');
 }
 
 function renderFinancesStats() {
@@ -4117,6 +4201,12 @@ function financesOperatorCardHtml(op) {
       </div>`;
   }
 
+  const tagsHtml = (op.tags && op.tags.length)
+    ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+         ${op.tags.map(t => `<span class="tag-badge" style="cursor:pointer" onclick="applyFinancesTagFilter('${escapeHtml(t)}')">${escapeHtml(t)}</span>`).join('')}
+       </div>`
+    : '';
+
   return `
     <div class="giro-card" style="${op.active ? '' : 'opacity:0.6'}">
       <div class="giro-card-head">
@@ -4128,10 +4218,12 @@ function financesOperatorCardHtml(op) {
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" onclick="openOperatorHistory(${op.id})">Histórico</button>
+          <button class="btn btn-ghost btn-sm" onclick="openOperatorAudit(${op.id})">Auditoria</button>
           <button class="btn btn-ghost btn-sm" onclick="openOperatorModal(${op.id})">Editar</button>
           <button class="btn btn-ghost btn-sm" onclick="deleteOperator(${op.id})" style="color:var(--danger)">Excluir</button>
         </div>
       </div>
+      ${tagsHtml}
       <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
         <span style="font-size:12px;color:var(--text-muted)">Contas:</span>
         ${accountsHtml}
@@ -4141,6 +4233,15 @@ function financesOperatorCardHtml(op) {
       ${paymentBlock}
     </div>
   `;
+}
+
+async function applyFinancesTagFilter(tag) {
+  financesFilterTag = tag;
+  const el = document.getElementById('finances-filter-tag');
+  if (el) el.value = tag;
+  await loadFinancesOperators();
+  renderFinancesOperatorsList();
+  renderFinancesOperatorFilter();
 }
 
 function brtTodayStr() {
@@ -4212,6 +4313,146 @@ function renderFinancesPaymentsList() {
     </table>
     </div>
   `;
+}
+
+function renderFinancesROIList() {
+  const container = document.getElementById('finances-roi-list');
+  if (!container) return;
+  const roi = financesROI;
+  if (!roi || !roi.operators || !roi.operators.length) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-state-text">Sem dados de ROI para o mês selecionado</div></div>`;
+    return;
+  }
+  const totalProfit = roi.operators.reduce((a, b) => a + (Number(b.attributed_profit) || 0), 0);
+  const totalCost = roi.operators.reduce((a, b) => a + (Number(b.paid) || 0) + (Number(b.pending) || 0), 0);
+  const totalNet = totalProfit - totalCost;
+  container.innerHTML = `
+    <div style="overflow-x:auto">
+    <table class="table" style="width:100%">
+      <thead>
+        <tr>
+          <th>Operador</th>
+          <th>Tipo</th>
+          <th>Ops</th>
+          <th>Lucro atribuído</th>
+          <th>Pago</th>
+          <th>Pendente</th>
+          <th>Líquido</th>
+          <th>ROI</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${roi.operators.map(r => `
+          <tr>
+            <td>${escapeHtml(r.operator_name)}</td>
+            <td>${financesPaymentTypeLabel(r.payment_type)}</td>
+            <td>${r.op_count || 0}</td>
+            <td class="${profitClass(r.attributed_profit)}">${formatBRL(r.attributed_profit)}</td>
+            <td>${formatBRL(r.paid)}</td>
+            <td>${Number(r.pending) > 0 ? `<span style="color:var(--warning)">${formatBRL(r.pending)}</span>` : formatBRL(r.pending)}</td>
+            <td class="${profitClass(r.net)}"><b>${formatBRL(r.net)}</b></td>
+            <td>${r.roi_pct == null ? '-' : `<span class="${profitClass(r.roi_pct)}">${r.roi_pct.toFixed(1)}%</span>`}</td>
+          </tr>
+        `).join('')}
+        <tr style="border-top:2px solid var(--border);font-weight:600">
+          <td colspan="3">Total (${roi.month})</td>
+          <td class="${profitClass(totalProfit)}">${formatBRL(totalProfit)}</td>
+          <td colspan="2">${formatBRL(totalCost)}</td>
+          <td class="${profitClass(totalNet)}"><b>${formatBRL(totalNet)}</b></td>
+          <td>${totalCost > 0 ? `<span class="${profitClass(totalNet)}">${(totalNet / totalCost * 100).toFixed(1)}%</span>` : '-'}</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  `;
+}
+
+// ----- Operator audit log -----
+
+async function openOperatorAudit(operatorId) {
+  const op = financesOperators.find(o => o.id === operatorId);
+  if (!op) { toast('Operador não encontrado', 'error'); return; }
+  let rows = [];
+  try { rows = await api(`/api/finances/operators/${operatorId}/audit`); }
+  catch (err) { toast(err.message, 'error'); return; }
+
+  const actionLabel = (entity, action) => {
+    const labels = {
+      'operator:created': 'Operador criado',
+      'operator:updated': 'Operador editado',
+      'operator:deleted': 'Operador excluído',
+      'payment:created': 'Pagamento criado',
+      'payment:updated': 'Pagamento editado',
+      'payment:deleted': 'Pagamento excluído',
+      'payment:auto_created': 'Pagamento gerado automaticamente',
+    };
+    return labels[`${entity}:${action}`] || `${entity} · ${action}`;
+  };
+
+  const formatDetails = (d) => {
+    if (!d) return '';
+    if (typeof d === 'string') return `<span style="color:var(--text-muted);font-size:12px">${escapeHtml(d)}</span>`;
+    const parts = [];
+    if (d.before && d.after) {
+      for (const k of Object.keys(d.after)) {
+        parts.push(`<div><code>${escapeHtml(k)}</code>: <s style="color:var(--text-muted)">${escapeHtml(String(d.before[k] ?? '—'))}</s> → <b>${escapeHtml(String(d.after[k] ?? '—'))}</b></div>`);
+      }
+    }
+    if (d.accounts) {
+      parts.push(`<div><code>contas</code>: ${(d.accounts.before || []).join(', ') || '—'} → <b>${(d.accounts.after || []).join(', ') || '—'}</b></div>`);
+    }
+    if (d.tags) {
+      parts.push(`<div><code>tags</code>: ${(d.tags.before || []).join(', ') || '—'} → <b>${(d.tags.after || []).join(', ') || '—'}</b></div>`);
+    }
+    if (d.status_from && d.status_to) {
+      parts.push(`<div>status: <b>${escapeHtml(d.status_from)}</b> → <b>${escapeHtml(d.status_to)}</b></div>`);
+    }
+    if (d.period) parts.push(`<div>período: <b>${escapeHtml(d.period)}</b>${d.due_date ? ` · venc. ${escapeHtml(d.due_date)}` : ''}${d.amount != null ? ` · ${formatBRL(d.amount)}` : ''}</div>`);
+    if (d.receipt_uploaded) parts.push(`<div style="color:var(--success);font-size:12px">Comprovante anexado</div>`);
+    if (d.receipt_cleared) parts.push(`<div style="color:var(--warning);font-size:12px">Comprovante removido</div>`);
+    if (!parts.length) parts.push(`<code style="font-size:11px;color:var(--text-muted)">${escapeHtml(JSON.stringify(d))}</code>`);
+    return parts.join('');
+  };
+
+  const body = rows.length
+    ? rows.map(r => `
+        <tr>
+          <td style="white-space:nowrap;font-size:12px;color:var(--text-muted)">${formatDateTime(r.created_at)}</td>
+          <td>${escapeHtml(actionLabel(r.entity, r.action))}</td>
+          <td>${formatDetails(r.details)}</td>
+        </tr>`).join('')
+    : `<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-muted)">Sem registros de auditoria</td></tr>`;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'op-audit-modal';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:780px">
+      <div class="modal-header">
+        <h3 class="modal-title">Auditoria — ${escapeHtml(op.name)}</h3>
+        <button class="modal-close" onclick="closeOperatorAudit()">&times;</button>
+      </div>
+      <div style="overflow-x:auto;max-height:70vh">
+      <table class="table" style="width:100%">
+        <thead><tr><th style="width:160px">Quando</th><th style="width:180px">Ação</th><th>Detalhes</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Mostrando últimos 200 registros.</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+function closeOperatorAudit() {
+  const el = document.getElementById('op-audit-modal');
+  if (el) el.remove();
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '-';
+  const s = String(iso).replace('T', ' ').replace('Z', '').slice(0, 19);
+  return s;
 }
 
 // ----- Operator modal -----
@@ -4287,6 +4528,11 @@ async function openOperatorModal(operatorId) {
           </div>
         </div>
         <div class="form-group">
+          <label class="form-label">Tags (opcional)</label>
+          <div class="tags-input-wrap" id="op-tags-input"></div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Ex.: família, time A, confiável. Pressione Enter para adicionar.</div>
+        </div>
+        <div class="form-group">
           <label class="form-label">Notas</label>
           <textarea class="form-textarea" id="op-notes" rows="3" maxlength="2000" placeholder="Observações sobre o operador">${escapeHtml(op?.notes || '')}</textarea>
         </div>
@@ -4306,7 +4552,12 @@ async function openOperatorModal(operatorId) {
   `;
   document.body.appendChild(overlay);
   onOpPaymentTypeChange();
-  document.getElementById('operator-form').addEventListener('submit', (e) => submitOperator(e, operatorId));
+  // Swap global tag catalog for operator tags while this modal is open.
+  const savedTags = allKnownTags;
+  allKnownTags = financesTags;
+  initTagInput('op-tags-input', op?.tags || []);
+  overlay.addEventListener('remove', () => { allKnownTags = savedTags; });
+  document.getElementById('operator-form').addEventListener('submit', (e) => submitOperator(e, operatorId, savedTags));
 }
 
 function onOpPaymentTypeChange() {
@@ -4335,7 +4586,7 @@ function closeOperatorModal() {
   if (el) el.remove();
 }
 
-async function submitOperator(e, operatorId) {
+async function submitOperator(e, operatorId, savedTagCatalog) {
   e.preventDefault();
   const name = document.getElementById('op-name').value.trim();
   const payment_type = document.getElementById('op-ptype').value;
@@ -4350,10 +4601,11 @@ async function submitOperator(e, operatorId) {
   const pix_key = document.getElementById('op-pix').value.trim() || null;
   const notes = document.getElementById('op-notes').value.trim() || null;
   const account_ids = [...document.querySelectorAll('.op-account-cb:checked')].map(cb => Number(cb.value));
+  const tags = getTagsFromInput('op-tags-input');
   const activeCb = document.getElementById('op-active');
   const active = activeCb ? (activeCb.checked ? 1 : 0) : 1;
 
-  const body = { name, payment_type, payment_value, custom_payment_day, pix_key, notes, account_ids };
+  const body = { name, payment_type, payment_value, custom_payment_day, pix_key, notes, account_ids, tags };
   if (operatorId) body.active = active;
 
   try {
@@ -4364,6 +4616,7 @@ async function submitOperator(e, operatorId) {
       await api('/api/finances/operators', { method: 'POST', body });
       toast('Operador adicionado');
     }
+    if (savedTagCatalog !== undefined) allKnownTags = savedTagCatalog;
     closeOperatorModal();
     await loadFinancesData();
     renderFinancesUI();
@@ -4459,9 +4712,9 @@ async function openPaymentModal(operatorId, period) {
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">Comprovante (imagem ou PDF, máx. 500KB)</label>
+          <label class="form-label">Comprovante (imagem ou PDF, máx. 5MB)</label>
           <input type="file" class="form-input" id="pay-receipt" accept="image/*,application/pdf">
-          ${payment?.receipt_data ? `
+          ${payment?.has_receipt ? `
             <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px">
               <span style="color:var(--success)">✓ Comprovante salvo${payment.receipt_name ? `: ${escapeHtml(payment.receipt_name)}` : ''}</span>
               <button type="button" class="btn btn-ghost btn-sm" onclick="viewReceiptData(${payment.id || 'null'})">Ver</button>
@@ -4527,7 +4780,7 @@ async function submitPayment(e) {
   let receipt_data;
   let receipt_name;
   if (file) {
-    if (file.size > 500 * 1024) { toast('Comprovante muito grande (máx. 500KB)', 'error'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast('Comprovante muito grande (máx. 5MB)', 'error'); return; }
     try { receipt_data = await fileToDataUrl(file); receipt_name = file.name; }
     catch { toast('Falha ao ler o arquivo', 'error'); return; }
   } else if (keep && keep.value === '0') {
@@ -4580,8 +4833,24 @@ async function deletePayment(id, fromModal) {
 
 async function viewReceipt(paymentId) {
   try {
-    const r = await api('/api/finances/payments/' + paymentId + '/receipt');
-    openReceiptViewer(r.receipt_data, r.receipt_name);
+    const csrf = readCookie('csrf_token');
+    const res = await fetch('/api/finances/payments/' + paymentId + '/receipt', {
+      headers: csrf ? { 'X-CSRF-Token': csrf } : {},
+    });
+    if (!res.ok) throw new Error('Falha ao carregar comprovante');
+    const ctype = res.headers.get('Content-Type') || '';
+    if (ctype.includes('application/json')) {
+      const r = await res.json();
+      openReceiptViewer(r.receipt_data, r.receipt_name, /^data:application\/pdf/.test(r.receipt_data));
+      return;
+    }
+    // Binary BLOB → object URL (revoked when viewer closes).
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const disp = res.headers.get('Content-Disposition') || '';
+    const m = disp.match(/filename="([^"]+)"/);
+    const name = m ? decodeURIComponent(m[1]) : 'comprovante';
+    openReceiptViewer(url, name, blob.type === 'application/pdf', url /* revoke */);
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -4590,11 +4859,11 @@ async function viewReceiptData(paymentId) {
   await viewReceipt(paymentId);
 }
 
-function openReceiptViewer(dataUrl, name) {
+function openReceiptViewer(src, name, isPdf, revokeUrl) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay active';
   overlay.id = 'receipt-viewer';
-  const isPdf = /^data:application\/pdf/.test(dataUrl);
+  overlay.dataset.revokeUrl = revokeUrl || '';
   overlay.innerHTML = `
     <div class="modal" style="max-width:700px">
       <div class="modal-header">
@@ -4603,11 +4872,11 @@ function openReceiptViewer(dataUrl, name) {
       </div>
       <div style="text-align:center">
         ${isPdf
-          ? `<iframe src="${dataUrl}" style="width:100%;height:70vh;border:1px solid var(--border);border-radius:8px"></iframe>`
-          : `<img src="${dataUrl}" style="max-width:100%;max-height:70vh;border-radius:8px">`}
+          ? `<iframe src="${src}" style="width:100%;height:70vh;border:1px solid var(--border);border-radius:8px"></iframe>`
+          : `<img src="${src}" style="max-width:100%;max-height:70vh;border-radius:8px">`}
       </div>
       <div style="display:flex;justify-content:flex-end;margin-top:12px">
-        <a href="${dataUrl}" download="${escapeHtml(name || 'comprovante')}" class="btn btn-ghost btn-sm">Baixar</a>
+        <a href="${src}" download="${escapeHtml(name || 'comprovante')}" class="btn btn-ghost btn-sm">Baixar</a>
       </div>
     </div>
   `;
@@ -4616,7 +4885,10 @@ function openReceiptViewer(dataUrl, name) {
 
 function closeReceiptViewer() {
   const el = document.getElementById('receipt-viewer');
-  if (el) el.remove();
+  if (!el) return;
+  const url = el.dataset.revokeUrl;
+  if (url) { try { URL.revokeObjectURL(url); } catch {} }
+  el.remove();
 }
 
 // ----- Operator payment history -----
@@ -4693,6 +4965,13 @@ function openFinancesSettings() {
             <span>Receber notificação no dia do pagamento</span>
           </label>
         </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="fs-dash" ${financesSettings.dash_include_operators ? 'checked' : ''}>
+            <span>Exibir custo dos operadores no Dashboard</span>
+          </label>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Adiciona um card resumindo operadores ativos, custo mensal e pendências.</div>
+        </div>
         <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
           <button type="button" class="btn btn-ghost" onclick="closeFinancesSettings()">Cancelar</button>
           <button type="submit" class="btn btn-primary">Salvar</button>
@@ -4713,12 +4992,13 @@ async function saveFinancesSettings(e) {
   e.preventDefault();
   const day = Number(document.getElementById('fs-default-day').value) || 5;
   const notify = document.getElementById('fs-notify').checked;
+  const dashInclude = document.getElementById('fs-dash').checked;
   try {
     await api('/api/finances/settings', {
       method: 'PUT',
-      body: { default_payment_day: day, notify_operator_payment: notify },
+      body: { default_payment_day: day, notify_operator_payment: notify, dash_include_operators: dashInclude },
     });
-    financesSettings = { default_payment_day: day, notify_operator_payment: notify };
+    financesSettings = { default_payment_day: day, notify_operator_payment: notify, dash_include_operators: dashInclude };
     closeFinancesSettings();
     toast('Configurações salvas');
     await loadFinancesData();

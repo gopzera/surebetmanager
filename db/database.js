@@ -278,6 +278,49 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_operator_payments_user ON operator_payments(user_id);
   CREATE INDEX IF NOT EXISTS idx_operator_payments_op ON operator_payments(operator_id);
   CREATE INDEX IF NOT EXISTS idx_operator_payments_status ON operator_payments(status);
+
+  -- Tags / groups for operators (e.g., "família", "time A", "freelance").
+  CREATE TABLE IF NOT EXISTS operator_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operator_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    FOREIGN KEY (operator_id) REFERENCES operators(id) ON DELETE CASCADE,
+    UNIQUE(operator_id, tag)
+  );
+  CREATE INDEX IF NOT EXISTS idx_operator_tags_op ON operator_tags(operator_id);
+  CREATE INDEX IF NOT EXISTS idx_operator_tags_tag ON operator_tags(tag);
+
+  -- Audit log: every mutation to operators/payments gets a row for disputes.
+  -- entity = 'operator' | 'payment' ; action = 'created' | 'updated' | 'deleted'
+  --                                   | 'marked_paid' | 'receipt_uploaded' | ...
+  -- details = JSON with before/after diff or metadata.
+  CREATE TABLE IF NOT EXISTS operator_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    operator_id INTEGER,
+    payment_id INTEGER,
+    entity TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_operator_audit_user ON operator_audit(user_id);
+  CREATE INDEX IF NOT EXISTS idx_operator_audit_op ON operator_audit(operator_id);
+
+  -- Blob storage for comprovantes — separate table so the main payment row
+  -- stays lightweight. Binary BLOB (not base64) saves ~33% vs data URL in TEXT.
+  CREATE TABLE IF NOT EXISTS receipt_blobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    mime_type TEXT NOT NULL,
+    file_name TEXT,
+    size_bytes INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_receipt_blobs_user ON receipt_blobs(user_id);
 `;
 
 let initPromise = null;
@@ -328,6 +371,11 @@ const db = {
         try {
           await client.execute(`ALTER TABLE operations ADD COLUMN freebet_account_id INTEGER`);
         } catch (_) {}
+        // Migration: comprovantes in dedicated blob table (BLOB, not base64).
+        // Legacy receipt_data stays as fallback; new uploads go to receipt_blobs.
+        try {
+          await client.execute(`ALTER TABLE operator_payments ADD COLUMN receipt_blob_id INTEGER`);
+        } catch (_) {}
         // Migration: add Discord columns if missing
         for (const col of [
           'discord_id TEXT',
@@ -357,6 +405,8 @@ const db = {
           // Finanças: default day-of-month (1..31) for operator payments.
           'default_payment_day INTEGER NOT NULL DEFAULT 5',
           'notify_operator_payment INTEGER NOT NULL DEFAULT 1',
+          // Dashboard toggle: subtract operator costs from headline profit.
+          'dash_include_operators INTEGER NOT NULL DEFAULT 0',
         ]) {
           try {
             await client.execute(`ALTER TABLE users ADD COLUMN ${col}`);

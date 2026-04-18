@@ -193,6 +193,47 @@ router.get('/stats', async (req, res) => {
       op.tags = tagRows.map(r => r.tag);
     }
 
+    // Operator cost card — only when user enabled it in settings.
+    let operators = null;
+    const u = await db.get('SELECT dash_include_operators FROM users WHERE id = ?', userId);
+    if (u && u.dash_include_operators) {
+      const opsList = await db.all(
+        `SELECT payment_type, payment_value FROM operators
+         WHERE user_id = ? AND active = 1`,
+        userId
+      );
+      // Normalize recurring costs to month-equivalent for a single "monthly cost" headline.
+      let monthlyCost = 0;
+      for (const o of opsList) {
+        const v = Number(o.payment_value) || 0;
+        if (o.payment_type === 'monthly') monthlyCost += v;
+        else if (o.payment_type === 'weekly') monthlyCost += v * 4.3333;
+      }
+      const paidMonth = await db.get(
+        `SELECT COALESCE(SUM(amount + COALESCE(tip,0)), 0) as total, COUNT(*) as count
+         FROM operator_payments WHERE user_id = ? AND status = 'paid'
+         AND DATE(COALESCE(paid_at, created_at), '-3 hours') >= ?`,
+        userId, monthStart
+      );
+      const pending = await db.get(
+        `SELECT COALESCE(SUM(amount + COALESCE(tip,0)), 0) as total, COUNT(*) as count
+         FROM operator_payments WHERE user_id = ? AND status = 'pending'`,
+        userId
+      );
+      const overdue = await db.get(
+        `SELECT COUNT(*) as count FROM operator_payments
+         WHERE user_id = ? AND status = 'pending' AND due_date IS NOT NULL AND due_date < ?`,
+        userId, today
+      );
+      operators = {
+        activeCount: opsList.length,
+        monthlyCost,
+        paidMonth,
+        pending,
+        overdueCount: overdue?.count || 0,
+      };
+    }
+
     res.json({
       today: todayStats,
       yesterday: yesterdayStats,
@@ -214,6 +255,7 @@ router.get('/stats', async (req, res) => {
         month: girosMonthRow,
         allTime: girosAllRow,
       },
+      operators,
     });
   } catch (err) {
     console.error(err);

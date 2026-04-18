@@ -11,8 +11,8 @@ const app = express();
 app.set('trust proxy', 1);
 
 app.use(securityHeaders);
-// Finanças uploads base64 comprovantes — needs a higher limit than other endpoints.
-app.use('/api/finances', express.json({ limit: '1mb' }));
+// Finanças uploads base64 comprovantes (5MB binaries → ~7MB after base64 expansion).
+app.use('/api/finances', express.json({ limit: '7mb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
