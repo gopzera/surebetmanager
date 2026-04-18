@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
+const { attachMany, attachScalars } = require('../utils/batch');
 
 const router = express.Router();
 router.use(auth);
@@ -64,19 +65,23 @@ router.get('/', async (req, res) => {
       ...params, Number(limit), Number(offset)
     );
 
-    // Attach accounts and tags for each operation
-    for (const op of operations) {
-      op.accounts = await db.all(
-        `SELECT a.id, a.name, oa.stake_bet365 as stake FROM operation_accounts oa
-         JOIN accounts a ON a.id = oa.account_id
-         WHERE oa.operation_id = ?`,
-        op.id
-      );
-      const tagRows = await db.all(
-        'SELECT tag FROM operation_tags WHERE operation_id = ?', op.id
-      );
-      op.tags = tagRows.map(r => r.tag);
-    }
+    // Batch-attach accounts and tags for all operations in two queries (was N+1).
+    await attachMany(operations, {
+      sql: `SELECT oa.operation_id, a.id, a.name, oa.stake_bet365 as stake
+            FROM operation_accounts oa
+            JOIN accounts a ON a.id = oa.account_id
+            WHERE oa.operation_id IN ({{IN}})`,
+      foreignKey: 'operation_id',
+      attachAs: 'accounts',
+      map: r => ({ id: r.id, name: r.name, stake: r.stake }),
+    });
+    await attachScalars(operations, {
+      sql: `SELECT operation_id, tag FROM operation_tags
+            WHERE operation_id IN ({{IN}}) ORDER BY tag`,
+      foreignKey: 'operation_id',
+      valueKey: 'tag',
+      attachAs: 'tags',
+    });
 
     // Get all tags for this user (for filter dropdown)
     const allTags = await db.all(
@@ -257,6 +262,9 @@ router.delete('/:id', async (req, res) => {
     await db.transaction(async (tx) => {
       await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', op.id);
       await tx.run('DELETE FROM operation_tags WHERE operation_id = ?', op.id);
+      // Giros referencing this op keep their row but lose the link (Turso
+      // doesn't enforce FKs — without this, giros.operation_id would dangle).
+      await tx.run('UPDATE giros SET operation_id = NULL WHERE operation_id = ?', op.id);
       await tx.run('DELETE FROM operations WHERE id = ?', op.id);
     });
     res.json({ ok: true });

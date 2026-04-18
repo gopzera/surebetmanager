@@ -1,4 +1,6 @@
 const { createClient } = require('@libsql/client');
+const fs = require('fs');
+const path = require('path');
 
 const client = createClient({
   url: process.env.TURSO_DATABASE_URL || 'file:db/surebet.db',
@@ -323,6 +325,40 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_receipt_blobs_user ON receipt_blobs(user_id);
 `;
 
+// Versioned migrations live in /migrations as NNN_name.sql. Each file is
+// applied at most once (tracked in schema_migrations). Use this path for NEW
+// schema changes — the ad-hoc ALTER TABLE blocks below stay for legacy rows
+// already deployed, but new changes should be migration files.
+async function runMigrations() {
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  const dir = path.join(__dirname, '..', 'migrations');
+  let files = [];
+  try { files = fs.readdirSync(dir).filter(f => f.endsWith('.sql')).sort(); }
+  catch (_) { return; } // no migrations folder = nothing to do
+
+  const applied = new Set(
+    (await client.execute('SELECT version FROM schema_migrations')).rows
+      .map(r => r.version)
+  );
+
+  for (const file of files) {
+    const version = file.replace(/\.sql$/, '');
+    if (applied.has(version)) continue;
+    const sql = fs.readFileSync(path.join(dir, file), 'utf8');
+    await client.executeMultiple(sql);
+    await client.execute({
+      sql: 'INSERT INTO schema_migrations (version) VALUES (?)',
+      args: [version],
+    });
+  }
+}
+
 let initPromise = null;
 
 const db = {
@@ -427,6 +463,9 @@ const db = {
             } catch (_) {}
           }
         }
+        // Apply versioned migrations (runs after SCHEMA + legacy ALTERs so new
+        // migrations can rely on columns those added).
+        await runMigrations();
       })();
     }
     return initPromise;

@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
 const V = require('../utils/validate');
+const { attachMany, attachScalars } = require('../utils/batch');
 
 const router = express.Router();
 router.use(auth);
@@ -75,11 +76,6 @@ async function ensurePendingPayment(op, userId, defaultPayDay, today) {
   return await db.get('SELECT * FROM operator_payments WHERE id = ?', r.lastInsertRowid);
 }
 
-async function getOperatorTags(operatorId) {
-  const rows = await db.all('SELECT tag FROM operator_tags WHERE operator_id = ? ORDER BY tag', operatorId);
-  return rows.map(r => r.tag);
-}
-
 function sanitizeTags(tags) {
   if (!Array.isArray(tags)) return [];
   const out = new Set();
@@ -91,19 +87,31 @@ function sanitizeTags(tags) {
   return [...out].slice(0, 20);
 }
 
+// Batch-attach accounts + tags for a list of operators in two queries (was N+1).
+async function attachOperatorAccountsAndTags(operators) {
+  await attachMany(operators, {
+    sql: `SELECT oa.operator_id, a.id, a.name, COALESCE(a.hidden,0) as hidden
+          FROM operator_accounts oa
+          JOIN accounts a ON a.id = oa.account_id
+          WHERE oa.operator_id IN ({{IN}})
+          ORDER BY a.name`,
+    foreignKey: 'operator_id',
+    attachAs: 'accounts',
+    map: r => ({ id: r.id, name: r.name, hidden: r.hidden }),
+  });
+  await attachScalars(operators, {
+    sql: `SELECT operator_id, tag FROM operator_tags
+          WHERE operator_id IN ({{IN}}) ORDER BY tag`,
+    foreignKey: 'operator_id',
+    valueKey: 'tag',
+    attachAs: 'tags',
+  });
+}
+
+// Per-operator: auto-create pending row + resolve current_payment.
+// ensurePendingPayment writes, so it has to run per-operator sequentially.
 async function attachOperatorData(op, userId, defaultPayDay, today) {
-  op.accounts = await db.all(
-    `SELECT a.id, a.name, COALESCE(a.hidden,0) as hidden
-     FROM operator_accounts oa
-     JOIN accounts a ON a.id = oa.account_id
-     WHERE oa.operator_id = ? ORDER BY a.name`,
-    op.id
-  );
-  op.tags = await getOperatorTags(op.id);
-
-  // Auto-create pending row for active monthly/weekly operators so UI shows a real id.
   await ensurePendingPayment(op, userId, defaultPayDay, today);
-
   const cur = currentPeriodFor(op, today, defaultPayDay);
   if (cur.period) {
     op.current_payment = await db.get(
@@ -229,6 +237,7 @@ router.get('/operators', async (req, res) => {
     }
     sql += ' ORDER BY active DESC, name';
     const ops = await db.all(sql, ...params);
+    await attachOperatorAccountsAndTags(ops);
     for (const op of ops) await attachOperatorData(op, req.user.id, defaultPayDay, today);
     res.json(ops);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
@@ -240,6 +249,7 @@ router.get('/operators/:id', async (req, res) => {
     const op = await db.get('SELECT * FROM operators WHERE id = ? AND user_id = ?', id, req.user.id);
     if (!op) return res.status(404).json({ error: 'Operador não encontrado' });
     const defaultPayDay = await getDefaultPayDay(req.user.id);
+    await attachOperatorAccountsAndTags([op]);
     await attachOperatorData(op, req.user.id, defaultPayDay, brtToday());
     res.json(op);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro interno do servidor' }); }
