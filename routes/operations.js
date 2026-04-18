@@ -267,15 +267,16 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// Delete operation
+// Delete operation. Returns a snapshot the client can POST back to /api/operations
+// within its undo window — the recreated row gets a new id but preserves every
+// field (accounts with stakes, tags, extra_bets, freebet flags, profit, result).
 router.delete('/:id', async (req, res) => {
   try {
-    // Snapshot for audit BEFORE deletion — with tags/accounts so the history
-    // remains interpretable even after the rows are gone.
     const op = await db.get('SELECT * FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!op) return res.status(404).json({ error: 'Operação não encontrada' });
-    const accIds = (await db.all('SELECT account_id FROM operation_accounts WHERE operation_id = ?', op.id))
-      .map(r => r.account_id);
+    const accRows = await db.all(
+      'SELECT account_id, stake_bet365 FROM operation_accounts WHERE operation_id = ?', op.id
+    );
     const tagList = (await db.all('SELECT tag FROM operation_tags WHERE operation_id = ?', op.id))
       .map(r => r.tag);
 
@@ -290,9 +291,24 @@ router.delete('/:id', async (req, res) => {
     await audit(req, 'operation', op.id, 'deleted', {
       type: op.type, game: op.game, event_date: op.event_date,
       profit: op.profit, result: op.result,
-      accounts: accIds, tags: tagList,
+      accounts: accRows.map(r => r.account_id), tags: tagList,
     });
-    res.json({ ok: true });
+    let extraBets = null;
+    if (op.extra_bets) { try { extraBets = JSON.parse(op.extra_bets); } catch { extraBets = null; } }
+    res.json({
+      ok: true,
+      snapshot: {
+        type: op.type, game: op.game, event_date: op.event_date,
+        stake_bet365: op.stake_bet365, odd_bet365: op.odd_bet365,
+        stake_poly_usd: op.stake_poly_usd, odd_poly: op.odd_poly,
+        exchange_rate: op.exchange_rate, result: op.result,
+        profit: op.profit, notes: op.notes,
+        uses_freebet: op.uses_freebet, freebet_account_id: op.freebet_account_id,
+        extra_bets: extraBets,
+        account_stakes: accRows.map(r => ({ account_id: r.account_id, stake: r.stake_bet365 })),
+        tags: tagList,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: 'Erro ao excluir operação' });
   }

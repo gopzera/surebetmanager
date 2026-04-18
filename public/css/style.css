@@ -761,11 +761,27 @@ tbody tr:last-child td { border-bottom: none; }
   box-shadow: var(--shadow);
   animation: slideIn 0.3s ease;
   max-width: 360px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .toast-success { background: var(--success); color: white; }
 .toast-error { background: var(--danger); color: white; }
 .toast-info { background: var(--info); color: white; }
+
+.toast-action {
+  background: rgba(255, 255, 255, 0.2);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toast-action:hover { background: rgba(255, 255, 255, 0.3); }
 
 @keyframes slideIn {
   from { transform: translateX(100%); opacity: 0; }
