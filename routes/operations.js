@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
 const { attachMany, attachScalars } = require('../utils/batch');
+const { audit, diff } = require('../utils/audit');
 
 const router = express.Router();
 router.use(auth);
@@ -167,6 +168,11 @@ router.post('/', async (req, res) => {
       return r.lastInsertRowid;
     });
 
+    await audit(req, 'operation', id, 'created', {
+      type, game, event_date, profit, result,
+      accounts: accountEntries.map(e => e.accId),
+      tags: Array.isArray(tags) ? tags.slice(0, 10) : [],
+    });
     res.json({ id });
   } catch (err) {
     console.error(err);
@@ -190,6 +196,14 @@ router.put('/:id', async (req, res) => {
     const nextFreebetAccountId = freebet_account_id !== undefined
       ? (freebet_account_id != null && userAccountIds.includes(Number(freebet_account_id)) ? Number(freebet_account_id) : null)
       : (op.freebet_account_id || null);
+
+    const auditPayload = diff(
+      { type: op.type, game: op.game, event_date: op.event_date, profit: op.profit, result: op.result,
+        stake_bet365: op.stake_bet365, odd_bet365: op.odd_bet365 },
+      { type: type ?? op.type, game: game ?? op.game, event_date: event_date ?? op.event_date,
+        profit: profit ?? op.profit, result: result ?? op.result,
+        stake_bet365: stake_bet365 ?? op.stake_bet365, odd_bet365: odd_bet365 ?? op.odd_bet365 }
+    );
 
     await db.transaction(async (tx) => {
       await tx.run(
@@ -245,6 +259,7 @@ router.put('/:id', async (req, res) => {
       }
     });
 
+    if (auditPayload) await audit(req, 'operation', op.id, 'updated', auditPayload);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -255,9 +270,14 @@ router.put('/:id', async (req, res) => {
 // Delete operation
 router.delete('/:id', async (req, res) => {
   try {
-    // Verify ownership BEFORE deleting linked records
-    const op = await db.get('SELECT id FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
+    // Snapshot for audit BEFORE deletion — with tags/accounts so the history
+    // remains interpretable even after the rows are gone.
+    const op = await db.get('SELECT * FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!op) return res.status(404).json({ error: 'Operação não encontrada' });
+    const accIds = (await db.all('SELECT account_id FROM operation_accounts WHERE operation_id = ?', op.id))
+      .map(r => r.account_id);
+    const tagList = (await db.all('SELECT tag FROM operation_tags WHERE operation_id = ?', op.id))
+      .map(r => r.tag);
 
     await db.transaction(async (tx) => {
       await tx.run('DELETE FROM operation_accounts WHERE operation_id = ?', op.id);
@@ -266,6 +286,11 @@ router.delete('/:id', async (req, res) => {
       // doesn't enforce FKs — without this, giros.operation_id would dangle).
       await tx.run('UPDATE giros SET operation_id = NULL WHERE operation_id = ?', op.id);
       await tx.run('DELETE FROM operations WHERE id = ?', op.id);
+    });
+    await audit(req, 'operation', op.id, 'deleted', {
+      type: op.type, game: op.game, event_date: op.event_date,
+      profit: op.profit, result: op.result,
+      accounts: accIds, tags: tagList,
     });
     res.json({ ok: true });
   } catch (err) {

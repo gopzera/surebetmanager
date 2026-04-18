@@ -210,26 +210,8 @@ async function fetchLiveRate() {
 }
 
 // ===== AUTO PROFIT CALCULATION =====
-function computeProfit(stakeBet365, oddBet365, stakePolyUsd, oddPoly, exchangeRate, result) {
-  const sb = parseFloat(stakeBet365) || 0;
-  const ob = parseFloat(oddBet365) || 0;
-  const sp = parseFloat(stakePolyUsd) || 0;
-  const op = parseFloat(oddPoly) || 0;
-  const fx = parseFloat(exchangeRate) || 0;
-
-  if (!sb && !sp) return null; // no stakes entered
-
-  const totalInvested = sb + sp * fx;
-
-  if (result === 'bet365_won') {
-    return sb * ob - totalInvested;
-  } else if (result === 'poly_won') {
-    return sp * op * fx - totalInvested;
-  } else if (result === 'void') {
-    return 0;
-  }
-  return null; // pending — don't auto-calc
-}
+// Pure math lives in /js/surebet-math.js (shared with Vitest tests).
+const { computeProfit, calcEffOdds, calcTakerFeePct, POLY_CATS } = window.SurebetMath;
 
 // ===== AUTH =====
 let isLoginMode = true;
@@ -2208,22 +2190,7 @@ async function loadRankingTab() {
 }
 
 // ===== CALCULATOR =====
-// -- Polymarket taker fees (docs.polymarket.com/trading/fees) --
-// Formula: fee_shares = C * feeRate * p * (1 - p). Makers are free.
-const POLY_CATS = {
-  "None (free)":   { feeRate: 0     },
-  "Crypto":        { feeRate: 0.072 },
-  "Sports":        { feeRate: 0.03  },
-  "Finance":       { feeRate: 0.04  },
-  "Politics":      { feeRate: 0.04  },
-  "Tech":          { feeRate: 0.04  },
-  "Mentions":      { feeRate: 0.04  },
-  "Culture":       { feeRate: 0.05  },
-  "Economics":     { feeRate: 0.05  },
-  "Weather":       { feeRate: 0.05  },
-  "Other/General": { feeRate: 0.05  },
-  "Geopolitical":  { feeRate: 0     },
-};
+// POLY_CATS, calcEffOdds, calcTakerFeePct live in /js/surebet-math.js (tested via Vitest).
 const CAT_KEYS = Object.keys(POLY_CATS);
 
 // Fork/formula types
@@ -2272,46 +2239,7 @@ function makeCalcRow(id) {
   };
 }
 
-// -- Math --
-/**
- * Effective odds taking commission and bet type into account.
- * Back bet: eff = 1 + (raw-1)*(1 - c%)  [commission on profit only]
- * Lay  bet: eff = raw - c%              [lay formula]
- *
- * Polymarket taker fees (docs.polymarket.com/trading/fees):
- *   fee_usdc  = C × feeRate × p × (1-p)          (formula gives USDC)
- *   On buys, collected in shares: fee_shares = fee_usdc / p = C × feeRate × (1-p)
- *   Net shares = C × (1 - feeRate × (1-p))
- *   => adjEff  = eff × (1 - feeRate × (1-p))
- */
-function calcEffOdds(raw, commPct, betType, usePoly, catKey) {
-  if (!raw || raw <= 1) return null;
-  const c = (parseFloat(commPct) || 0) / 100;
-  let eff;
-  if (betType === "lay") {
-    eff = raw - c;
-  } else {
-    eff = 1 + (raw - 1) * (1 - c);
-  }
-  if (eff <= 1) return null;
-  if (!usePoly || betType === "lay") return eff;
-  const { feeRate } = POLY_CATS[catKey];
-  if (!feeRate) return eff;
-  const p = 1 / eff;
-  const adjEff = eff * (1 - feeRate * (1 - p));
-  return adjEff > 1 ? adjEff : null;
-}
-
-function calcTakerFeePct(raw, commPct, catKey) {
-  if (raw <= 1) return 0;
-  const c = (parseFloat(commPct) || 0) / 100;
-  const eff = 1 + (raw - 1) * (1 - c);
-  if (eff <= 1) return 0;
-  const { feeRate } = POLY_CATS[catKey];
-  if (!feeRate) return 0;
-  const p = 1 / eff;
-  return feeRate * (1 - p) * 100;
-}
+// -- Math -- (calcEffOdds, calcTakerFeePct imported from window.SurebetMath at top of file)
 
 function cf2(n) { return (typeof n === "number" && isFinite(n)) ? n.toFixed(2) : "\u2014"; }
 

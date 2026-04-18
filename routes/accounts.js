@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
+const { audit } = require('../utils/audit');
 
 const router = express.Router();
 router.use(auth);
@@ -62,9 +63,10 @@ router.put('/:id', async (req, res) => {
 // Returns hidden=true so the UI can remove the row immediately.
 router.delete('/:id', async (req, res) => {
   try {
-    const acc = await db.get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
+    const acc = await db.get('SELECT id, name FROM accounts WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!acc) return res.status(404).json({ error: 'Conta não encontrada' });
     await db.run('UPDATE accounts SET hidden = 1, active = 0 WHERE id = ?', acc.id);
+    await audit(req, 'account', acc.id, 'hidden', { name: acc.name });
     res.json({ ok: true, hidden: true });
   } catch (err) {
     console.error(err);

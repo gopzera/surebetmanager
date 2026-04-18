@@ -36,16 +36,18 @@ async function issueSession(req, res, payload) {
 }
 
 // Brute-force protection: tight window on credential endpoints.
+// persistent=true: survives cold starts. Without this, on Vercel serverless
+// an attacker can wait for a cold start to reset the counter.
 const loginLimiter = rateLimit({
-  name: 'auth-login', windowMs: 5 * 60 * 1000, max: 10,
+  name: 'auth-login', windowMs: 5 * 60 * 1000, max: 10, persistent: true,
   message: 'Muitas tentativas de login. Aguarde alguns minutos antes de tentar novamente.',
 });
 const registerLimiter = rateLimit({
-  name: 'auth-register', windowMs: 60 * 60 * 1000, max: 5,
+  name: 'auth-register', windowMs: 60 * 60 * 1000, max: 5, persistent: true,
   message: 'Muitas tentativas de registro. Tente novamente mais tarde.',
 });
 const discordLimiter = rateLimit({
-  name: 'auth-discord', windowMs: 60 * 1000, max: 20,
+  name: 'auth-discord', windowMs: 60 * 1000, max: 20, persistent: true,
 });
 
 router.post('/register', registerLimiter, V.handle(async (req, res) => {
