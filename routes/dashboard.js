@@ -130,7 +130,7 @@ router.get('/stats', async (req, res) => {
       avgDailyProfit = allTimeStats.profit / daysSinceFirst;
     }
 
-    // Weekly volume per account (freebet rule: Bet365 odd >= 3.0 counts; freebet-funded
+    // Weekly volume per account (freebet rule: Bet365 odd >= 2.0 counts; freebet-funded
     // bets do not, since the user isn't wagering their own money).
     const accountVolumes = await db.all(
       `SELECT
@@ -139,7 +139,7 @@ router.get('/stats', async (req, res) => {
         a.max_stake_aumentada,
         COALESCE(SUM(
           CASE
-            WHEN o.odd_bet365 >= 3.0
+            WHEN o.odd_bet365 >= 2.0
               AND COALESCE(o.uses_freebet, 0) = 0
               AND ${OP_DATE_EXPR} >= ?
             THEN COALESCE(

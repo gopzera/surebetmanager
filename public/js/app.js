@@ -599,7 +599,7 @@ function renderVolumeTracker(data) {
       <div>
         <div class="volume-title">${allComplete ? '&#10003; ' : ''}Volume Semanal por Conta (Freebet)</div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
-          Apostas com odd &ge; 3.0 na Bet365 desde ${formatDate(data.weekStart)} | Meta: ${formatBRL(goal)} por conta
+          Apostas com odd &ge; 2.0 na Bet365 desde ${formatDate(data.weekStart)} | Meta: ${formatBRL(goal)} por conta
         </div>
       </div>
     </div>

@@ -62,7 +62,7 @@ router.get('/', async (req, res) => {
     for (const r of rows) {
       accountMeta[r.account_id] = { name: r.account_name, hidden: !!r.hidden };
       // Freebet-funded bets don't count toward the volume goal.
-      if (Number(r.odd_bet365) < 3.0 || r.uses_freebet) continue;
+      if (Number(r.odd_bet365) < 2.0 || r.uses_freebet) continue;
       const ws = getWeekStart(r.eff_date);
       const key = `${r.account_id}|${ws}`;
       volumeByKey[key] = (volumeByKey[key] || 0) + Number(r.stake_share || 0);
