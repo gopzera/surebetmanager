@@ -13,6 +13,9 @@ app.set('trust proxy', 1);
 app.use(securityHeaders);
 // Finanças uploads base64 comprovantes (5MB binaries → ~7MB after base64 expansion).
 app.use('/api/finances', express.json({ limit: '7mb' }));
+// Restore payload carries an entire user's history (operations, giros, etc.) —
+// JSON-only but can easily exceed the default limit for heavy users.
+app.use('/api/restore', express.json({ limit: '20mb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
@@ -42,6 +45,9 @@ app.use('/api/giros', require('./routes/giros'));
 app.use('/api/finances', require('./routes/finances'));
 app.use('/api/audit', require('./routes/audit'));
 app.use('/api/tag-rules', require('./routes/tagRules'));
+app.use('/api/saved-filters', require('./routes/savedFilters'));
+app.use('/api/alerts', require('./routes/alerts'));
+app.use('/api', require('./routes/backup'));
 
 // Static files & SPA fallback (local dev only; Vercel handles via CDN + rewrites)
 if (!process.env.VERCEL) {

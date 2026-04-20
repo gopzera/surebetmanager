@@ -471,6 +471,7 @@ async function renderDashboard() {
         </button>
       </div>
     </div>
+    <div id="dash-alerts" class="dash-alerts"></div>
     <div class="stats-grid" id="stats-grid"></div>
     <div id="dash-operators-card"></div>
     <div class="volume-card" id="volume-card"></div>
@@ -506,6 +507,25 @@ async function renderDashboard() {
   } catch (err) {
     toast(err.message, 'error');
   }
+  loadDashboardAlerts().catch(() => {});
+}
+
+async function loadDashboardAlerts() {
+  const el = document.getElementById('dash-alerts');
+  if (!el) return;
+  try {
+    const { triggered } = await api('/api/alerts');
+    if (!triggered || triggered.length === 0) { el.innerHTML = ''; return; }
+    el.innerHTML = triggered.map(a => `
+      <div class="dash-alert ${a.severity === 'warning' ? 'warning' : a.severity === 'error' ? 'error' : ''}">
+        <div style="font-size:20px">${a.severity === 'error' ? '&#9888;' : a.severity === 'warning' ? '&#9888;' : '&#128276;'}</div>
+        <div class="dash-alert-body">
+          <div class="dash-alert-title">${escapeHtml(a.title)}</div>
+          <div class="dash-alert-msg">${escapeHtml(a.message)}</div>
+        </div>
+      </div>
+    `).join('');
+  } catch (_) { el.innerHTML = ''; }
 }
 
 function renderDashOperators(op) {
@@ -1443,6 +1463,13 @@ async function renderHistory() {
         <button class="btn btn-ghost btn-sm" onclick="applyDatePreset('year')">Ano</button>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="clearFilters()">Limpar</button>
+      <div style="display:flex;gap:4px;align-items:center">
+        <select class="form-select" id="filter-saved" onchange="applySavedFilter(this.value)" title="Filtros salvos">
+          <option value="">Filtros salvos...</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="saveCurrentFilter()" title="Salvar combinação atual">&#128190;</button>
+        <button class="btn btn-ghost btn-sm" onclick="deleteCurrentSavedFilter()" title="Excluir filtro salvo selecionado">&#128465;</button>
+      </div>
       <select class="form-select" id="filter-page-size" onchange="changeHistoryPageSize(this.value)" title="Itens por página" style="margin-left:auto">
         ${HISTORY_PAGE_SIZES.map(n => `<option value="${n}" ${n === historyPageSize ? 'selected' : ''}>${n}/página</option>`).join('')}
       </select>
@@ -1453,7 +1480,77 @@ async function renderHistory() {
     </div>
     <div id="history-summary" class="stat-card" style="margin-top:16px"></div>
   `;
+  loadSavedFilters('history').catch(() => {});
   loadHistory();
+}
+
+// ===== SAVED FILTERS =====
+let savedFiltersCache = []; // [{id, view, name, filter}]
+
+async function loadSavedFilters(view) {
+  try {
+    const { filters } = await api(`/api/saved-filters?view=${view}`);
+    savedFiltersCache = filters || [];
+    renderSavedFiltersDropdown();
+  } catch (_) { /* non-fatal */ }
+}
+
+function renderSavedFiltersDropdown() {
+  const sel = document.getElementById('filter-saved');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Filtros salvos...</option>' +
+    savedFiltersCache.map(f =>
+      `<option value="${f.id}" ${String(f.id) === current ? 'selected' : ''}>${escapeHtml(f.name)}</option>`
+    ).join('');
+}
+
+function applySavedFilter(idStr) {
+  if (!idStr) return;
+  const f = savedFiltersCache.find(x => String(x.id) === String(idStr));
+  if (!f || !f.filter) return;
+  document.getElementById('filter-type').value = f.filter.type || '';
+  document.getElementById('filter-tag').value  = f.filter.tag  || '';
+  document.getElementById('filter-from').value = f.filter.from || '';
+  document.getElementById('filter-to').value   = f.filter.to   || '';
+  historyPage = 0;
+  loadHistory();
+}
+
+async function saveCurrentFilter() {
+  const filter = {
+    type: document.getElementById('filter-type').value,
+    tag:  document.getElementById('filter-tag').value,
+    from: document.getElementById('filter-from').value,
+    to:   document.getElementById('filter-to').value,
+  };
+  if (!filter.type && !filter.tag && !filter.from && !filter.to) {
+    toast('Nenhum filtro preenchido para salvar', 'error');
+    return;
+  }
+  const name = prompt('Nome para este filtro:');
+  if (!name || !name.trim()) return;
+  try {
+    await api('/api/saved-filters', {
+      method: 'POST',
+      body: { view: 'history', name: name.trim(), filter },
+    });
+    toast('Filtro salvo!');
+    await loadSavedFilters('history');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deleteCurrentSavedFilter() {
+  const sel = document.getElementById('filter-saved');
+  if (!sel || !sel.value) { toast('Selecione um filtro para excluir', 'error'); return; }
+  const f = savedFiltersCache.find(x => String(x.id) === sel.value);
+  if (!f) return;
+  if (!confirm(`Excluir filtro "${f.name}"?`)) return;
+  try {
+    await api(`/api/saved-filters/${f.id}`, { method: 'DELETE' });
+    toast('Filtro excluído');
+    await loadSavedFilters('history');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function loadHistory() {
@@ -2140,6 +2237,36 @@ async function renderSettings() {
       <div id="wallet-import-result" style="margin-top:10px"></div>
     </div>
 
+    <!-- Alertas -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:4px">Alertas do Dashboard</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Avisos visuais que aparecem no topo do dashboard quando as condições configuradas forem atendidas.
+      </p>
+      <div id="alerts-config-list"><div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">Carregando...</div></div>
+    </div>
+
+    <!-- Backup / Restore -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:4px">Backup / Restauração</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Exporte um JSON completo com suas operações, contas, operadores, giros e demais dados.
+        O arquivo pode ser reimportado aqui (ou em outra instância). <strong style="color:var(--danger)">Restaurar substitui todos os dados atuais.</strong>
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="downloadBackup()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Baixar backup
+        </button>
+        <label class="btn btn-ghost" style="cursor:pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Restaurar backup
+          <input type="file" accept=".json" style="display:none" onchange="restoreBackup(this)">
+        </label>
+      </div>
+      <div id="backup-result" style="margin-top:10px"></div>
+    </div>
+
     <!-- Tag rules -->
     <div class="chart-container" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:8px">
@@ -2182,6 +2309,7 @@ async function renderSettings() {
 
   renderAccountsList();
   loadTagRules();
+  loadAlertConfigs();
 
   document.getElementById('add-account-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -2217,6 +2345,124 @@ async function savePolySettings() {
     await api('/api/settings/poly', { method: 'PUT', body });
     toast('Prefer\u00EAncias da Polymarket salvas!');
   } catch (err) { toast(err.message, 'error'); }
+}
+
+// ===== ALERT CONFIGS =====
+// Param shape per alert_key — labels and input hints for the settings UI.
+const ALERT_PARAM_FIELDS = {
+  inactivity: [{ key: 'days', label: 'Dias sem operações', type: 'number', min: 1 }],
+  stale_pending: [{ key: 'days', label: 'Dias em pendente', type: 'number', min: 1 }],
+  low_volume_midweek: [
+    { key: 'day_of_week', label: 'Dia da semana (0=dom..6=sáb)', type: 'number', min: 0, max: 6 },
+    { key: 'percent', label: 'Percentual mínimo da meta (%)', type: 'number', min: 1, max: 100 },
+  ],
+  monthly_profit_target: [{ key: 'target', label: 'Meta de lucro mensal (R$)', type: 'number', min: 0 }],
+};
+
+async function loadAlertConfigs() {
+  const el = document.getElementById('alerts-config-list');
+  if (!el) return;
+  try {
+    const { configs } = await api('/api/alerts');
+    if (!configs || configs.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Nenhum alerta disponível.</div>'; return; }
+    el.innerHTML = configs.map(c => {
+      const fields = (ALERT_PARAM_FIELDS[c.alert_key] || []).map(f => `
+        <div class="form-group" style="margin:0">
+          <label class="form-label" style="font-size:12px">${f.label}</label>
+          <input type="${f.type}" class="form-input" data-key="${f.key}"
+            ${f.min !== undefined ? `min="${f.min}"` : ''}
+            ${f.max !== undefined ? `max="${f.max}"` : ''}
+            value="${c.params[f.key] ?? ''}">
+        </div>
+      `).join('');
+      return `
+        <div data-alert="${c.alert_key}" style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+            <div>
+              <div style="font-weight:600;font-size:14px">${escapeHtml(c.def.title)}</div>
+              <div style="color:var(--text-muted);font-size:12px">${escapeHtml(c.def.description)}</div>
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+              <input type="checkbox" data-enabled ${c.enabled ? 'checked' : ''}
+                style="width:16px;height:16px;accent-color:var(--primary)">
+              Ativo
+            </label>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">${fields}</div>
+          <button class="btn btn-ghost btn-sm" onclick="saveAlertConfig('${c.alert_key}', this)" style="margin-top:8px">Salvar</button>
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    el.innerHTML = `<div style="color:var(--danger);font-size:13px">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function saveAlertConfig(key, btn) {
+  const wrap = btn.closest('[data-alert]');
+  if (!wrap) return;
+  const enabled = !!wrap.querySelector('[data-enabled]')?.checked;
+  const params = {};
+  wrap.querySelectorAll('input[data-key]').forEach(inp => {
+    const v = inp.value;
+    params[inp.dataset.key] = inp.type === 'number' ? Number(v) : v;
+  });
+  try {
+    await api('/api/alerts/config', {
+      method: 'POST',
+      body: { alert_key: key, enabled, params },
+    });
+    toast('Configuração salva!');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function downloadBackup() {
+  try {
+    // Backup endpoint streams the JSON itself (Content-Disposition set server-side).
+    // Using fetch + blob keeps the auth cookie honored.
+    const csrf = readCookie('csrf_token');
+    const res = await fetch('/api/backup', { headers: csrf ? { 'X-CSRF-Token': csrf } : {} });
+    if (!res.ok) throw new Error('Falha ao baixar backup');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const disp = res.headers.get('Content-Disposition') || '';
+    const m = disp.match(/filename="([^"]+)"/);
+    a.download = m ? m[1] : 'surebet-backup.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Backup baixado!');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function restoreBackup(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const resultEl = document.getElementById('backup-result');
+  if (!confirm(
+    'ATENÇÃO: restaurar backup apaga TODOS os seus dados atuais (operações, contas, ' +
+    'operadores, giros, regras, etc.) e os substitui pelo conteúdo do arquivo. ' +
+    'Continuar?'
+  )) { input.value = ''; return; }
+  try {
+    const text = await file.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch { throw new Error('Arquivo não é JSON válido'); }
+    const r = await api('/api/restore', { method: 'POST', body: { confirm: 'REPLACE', data } });
+    const c = r.restored || {};
+    resultEl.innerHTML = `<div style="color:var(--success);font-size:13px">
+      Restaurado: ${c.accounts || 0} contas, ${c.operations || 0} operações,
+      ${c.operators || 0} operadores, ${c.giros || 0} giros, ${c.wallets || 0} wallets.
+    </div>`;
+    toast('Backup restaurado com sucesso');
+    setTimeout(() => location.reload(), 1500);
+  } catch (err) {
+    resultEl.innerHTML = `<div style="color:var(--danger);font-size:13px">${escapeHtml(err.message)}</div>`;
+    toast(err.message, 'error');
+  }
+  input.value = '';
 }
 
 async function exportWallets() {

@@ -822,6 +822,31 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .skeleton-card .skeleton + .skeleton { margin-top: 10px; }
 
+/* Dashboard alert banners */
+.dash-alerts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.dash-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  border-left: 4px solid var(--info);
+}
+.dash-alert.warning { border-left-color: var(--warning); }
+.dash-alert.error   { border-left-color: var(--danger); }
+.dash-alert-body { flex: 1; }
+.dash-alert-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.dash-alert-msg {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 /* Account chips in history table */
 .account-chips {
   display: inline-flex;
