@@ -17,8 +17,11 @@ app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
 // Light global throttle — catches broad scraping/abuse without hitting normal users.
+// keyBy:'user' reads the JWT cookie opportunistically so authenticated users get
+// their own bucket (shared IPs don't penalize each other); anonymous requests
+// fall back to per-IP bucketing.
 app.use('/api', rateLimit({
-  name: 'global-api', windowMs: 60 * 1000, max: 300,
+  name: 'global-api', windowMs: 60 * 1000, max: 300, keyBy: 'user',
 }));
 
 // CSRF on all /api state-changing requests (exemptions declared in csrf.js).

@@ -28,6 +28,45 @@ async function api(url, opts = {}) {
   return data;
 }
 
+// Skeleton markup helpers — keep render functions call-site short.
+function skeletonRows(count = 5, cols = 5) {
+  const widths = ['15%', '30%', '12%', '14%', '10%', '14%', '16%', '20%', '8%'];
+  let html = '<div class="skeleton-table">';
+  for (let i = 0; i < count; i++) {
+    html += '<div class="skeleton-row">';
+    for (let c = 0; c < cols; c++) {
+      html += `<span class="skeleton" style="width:${widths[c % widths.length]}"></span>`;
+    }
+    html += '</div>';
+  }
+  return html + '</div>';
+}
+
+function skeletonCards(count = 4) {
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `<div class="skeleton-card">
+      <span class="skeleton" style="width:40%;height:12px"></span>
+      <span class="skeleton" style="width:70%;height:24px"></span>
+    </div>`;
+  }
+  return html;
+}
+
+function showHistorySkeleton() {
+  const table = document.getElementById('history-table');
+  if (table) table.innerHTML = skeletonRows(8, 9);
+  const sum = document.getElementById('history-summary');
+  if (sum) sum.innerHTML = `<span class="skeleton" style="width:200px;height:18px"></span>`;
+}
+
+function showDashboardSkeleton() {
+  const grid = document.getElementById('stats-grid');
+  if (grid) grid.innerHTML = skeletonCards(4);
+  const recent = document.getElementById('recent-table');
+  if (recent) recent.innerHTML = skeletonRows(5, 7);
+}
+
 function toast(msg, type = 'success', opts = {}) {
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
@@ -453,6 +492,7 @@ async function renderDashboard() {
       <div id="recent-table"></div>
     </div>
   `;
+  showDashboardSkeleton();
 
   try {
     const data = await api('/api/dashboard/stats');
@@ -1363,7 +1403,9 @@ function accountCheckClick(event, label) {
 
 // ===== HISTORY =====
 let historyPage = 0;
-const PAGE_SIZE = 20;
+const HISTORY_PAGE_SIZES = [20, 50, 100];
+let historyPageSize = Number(localStorage.getItem('historyPageSize')) || 20;
+if (!HISTORY_PAGE_SIZES.includes(historyPageSize)) historyPageSize = 20;
 
 async function renderHistory() {
   historyPage = 0;
@@ -1401,6 +1443,9 @@ async function renderHistory() {
         <button class="btn btn-ghost btn-sm" onclick="applyDatePreset('year')">Ano</button>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="clearFilters()">Limpar</button>
+      <select class="form-select" id="filter-page-size" onchange="changeHistoryPageSize(this.value)" title="Itens por página" style="margin-left:auto">
+        ${HISTORY_PAGE_SIZES.map(n => `<option value="${n}" ${n === historyPageSize ? 'selected' : ''}>${n}/página</option>`).join('')}
+      </select>
     </div>
     <div class="table-container">
       <div id="history-table"></div>
@@ -1416,7 +1461,8 @@ async function loadHistory() {
   const tag = document.getElementById('filter-tag').value;
   const from = document.getElementById('filter-from').value;
   const to = document.getElementById('filter-to').value;
-  const params = new URLSearchParams({ limit: PAGE_SIZE, offset: historyPage * PAGE_SIZE });
+  showHistorySkeleton();
+  const params = new URLSearchParams({ limit: historyPageSize, offset: historyPage * historyPageSize });
   if (type) params.append('type', type);
   if (tag) params.append('tag', tag);
   if (from) params.append('from', from);
@@ -1468,7 +1514,7 @@ function renderHistoryTable(ops) {
           <td>${renderTagsDisplay(op.tags)}</td>
           <td>${isBR ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
           <td>${isBR ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
-          <td style="font-size:12px">${isBR ? (br.bookmakers.map(escapeHtml).join(', ') || '-') : ((op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-')}</td>
+          <td>${isBR ? renderBookmakerChips(br.bookmakers) : renderAccountChips(op.accounts)}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
           <td>
@@ -1486,8 +1532,26 @@ function renderHistoryTable(ops) {
   `;
 }
 
+function renderAccountChips(accounts) {
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    return '<span style="color:var(--text-muted);font-size:12px">—</span>';
+  }
+  return `<div class="account-chips">${
+    accounts.map(a => `<span class="account-chip" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>`).join('')
+  }</div>`;
+}
+
+function renderBookmakerChips(bookmakers) {
+  if (!Array.isArray(bookmakers) || bookmakers.length === 0) {
+    return '<span style="color:var(--text-muted);font-size:12px">—</span>';
+  }
+  return `<div class="account-chips">${
+    bookmakers.map(b => `<span class="account-chip" title="${escapeHtml(b)}">${escapeHtml(b)}</span>`).join('')
+  }</div>`;
+}
+
 function renderPagination(total) {
-  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const totalPages = Math.ceil(total / historyPageSize);
   const container = document.getElementById('history-pagination');
   if (totalPages <= 1) { container.innerHTML = ''; return; }
   container.innerHTML = `
@@ -1495,6 +1559,15 @@ function renderPagination(total) {
     <span>Página ${historyPage + 1} de ${totalPages}</span>
     <button ${historyPage >= totalPages - 1 ? 'disabled' : ''} onclick="historyPage++;loadHistory()">Próxima</button>
   `;
+}
+
+function changeHistoryPageSize(val) {
+  const n = Number(val);
+  if (!HISTORY_PAGE_SIZES.includes(n)) return;
+  historyPageSize = n;
+  localStorage.setItem('historyPageSize', String(n));
+  historyPage = 0;
+  loadHistory();
 }
 
 function clearFilters() {

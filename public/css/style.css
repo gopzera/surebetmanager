@@ -797,6 +797,49 @@ tbody tr:last-child td { border-bottom: none; }
   padding: 16px;
 }
 
+/* Skeleton loaders */
+@keyframes skeleton-pulse {
+  0%   { opacity: 0.55; }
+  50%  { opacity: 0.85; }
+  100% { opacity: 0.55; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-input) 0%, var(--border) 50%, var(--bg-input) 100%);
+  background-size: 200% 100%;
+  border-radius: 6px;
+  animation: skeleton-pulse 1.2s ease-in-out infinite;
+  display: block;
+}
+.skeleton-row { display: flex; gap: 12px; align-items: center; padding: 12px 8px; }
+.skeleton-row .skeleton { height: 14px; }
+.skeleton-table .skeleton-row + .skeleton-row { border-top: 1px solid var(--border); }
+.skeleton-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  border: 1px solid var(--border);
+}
+.skeleton-card .skeleton + .skeleton { margin-top: 10px; }
+
+/* Account chips in history table */
+.account-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 220px;
+}
+.account-chip {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 .pagination button {
   padding: 8px 14px;
   border-radius: 6px;

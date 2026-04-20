@@ -8,6 +8,7 @@
 //     out a restart to reset the counter.
 
 const db = require('../db/database');
+const jwt = require('jsonwebtoken');
 
 const buckets = new Map();
 
@@ -40,10 +41,24 @@ function getIp(req) {
     .toString().split(',')[0].trim() || 'unknown';
 }
 
+// Best-effort user resolution for rate-limit keying only — does NOT authenticate.
+// We inspect the JWT cookie pre-auth so the global /api limiter can bucket by
+// userId when possible; invalid tokens silently fall back to IP.
+function sniffUserId(req) {
+  if (req.user?.id) return req.user.id;
+  const token = req.cookies?.token;
+  if (!token || !process.env.JWT_SECRET) return null;
+  try {
+    const d = jwt.verify(token, process.env.JWT_SECRET);
+    return d?.id || null;
+  } catch { return null; }
+}
+
 function buildKey(req, name, keyBy) {
   let keyPart;
   if (keyBy === 'user') {
-    keyPart = req.user?.id ? `u:${req.user.id}` : `ip:${getIp(req)}`;
+    const uid = sniffUserId(req);
+    keyPart = uid ? `u:${uid}` : `ip:${getIp(req)}`;
   } else if (keyBy === 'ip+route') {
     keyPart = `${getIp(req)}|${req.method} ${req.path}`;
   } else {

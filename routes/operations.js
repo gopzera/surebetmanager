@@ -44,10 +44,22 @@ function serializeExtraBets(val, validAccountIds) {
   return cleaned.length ? JSON.stringify(cleaned) : null;
 }
 
+// Pagination caps — protect against a client asking for the whole table and
+// silently DoSing the DB. Clients that want everything should page through.
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 50;
+
 // List operations with filters
 router.get('/', async (req, res) => {
   try {
-    const { type, from, to, tag, limit = 50, offset = 0 } = req.query;
+    const { type, from, to, tag } = req.query;
+    const rawLimit = Number(req.query.limit);
+    const rawOffset = Number(req.query.offset);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.floor(rawLimit), MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+
     let where = 'WHERE o.user_id = ?';
     const params = [req.user.id];
 
@@ -64,7 +76,7 @@ router.get('/', async (req, res) => {
 
     const operations = await db.all(
       `SELECT o.* FROM operations o ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`,
-      ...params, Number(limit), Number(offset)
+      ...params, limit, offset
     );
 
     // Batch-attach accounts and tags for all operations in two queries (was N+1).
@@ -93,7 +105,11 @@ router.get('/', async (req, res) => {
       req.user.id
     );
 
-    res.json({ operations, total, allTags: allTags.map(r => r.tag) });
+    res.json({
+      operations, total,
+      allTags: allTags.map(r => r.tag),
+      pagination: { limit, offset, hasMore: offset + operations.length < total },
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });

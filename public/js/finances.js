@@ -64,7 +64,7 @@ async function renderFinances() {
           </div>
         </div>
       </div>
-      <div id="finances-operators-list"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+      <div id="finances-operators-list">${skeletonRows(4, 6)}</div>
     </div>
 
     <div class="chart-container" style="margin-bottom:20px">
@@ -72,7 +72,7 @@ async function renderFinances() {
         <h3 class="chart-title" style="margin:0">ROI por operador</h3>
         <span style="font-size:12px;color:var(--text-muted)">Lucro atribuído às contas do operador − custo no mês selecionado</span>
       </div>
-      <div id="finances-roi-list"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+      <div id="finances-roi-list">${skeletonRows(3, 5)}</div>
     </div>
 
     <div class="chart-container" style="margin-bottom:20px">
@@ -80,7 +80,7 @@ async function renderFinances() {
         <h3 class="chart-title" style="margin:0">Performance por conta</h3>
         <span style="font-size:12px;color:var(--text-muted)">Lucro/volume/ROI por conta Bet365 no mês (ignora pendentes)</span>
       </div>
-      <div id="finances-account-perf"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+      <div id="finances-account-perf">${skeletonRows(4, 5)}</div>
     </div>
 
     <div class="chart-container">
@@ -96,7 +96,7 @@ async function renderFinances() {
           </select>
         </div>
       </div>
-      <div id="finances-payments-list"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+      <div id="finances-payments-list">${skeletonRows(5, 6)}</div>
     </div>
   `;
 
