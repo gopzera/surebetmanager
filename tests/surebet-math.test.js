@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import SurebetMath from '../public/js/surebet-math.js';
 
-const { computeProfit, calcEffOdds, calcTakerFeePct, POLY_CATS } = SurebetMath;
+const { computeProfit, calcEffOdds, calcTakerFeePct, POLY_CATS, solveSplitLegs } = SurebetMath;
 
 describe('computeProfit', () => {
   it('returns null when no stakes are entered', () => {
@@ -117,6 +117,90 @@ describe('calcTakerFeePct', () => {
     const hi = calcTakerFeePct(1.01, 0, 'Crypto');
     const lo = calcTakerFeePct(100, 0, 'Crypto');
     expect(hi).toBeLessThan(lo);
+  });
+});
+
+describe('solveSplitLegs', () => {
+  it('reduces to classical surebet when no leg has split', () => {
+    // Two legs at odds 2.0 (zero margin). Total $200 → $100 each, payout $200 each.
+    const r = solveSplitLegs([
+      { effA: 2.0 }, { effA: 2.0 },
+    ], 200);
+    expect(r.target).toBeCloseTo(200, 6);
+    expect(r.stakes[0].total).toBeCloseTo(100, 6);
+    expect(r.stakes[1].total).toBeCloseTo(100, 6);
+    expect(r.totalUSD).toBeCloseTo(200, 6);
+    expect(r.stakes[0].splitActive).toBe(false);
+    expect(r.stakes[1].splitActive).toBe(false);
+  });
+
+  it('split leg: anchor fully used + overflow tier B solved', () => {
+    // Leg 0 has 270 shares at odd 1.45 (price = 1/1.45 ≈ 0.6897, capA ≈ $186.21),
+    // fallback odd 1.43 at tier B (no fee — limit order). Leg 1 is the other side.
+    // Chose effA=1.45 (no fee on tier A) and effB=1.43 for clarity.
+    const capA = 270 * (1/1.45);
+    const r = solveSplitLegs([
+      { effA: 1.45, effB: 1.43, capA },
+      { effA: 3.30 },
+    ], 1000);
+    // Sanity: tier A uses exactly capA, tier B picks up the rest so that
+    // payout on leg 0 winning = capA*1.45 + tierB*1.43 = target.
+    expect(r.stakes[0].splitActive).toBe(true);
+    expect(r.stakes[0].tierA).toBeCloseTo(capA, 6);
+    expect(r.stakes[0].tierA + r.stakes[0].tierB).toBeCloseTo(r.stakes[0].total, 6);
+    // Payouts on each leg winning should equal target.
+    expect(r.stakes[0].tierA * 1.45 + r.stakes[0].tierB * 1.43).toBeCloseTo(r.target, 6);
+    expect(r.stakes[1].tierA * 3.30).toBeCloseTo(r.target, 6);
+    // Total stake matches desiredTotalUSD.
+    expect(r.totalUSD).toBeCloseTo(1000, 6);
+  });
+
+  it('deactivates split when capA > required stake (tier A covers everything)', () => {
+    // capA way bigger than needed. Leg 0 should collapse to single-tier.
+    const r = solveSplitLegs([
+      { effA: 1.45, effB: 1.43, capA: 9999 },
+      { effA: 3.30 },
+    ], 1000);
+    expect(r.stakes[0].splitActive).toBe(false);
+    expect(r.stakes[0].tierB).toBe(0);
+    expect(r.stakes[0].tierA * 1.45).toBeCloseTo(r.target, 6);
+    expect(r.totalUSD).toBeCloseTo(1000, 6);
+  });
+
+  it('tier A fee differs from tier B fee (limit-order scenario)', () => {
+    // Tier A: odd 1.45 with Sports fee applied (effA ≈ from calcEffOdds).
+    // Tier B: odd 1.43 WITHOUT fee (limit order).
+    const effA = calcEffOdds(1.45, 0, 'back', true, 'Sports');  // with fee
+    const effB = calcEffOdds(1.43, 0, 'back', false, 'Sports'); // no fee → 1.43
+    const capA = 270 / 1.45; // 270 shares at price 1/1.45
+    const r = solveSplitLegs([
+      { effA, effB, capA },
+      { effA: 3.30 },
+    ], 1000);
+    // Payouts balance at target regardless of fee difference.
+    expect(r.stakes[0].tierA * effA + r.stakes[0].tierB * effB).toBeCloseTo(r.target, 6);
+    expect(r.stakes[1].tierA * 3.30).toBeCloseTo(r.target, 6);
+  });
+
+  it('freebet leg is excluded from cost totals', () => {
+    const r = solveSplitLegs([
+      { effA: 2.0 },
+      { effA: 2.0, usesFreebet: true },
+    ], 100);
+    // Only leg 0 costs real money.
+    expect(r.stakes[1].total).toBe(0);
+    expect(r.totalUSD).toBeCloseTo(r.stakes[0].total, 6);
+  });
+
+  it('returns null when any leg has effA <= 1', () => {
+    expect(solveSplitLegs([{ effA: 1.0 }, { effA: 2.0 }], 100)).toBe(null);
+  });
+
+  it('silently disables split when effB is bogus (fall back to single-tier)', () => {
+    // effB=0.5 is invalid; split auto-disables for that leg and math proceeds.
+    const r = solveSplitLegs([{ effA: 2.0, effB: 0.5, capA: 10 }, { effA: 2.0 }], 100);
+    expect(r).not.toBe(null);
+    expect(r.stakes[0].splitActive).toBe(false);
   });
 });
 

@@ -2,7 +2,7 @@
 // POLY_CATS, calcEffOdds, calcTakerFeePct live in /js/surebet-math.js (tested via Vitest).
 // Destructured here (not in app.js) because this file loads first; app.js only
 // needs computeProfit and destructures that on its own.
-const { POLY_CATS, calcEffOdds, calcTakerFeePct } = window.SurebetMath;
+const { POLY_CATS, calcEffOdds, calcTakerFeePct, solveSplitLegs } = window.SurebetMath;
 const CAT_KEYS = Object.keys(POLY_CATS);
 
 // Fork/formula types
@@ -47,8 +47,52 @@ function makeCalcRow(id) {
     currency: "USD", isFixed: false, fixedStake: "",
     manualStake: null,    // user-typed override when another row is the fixed anchor
     customRate: null,     // custom BRL/USD rate for display on USD rows
-    usesFreebet: false    // freebet rows use (eff - 1) and don't count in the stake total
+    usesFreebet: false,   // freebet rows use (eff - 1) and don't count in the stake total
+    // Liquidity split (Poly back only). When enabled: tier A uses the row's primary
+    // odd for up to `sharesA` shares (capA USD = sharesA × 1/odds); any overflow
+    // goes to tier B at `oddB`. Each tier has its own fee flag (limit orders on
+    // non-current prices pay no taker fee). Solver logic in window.SurebetMath.
+    polySplit: null,
   };
+}
+
+// Build the "legs" payload for SurebetMath.solveSplitLegs from the current row state.
+// Returns one leg per row; split-only rows get { effA, effB, capA } populated.
+function calcBuildSolveLegs() {
+  return calcRows.map(r => {
+    const comm = parseFloat(r.comm) || 0;
+    const rawOdd = parseFloat(r.odds);
+    const split = calcIsSplitActive(r) ? r.polySplit : null;
+
+    // Tier A effective odd honors the row's own fee flag; with split, it honors
+    // the split's feeA override so the user can tell the math "no fee here".
+    const effA = calcEffOdds(
+      rawOdd, comm, r.betType,
+      r.usePoly && (split ? split.feeA : true),
+      r.cat
+    );
+    let effB = null, capA = null;
+    if (split) {
+      const oddB = parseFloat(split.oddB);
+      effB = calcEffOdds(oddB, comm, r.betType, r.usePoly && split.feeB, r.cat);
+      const sharesA = parseFloat(split.sharesA) || 0;
+      if (rawOdd > 1) capA = sharesA * (1 / rawOdd);
+    }
+    return { effA, effB, capA, usesFreebet: !!r.usesFreebet };
+  });
+}
+
+// Split is a back-only Poly feature with sane inputs. Prevent it from coexisting
+// with isFixed/usesFreebet (the UI disables those toggles when split is on, but
+// guard defensively in case of stale state).
+function calcIsSplitActive(row) {
+  if (!row.polySplit) return false;
+  if (row.betType !== 'back' || !row.usePoly) return false;
+  if (row.isFixed || row.usesFreebet) return false;
+  const sharesA = parseFloat(row.polySplit.sharesA);
+  const oddB = parseFloat(row.polySplit.oddB);
+  const rawOdd = parseFloat(row.odds);
+  return sharesA > 0 && oddB > 1 && rawOdd > 1 && oddB !== rawOdd;
 }
 
 // -- Math -- (calcEffOdds, calcTakerFeePct imported from window.SurebetMath at top of file)
@@ -163,20 +207,31 @@ function calcToggleShowComm() {
 // -- Core calculation --
 // Freebet rows: stake is the bookie's credit (not user's money). Row contribution
 // when won is S*(eff-1) rather than S*eff. Real outlay and invSum exclude them.
+// Split rows (polySplit active): stake is allocated across tier A (capped at
+// sharesA × 1/odd) and tier B (fallback odd), each with independent fee flag.
 function calcCompute() {
-  const effArr = calcRows.map(r =>
-    calcEffOdds(parseFloat(r.odds), parseFloat(r.comm)||0, r.betType, r.usePoly, r.cat)
-  );
-  if (!effArr.every(o => o !== null && o > 1)) { calcResult = null; return; }
-  // A freebet row needs eff > 1 which also ensures (eff-1) > 0 — no extra guard needed.
+  const legs = calcBuildSolveLegs();
+  if (!legs.every(l => l.effA !== null && l.effA > 1)) { calcResult = null; return; }
+  // Active-split legs need a valid effB too; calcIsSplitActive already gates on odds/shares.
+  if (calcRows.some((r, i) => calcIsSplitActive(r) && !(legs[i].effB > 1))) {
+    calcResult = null; return;
+  }
 
-  const payoutFactor = i => calcRows[i].usesFreebet ? (effArr[i] - 1) : effArr[i];
-  const invSum = calcRows.reduce((s, r, i) => r.usesFreebet ? s : s + 1/effArr[i], 0);
+  const invSum = calcRows.reduce((s, r, i) => {
+    if (r.usesFreebet) return s;
+    const l = legs[i];
+    return s + (calcIsSplitActive(r) ? 1 / l.effB : 1 / l.effA);
+  }, 0);
   const margin = invSum;
   const isSurebet = margin < 1 && invSum > 0;
 
   const fixIdx = calcRows.findIndex(r => r.isFixed);
-  let target;
+
+  // perRow: { tierA, tierB, total, payoutOnWin, splitActive } per row, in USD.
+  // total == USD real money out for this row (0 on freebet legs).
+  // payoutOnWin == USD returned to user if THIS row's outcome wins.
+  let perRow;
+
   if (fixIdx >= 0) {
     const fRow = calcRows[fixIdx];
     const raw = parseFloat(fRow.fixedStake) || 0;
@@ -184,50 +239,121 @@ function calcCompute() {
     if (fRow.currency === "USD") usdFixed = raw;
     else if (fRow.currency === "BRL") usdFixed = calcUsdcBrl ? raw / calcUsdcBrl : raw;
     else usdFixed = raw;
-    target = usdFixed * payoutFactor(fixIdx);
+    // UI enforces split OFF on fixed row — payout uses effA directly.
+    const lf = legs[fixIdx];
+    const fixPayoutFactor = fRow.usesFreebet ? (lf.effA - 1) : lf.effA;
+    const target = usdFixed * fixPayoutFactor;
+
+    perRow = calcRows.map((r, i) => {
+      const l = legs[i];
+      if (r.usesFreebet) {
+        const stake = target / (l.effA - 1);
+        return { tierA: stake, tierB: 0, total: 0, payoutOnWin: target, splitActive: false };
+      }
+      if (calcIsSplitActive(r)) {
+        const tierBRaw = (target - l.capA * l.effA) / l.effB;
+        if (tierBRaw < 0) {
+          // Cap exceeds what this leg needs — collapse to single-tier on effA.
+          const stake = target / l.effA;
+          return { tierA: stake, tierB: 0, total: stake, payoutOnWin: target, splitActive: false };
+        }
+        return {
+          tierA: l.capA, tierB: tierBRaw, total: l.capA + tierBRaw,
+          payoutOnWin: l.capA * l.effA + tierBRaw * l.effB, splitActive: true,
+        };
+      }
+      const stake = target / l.effA;
+      return { tierA: stake, tierB: 0, total: stake, payoutOnWin: target, splitActive: false };
+    });
   } else {
-    // totalStakeOverride represents real money out. Without freebets this reduces
-    // to the classic target = total/invSum; freebet rows just drop from invSum.
     const desiredTotal = calcTotalStakeOverride !== null ? calcTotalStakeOverride : 100;
-    target = invSum > 0 ? desiredTotal / invSum : 0;
-  }
-
-  let stakesUSD = calcRows.map((_, i) => target / payoutFactor(i));
-
-  // Apply manual stake overrides
-  calcRows.forEach((r, i) => {
-    if (r.manualStake !== null && !r.isFixed) {
-      const raw = r.manualStake === "" ? null : parseFloat(r.manualStake);
-      if (raw !== null && !isNaN(raw)) {
-        let usdManual;
-        if (r.currency === "USD") usdManual = raw;
-        else if (r.currency === "BRL") usdManual = calcUsdcBrl ? raw / calcUsdcBrl : raw;
-        else usdManual = raw;
-        stakesUSD[i] = usdManual;
+    const solved = solveSplitLegs(legs, desiredTotal);
+    if (!solved) { calcResult = null; return; }
+    perRow = solved.stakes.map((s, i) => {
+      const l = legs[i];
+      const r = calcRows[i];
+      if (r.usesFreebet) {
+        // solveSplitLegs reports the freebet credit value in s.tierA; payoutOnWin is
+        // the net (eff-1)×credit that a freebet row contributes when it wins.
+        return { tierA: s.tierA, tierB: 0, total: 0, payoutOnWin: s.tierA * (l.effA - 1), splitActive: false };
       }
-    }
-  });
-
-  if (calcRoundValue > 0) {
-    stakesUSD = stakesUSD.map((s, i) => {
-      const row = calcRows[i];
-      if (calcRoundUseFx && row.currency === "BRL" && calcUsdcBrl) {
-        const brl = s * calcUsdcBrl;
-        const rounded = Math.ceil(brl / calcRoundValue) * calcRoundValue;
-        return rounded / calcUsdcBrl;
-      }
-      return Math.ceil(s / calcRoundValue) * calcRoundValue;
+      const payoutOnWin = s.splitActive ? s.tierA * l.effA + s.tierB * l.effB : s.tierA * l.effA;
+      return { ...s, payoutOnWin };
     });
   }
 
-  // Real money out: freebet stakes are the bookie's credit, so exclude them.
-  const totalUSD = stakesUSD.reduce((a, b, i) => a + (calcRows[i].usesFreebet ? 0 : b), 0);
-  const returnsUSD = stakesUSD.map((s, i) => s * payoutFactor(i));
+  // Manual stake overrides (user typed a total USD for this row).
+  calcRows.forEach((r, i) => {
+    if (r.manualStake === null || r.isFixed) return;
+    const raw = r.manualStake === "" ? null : parseFloat(r.manualStake);
+    if (raw === null || isNaN(raw)) return;
+    let usdManual;
+    if (r.currency === "USD") usdManual = raw;
+    else if (r.currency === "BRL") usdManual = calcUsdcBrl ? raw / calcUsdcBrl : raw;
+    else usdManual = raw;
+    const l = legs[i];
+    if (r.usesFreebet) {
+      perRow[i] = {
+        tierA: usdManual, tierB: 0, total: 0,
+        payoutOnWin: usdManual * (l.effA - 1), splitActive: false,
+      };
+    } else if (calcIsSplitActive(r)) {
+      const tierA = Math.min(usdManual, l.capA);
+      const tierB = Math.max(0, usdManual - l.capA);
+      perRow[i] = {
+        tierA, tierB, total: usdManual,
+        payoutOnWin: tierA * l.effA + tierB * l.effB,
+        splitActive: tierB > 0,
+      };
+    } else {
+      perRow[i] = {
+        tierA: usdManual, tierB: 0, total: usdManual,
+        payoutOnWin: usdManual * l.effA, splitActive: false,
+      };
+    }
+  });
+
+  // Rounding: applied to the row total; for split rows, tier A stays pinned at
+  // capA (liquidity constraint) and tier B absorbs the rounding delta.
+  if (calcRoundValue > 0) {
+    perRow = perRow.map((p, i) => {
+      const r = calcRows[i];
+      if (r.usesFreebet) return p;
+      let roundedTotal;
+      if (calcRoundUseFx && r.currency === "BRL" && calcUsdcBrl) {
+        const brl = p.total * calcUsdcBrl;
+        const r2 = Math.ceil(brl / calcRoundValue) * calcRoundValue;
+        roundedTotal = r2 / calcUsdcBrl;
+      } else {
+        roundedTotal = Math.ceil(p.total / calcRoundValue) * calcRoundValue;
+      }
+      const l = legs[i];
+      if (p.splitActive && l.capA != null && l.effB > 1) {
+        const tierA = Math.min(roundedTotal, l.capA);
+        const tierB = Math.max(0, roundedTotal - l.capA);
+        return {
+          tierA, tierB, total: roundedTotal,
+          payoutOnWin: tierA * l.effA + tierB * l.effB,
+          splitActive: tierB > 0,
+        };
+      }
+      return {
+        tierA: roundedTotal, tierB: 0, total: roundedTotal,
+        payoutOnWin: roundedTotal * l.effA, splitActive: false,
+      };
+    });
+  }
+
+  // Backward-compat arrays: existing display code reads stakesUSD[], returnsUSD[], profitsUSD[].
+  const totalUSD   = perRow.reduce((s, p) => s + p.total, 0);
+  const stakesUSD  = perRow.map(p => p.total);
+  const returnsUSD = perRow.map(p => p.payoutOnWin);
   const profitsUSD = returnsUSD.map(r => r - totalUSD);
   const minProfit  = Math.min(...profitsUSD);
   const roi        = totalUSD ? (minProfit / totalUSD) * 100 : 0;
+  const effArr     = legs.map(l => l.effA);
 
-  calcResult = { margin, isSurebet, effArr, stakesUSD, totalUSD, returnsUSD, profitsUSD, minProfit, roi };
+  calcResult = { margin, isSurebet, effArr, stakesUSD, totalUSD, returnsUSD, profitsUSD, minProfit, roi, perRow, legs };
 }
 
 // -- Build table --
@@ -260,9 +386,24 @@ function calcBuildPolyPriceHint(row) {
 function calcBuildPolySharesHint(row, idx) {
   const s = calcPolyState(row);
   if (!s.isPoly || !calcResult) return "";
-  const stakeUSD = calcResult.stakesUSD[idx] || 0;
-  if (stakeUSD <= 0) return "";
-  const shares = stakeUSD / s.priceRounded;
+  const p = calcResult.perRow?.[idx];
+  if (!p || p.total <= 0) return "";
+
+  // Split active: show tier A + tier B breakdown (shares per tier).
+  if (p.splitActive && row.polySplit) {
+    const oddB = parseFloat(row.polySplit.oddB);
+    const priceB = oddB > 1 ? 1 / oddB : null;
+    const priceBRounded = priceB ? Math.round(priceB * 100) / 100 : null;
+    const sharesA = p.tierA / s.priceRounded;
+    const sharesB = (priceBRounded && priceBRounded > 0) ? p.tierB / priceBRounded : null;
+    return `
+      <div class="c-shares-badge c-shares-split" title="Tier A: ${sharesA.toFixed(2)} shares @ $${s.priceRounded.toFixed(2)} | Tier B: ${sharesB != null ? sharesB.toFixed(2) : '—'} shares @ $${priceBRounded != null ? priceBRounded.toFixed(2) : '—'}">
+        <div>Tier A: ${sharesA.toFixed(2)} sh × $${s.priceRounded.toFixed(2)} = $${p.tierA.toFixed(2)}</div>
+        <div>Tier B: ${sharesB != null ? sharesB.toFixed(2) : '—'} sh × $${priceBRounded != null ? priceBRounded.toFixed(2) : '—'} = $${p.tierB.toFixed(2)}</div>
+      </div>`;
+  }
+
+  const shares = p.total / s.priceRounded;
   return `<div class="c-shares-badge" title="Shares em limit order a $${s.priceRounded.toFixed(2)} cada">Shares: ${shares.toFixed(2)}</div>`;
 }
 
@@ -383,15 +524,16 @@ function calcBuildTable() {
           ${liabHtml}
           <div id="calc-shares-${row.id}" class="c-shares-wrap">${polySharesHint}</div>
           <div id="calc-brl-hint-${row.id}" class="c-dim" style="padding-left:2px;display:none"></div>
+          ${calcBuildSplitControls(row)}
         </div>
       </td>
       <td class="c-ctr-col">
-        <input type="checkbox" ${row.usesFreebet?"checked":""} onchange="calcOnFreebetChange(${row.id},this.checked)"
-          title="Usar saldo de freebet nesta linha (odd cai 1 e stake n\u00E3o entra no total)">
+        <input type="checkbox" ${row.usesFreebet?"checked":""} ${row.polySplit?"disabled":""} onchange="calcOnFreebetChange(${row.id},this.checked)"
+          title="${row.polySplit?'Desative o split para usar freebet':'Usar saldo de freebet nesta linha (odd cai 1 e stake n\u00E3o entra no total)'}">
       </td>
       <td class="c-ctr-col" id="calc-fixcell-${row.id}">
-        <button class="c-fix-btn ${row.isFixed?"c-fix-on":"c-fix-off"}" onclick="calcToggleFix(${row.id})"
-          title="${row.isFixed?"Unfix stake":"Fix this stake"}">${row.isFixed?"\uD83D\uDD12":"\uD83D\uDD13"}</button>
+        <button class="c-fix-btn ${row.isFixed?"c-fix-on":"c-fix-off"}" ${row.polySplit?"disabled":""} onclick="calcToggleFix(${row.id})"
+          title="${row.polySplit?"Desative o split para fixar o stake":(row.isFixed?"Unfix stake":"Fix this stake")}">${row.isFixed?"\uD83D\uDD12":"\uD83D\uDD13"}</button>
       </td>
       <td id="calc-profit-${row.id}" class="c-num-col">\u2014</td>
     </tr>`;
@@ -572,6 +714,8 @@ function calcOnCommInput(id, val) { calcRows.find(r=>r.id===id).comm = val; calc
 function calcOnPolyChange(id, checked) {
   const row = calcRows.find(r=>r.id===id);
   row.usePoly = checked;
+  // Split only makes sense with Poly on; dropping Poly clears any split config.
+  if (!checked) row.polySplit = null;
   const sel = document.getElementById(`calc-catsel-${id}`);
   if (sel) sel.disabled = !checked;
   calcCompute(); calcBuildTable();
@@ -584,6 +728,7 @@ function calcOnFreebetChange(id, checked) {
   // Manual / fixed overrides don't survive a freebet toggle — the stake basis changed.
   row.manualStake = null;
   if (row.isFixed) { row.isFixed = false; row.fixedStake = ""; }
+  if (checked) row.polySplit = null;  // freebet + split don't mesh (no real money on tier allocation)
   calcCompute(); calcBuildTable();
   calcSaveState();
 }
@@ -603,8 +748,85 @@ function calcOnStakeInput(id, val) {
 function calcToggleBL(id) {
   const row = calcRows.find(r=>r.id===id);
   row.betType = row.betType === "back" ? "lay" : "back";
-  if (row.betType === "lay") { row.usePoly = false; }
+  if (row.betType === "lay") { row.usePoly = false; row.polySplit = null; }
   calcCompute(); calcBuildTable();
+}
+
+// -- Liquidity split controls (Poly back rows only) --
+// Scenario: you want N shares at the current Poly price but only M < N are available.
+// The overflow goes to a lower odd. Tier A captures the constrained slice (fixed capA
+// in USD = sharesA × 1/odds), tier B absorbs the rest at `oddB`. Fee flag per tier
+// handles the "limit order at non-current price → no taker fee" quirk.
+function calcBuildSplitControls(row) {
+  const canSplit = row.betType === 'back' && row.usePoly && !row.isFixed && !row.usesFreebet;
+  if (!canSplit && !row.polySplit) return '';
+  if (!canSplit && row.polySplit) { row.polySplit = null; return ''; }
+
+  if (!row.polySplit) {
+    return `<button type="button" class="c-split-toggle" onclick="calcToggleSplit(${row.id})"
+              title="Divida o stake entre a odd atual (limitada por liquidez) e uma odd fallback">
+              + Split por liquidez
+            </button>`;
+  }
+
+  const sp = row.polySplit;
+  return `
+    <div class="c-split-panel">
+      <div class="c-split-head">
+        <span class="c-split-title">Split por liquidez</span>
+        <button type="button" class="c-split-close" onclick="calcToggleSplit(${row.id})" title="Desativar split">✕</button>
+      </div>
+      <div class="c-split-row">
+        <label>Shares na odd ${row.odds}
+          <input type="number" min="0" step="1" value="${sp.sharesA === '' ? '' : sp.sharesA}"
+            oninput="calcOnSplitInput(${row.id},'sharesA',this.value)"
+            placeholder="ex: 270">
+        </label>
+        <label>Odd fallback
+          <input type="number" min="1.001" step="0.01" value="${sp.oddB === '' ? '' : sp.oddB}"
+            oninput="calcOnSplitInput(${row.id},'oddB',this.value)"
+            placeholder="ex: 1.43">
+        </label>
+      </div>
+      <div class="c-split-row">
+        <label class="c-split-check">
+          <input type="checkbox" ${sp.feeA?'checked':''} onchange="calcOnSplitFee(${row.id},'feeA',this.checked)">
+          Taker fee no tier A
+        </label>
+        <label class="c-split-check">
+          <input type="checkbox" ${sp.feeB?'checked':''} onchange="calcOnSplitFee(${row.id},'feeB',this.checked)">
+          Taker fee no tier B
+        </label>
+      </div>
+    </div>
+  `;
+}
+
+function calcToggleSplit(id) {
+  const row = calcRows.find(r => r.id === id);
+  if (!row) return;
+  if (row.polySplit) {
+    row.polySplit = null;
+  } else {
+    // feeA defaults to ON (current odd is usually taker → pays fee).
+    // feeB defaults to OFF (the common "limit order at non-current price" scenario).
+    row.polySplit = { sharesA: '', oddB: '', feeA: true, feeB: false };
+  }
+  calcCompute(); calcBuildTable();
+}
+
+function calcOnSplitInput(id, key, val) {
+  const row = calcRows.find(r => r.id === id);
+  if (!row || !row.polySplit) return;
+  row.polySplit[key] = val;
+  calcCompute(); calcUpdateDisplay();
+}
+
+function calcOnSplitFee(id, key, val) {
+  const row = calcRows.find(r => r.id === id);
+  if (!row || !row.polySplit) return;
+  row.polySplit[key] = !!val;
+  calcCompute(); calcUpdateDisplay();
 }
 
 function calcCycleCur(id) {
@@ -632,6 +854,7 @@ function calcToggleFix(id) {
     calcRows.forEach(r => { r.isFixed = false; r.fixedStake = ""; r.manualStake = null; });
     calcTotalStakeOverride = null;
     row.isFixed = true;
+    row.polySplit = null; // fixed + split not supported — fix pins total, split needs the anchor math
     const stakeEl = document.getElementById(`calc-stake-${id}`);
     const typedVal = row.manualStake !== null && row.manualStake !== ""
       ? row.manualStake
@@ -1006,7 +1229,8 @@ function calcSaveState() {
       usePoly: r.usePoly, cat: r.cat, currency: r.currency,
       isFixed: r.isFixed, fixedStake: r.fixedStake,
       manualStake: r.manualStake, customRate: r.customRate,
-      usesFreebet: r.usesFreebet
+      usesFreebet: r.usesFreebet,
+      polySplit: r.polySplit ? { ...r.polySplit } : null,
     })),
   };
   sessionStorage.setItem('calcState', JSON.stringify(state));
@@ -1032,7 +1256,13 @@ function calcRestoreState() {
         isFixed: !!r.isFixed, fixedStake: r.fixedStake || "",
         manualStake: r.manualStake !== undefined ? r.manualStake : null,
         customRate: r.customRate !== undefined ? r.customRate : null,
-        usesFreebet: !!r.usesFreebet
+        usesFreebet: !!r.usesFreebet,
+        polySplit: r.polySplit && typeof r.polySplit === 'object' ? {
+          sharesA: r.polySplit.sharesA ?? '',
+          oddB:    r.polySplit.oddB ?? '',
+          feeA:    r.polySplit.feeA !== false,
+          feeB:    !!r.polySplit.feeB,
+        } : null,
       }));
     } else {
       return false;

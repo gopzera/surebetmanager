@@ -522,6 +522,73 @@
   margin-top: 3px;
   display: inline-block;
 }
+/* Split badge: multi-line breakdown of tier A / tier B shares */
+.calc-page .c-shares-split {
+  display: block;
+  line-height: 1.5;
+  padding: 4px 8px;
+}
+.calc-page .c-shares-split > div + div { margin-top: 2px; }
+
+/* Liquidity-split toggle button (collapsed state) */
+.calc-page .c-split-toggle {
+  margin-top: 6px;
+  font: 500 10px/1 var(--mono);
+  color: var(--text3);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-xs);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.calc-page .c-split-toggle:hover {
+  color: var(--poly);
+  border-color: var(--poly-border);
+  background: var(--poly-bg);
+}
+
+/* Liquidity-split panel (expanded state) */
+.calc-page .c-split-panel {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--poly-bg);
+  border: 1px solid var(--poly-border);
+  border-radius: var(--r-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font: 500 10px/1.3 var(--mono);
+  min-width: 220px;
+}
+.calc-page .c-split-head {
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--poly-border);
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+}
+.calc-page .c-split-title { color: var(--poly); font-weight: 600; font-size: 11px; }
+.calc-page .c-split-close {
+  background: transparent; border: none; color: var(--text3);
+  cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px;
+}
+.calc-page .c-split-close:hover { color: var(--red); }
+.calc-page .c-split-row {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.calc-page .c-split-row label {
+  display: flex; flex-direction: column; gap: 2px;
+  font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: .5px;
+}
+.calc-page .c-split-row input[type="number"] {
+  width: 88px; text-align: right; font-size: 11px;
+  padding: 3px 6px;
+}
+.calc-page .c-split-check {
+  flex-direction: row !important; align-items: center; gap: 4px !important;
+  font-size: 10px !important; color: var(--text2) !important; text-transform: none !important;
+  letter-spacing: 0 !important; cursor: pointer;
+}
+.calc-page .c-split-check input { width: 14px; height: 14px; margin: 0; }
 
 /* ── SUMMARY CARDS ── */
 .calc-page .c-cards {
