@@ -73,7 +73,11 @@ function calcBuildSolveLegs() {
     );
     let effB = null, capA = null;
     if (split) {
-      const oddB = parseFloat(split.oddB);
+      // Tier B odd defaults to the row's main odd when the user leaves it empty —
+      // this supports the "same price, different fee" case (taker at current tape
+      // vs maker from a resting limit order; maker pays no fee).
+      const oddBRaw = parseFloat(split.oddB);
+      const oddB = (Number.isFinite(oddBRaw) && oddBRaw > 1) ? oddBRaw : rawOdd;
       effB = calcEffOdds(oddB, comm, r.betType, r.usePoly && split.feeB, r.cat);
       const sharesA = parseFloat(split.sharesA) || 0;
       if (rawOdd > 1) capA = sharesA * (1 / rawOdd);
@@ -85,14 +89,21 @@ function calcBuildSolveLegs() {
 // Split is a back-only Poly feature with sane inputs. Prevent it from coexisting
 // with isFixed/usesFreebet (the UI disables those toggles when split is on, but
 // guard defensively in case of stale state).
+// NOTE: oddB IS allowed to equal the main odd — that's the "same price, only fee
+// differs" case (part taker / part maker). If both odd AND fee flags end up equal,
+// effA === effB and the split becomes a mathematical no-op, which is fine.
 function calcIsSplitActive(row) {
   if (!row.polySplit) return false;
   if (row.betType !== 'back' || !row.usePoly) return false;
   if (row.isFixed || row.usesFreebet) return false;
   const sharesA = parseFloat(row.polySplit.sharesA);
-  const oddB = parseFloat(row.polySplit.oddB);
   const rawOdd = parseFloat(row.odds);
-  return sharesA > 0 && oddB > 1 && rawOdd > 1 && oddB !== rawOdd;
+  if (!(sharesA > 0) || !(rawOdd > 1)) return false;
+  // Empty oddB = "same as current"; else must be a valid odd.
+  const oddBRaw = row.polySplit.oddB;
+  if (oddBRaw === '' || oddBRaw == null) return true;
+  const oddB = parseFloat(oddBRaw);
+  return oddB > 1;
 }
 
 // -- Math -- (calcEffOdds, calcTakerFeePct imported from window.SurebetMath at top of file)
@@ -390,16 +401,21 @@ function calcBuildPolySharesHint(row, idx) {
   if (!p || p.total <= 0) return "";
 
   // Split active: show tier A + tier B breakdown (shares per tier).
+  // Tier B odd defaults to the row's main odd when the user left it empty
+  // (same-price-different-fee scenario).
   if (p.splitActive && row.polySplit) {
-    const oddB = parseFloat(row.polySplit.oddB);
-    const priceB = oddB > 1 ? 1 / oddB : null;
-    const priceBRounded = priceB ? Math.round(priceB * 100) / 100 : null;
+    const oddBRaw = parseFloat(row.polySplit.oddB);
+    const oddB = (Number.isFinite(oddBRaw) && oddBRaw > 1) ? oddBRaw : s.rawOdd;
+    const priceB = 1 / oddB;
+    const priceBRounded = Math.round(priceB * 100) / 100;
     const sharesA = p.tierA / s.priceRounded;
-    const sharesB = (priceBRounded && priceBRounded > 0) ? p.tierB / priceBRounded : null;
+    const sharesB = priceBRounded > 0 ? p.tierB / priceBRounded : null;
+    const feeLabel = (on) => on ? 'c/fee' : 's/fee';
+    const sp = row.polySplit;
     return `
-      <div class="c-shares-badge c-shares-split" title="Tier A: ${sharesA.toFixed(2)} shares @ $${s.priceRounded.toFixed(2)} | Tier B: ${sharesB != null ? sharesB.toFixed(2) : '—'} shares @ $${priceBRounded != null ? priceBRounded.toFixed(2) : '—'}">
-        <div>Tier A: ${sharesA.toFixed(2)} sh × $${s.priceRounded.toFixed(2)} = $${p.tierA.toFixed(2)}</div>
-        <div>Tier B: ${sharesB != null ? sharesB.toFixed(2) : '—'} sh × $${priceBRounded != null ? priceBRounded.toFixed(2) : '—'} = $${p.tierB.toFixed(2)}</div>
+      <div class="c-shares-badge c-shares-split" title="Tier A (${feeLabel(sp.feeA)}): ${sharesA.toFixed(2)} sh @ $${s.priceRounded.toFixed(2)} | Tier B (${feeLabel(sp.feeB)}): ${sharesB != null ? sharesB.toFixed(2) : '—'} sh @ $${priceBRounded.toFixed(2)}">
+        <div>Tier A (${feeLabel(sp.feeA)}): ${sharesA.toFixed(2)} sh × $${s.priceRounded.toFixed(2)} = $${p.tierA.toFixed(2)}</div>
+        <div>Tier B (${feeLabel(sp.feeB)}): ${sharesB != null ? sharesB.toFixed(2) : '—'} sh × $${priceBRounded.toFixed(2)} = $${p.tierB.toFixed(2)}</div>
       </div>`;
   }
 
@@ -782,10 +798,10 @@ function calcBuildSplitControls(row) {
             oninput="calcOnSplitInput(${row.id},'sharesA',this.value)"
             placeholder="ex: 270">
         </label>
-        <label>Odd fallback
+        <label title="Deixe vazio para usar a mesma odd (split só pela diferença de fee)">Odd fallback
           <input type="number" min="1.001" step="0.01" value="${sp.oddB === '' ? '' : sp.oddB}"
             oninput="calcOnSplitInput(${row.id},'oddB',this.value)"
-            placeholder="ex: 1.43">
+            placeholder="vazio = mesma odd">
         </label>
       </div>
       <div class="c-split-row">

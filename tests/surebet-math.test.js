@@ -167,6 +167,32 @@ describe('solveSplitLegs', () => {
     expect(r.totalUSD).toBeCloseTo(1000, 6);
   });
 
+  it('same odd, fee only on tier A (taker-then-maker at same price)', () => {
+    // User's real case: row odd 1.4492753623 ($0.69/share, Sports cat).
+    // 306 shares filled as taker (pay fee), rest filled as maker at same price (no fee).
+    const rawOdd = 1 / 0.69; // ≈ 1.4492753623
+    const effATaker = calcEffOdds(rawOdd, 0, 'back', true,  'Sports'); // with fee
+    const effBMaker = calcEffOdds(rawOdd, 0, 'back', false, 'Sports'); // no fee → = rawOdd
+    const capA = 306 / rawOdd; // 306 × $0.69 ≈ $211.14
+    // Pair with a row that won't split; target total high enough to overflow tier A.
+    const r = solveSplitLegs([
+      { effA: 3.3 },
+      { effA: effATaker, effB: effBMaker, capA },
+    ], 1000);
+    // Split should activate on leg 1 (tier B > 0).
+    expect(r.stakes[1].splitActive).toBe(true);
+    expect(r.stakes[1].tierA).toBeCloseTo(capA, 6);
+    // Payout on each leg winning must equal target (arbitrage guarantee).
+    expect(r.stakes[0].tierA * 3.3).toBeCloseTo(r.target, 6);
+    expect(r.stakes[1].tierA * effATaker + r.stakes[1].tierB * effBMaker).toBeCloseTo(r.target, 6);
+    // And the maker-side math should produce a visibly DIFFERENT result from
+    // the no-split baseline (otherwise users would think the feature is a no-op
+    // for same-odd scenarios).
+    const baseline = solveSplitLegs([{ effA: 3.3 }, { effA: effATaker }], 1000);
+    expect(r.target).not.toBeCloseTo(baseline.target, 2);
+    expect(r.target).toBeGreaterThan(baseline.target); // split with no-fee tier earns more
+  });
+
   it('tier A fee differs from tier B fee (limit-order scenario)', () => {
     // Tier A: odd 1.45 with Sports fee applied (effA ≈ from calcEffOdds).
     // Tier B: odd 1.43 WITHOUT fee (limit order).
