@@ -213,6 +213,20 @@ body {
   background: rgba(108, 92, 231, 0.12);
 }
 
+/* Side-by-side pair (volume + wins) — stacks on narrow screens */
+.dash-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 28px;
+  align-items: stretch;
+}
+.dash-pair > .volume-card,
+.dash-pair > .wins-card { margin-bottom: 0; height: 100%; }
+@media (max-width: 900px) {
+  .dash-pair { grid-template-columns: 1fr; }
+}
+
 /* Volume tracker */
 .volume-card {
   background: var(--bg-card);
@@ -220,6 +234,91 @@ body {
   border-radius: var(--radius);
   padding: 24px;
   margin-bottom: 28px;
+}
+
+/* Wins-by-side card */
+.wins-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+}
+.wins-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.wins-title { font-size: 16px; font-weight: 600; }
+.wins-sub   { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.wins-tabs  { display: flex; gap: 4px; flex-wrap: wrap; }
+.wins-tab {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.wins-tab:hover { color: var(--text); border-color: var(--primary); }
+.wins-tab.on {
+  background: rgba(108, 92, 231, 0.15);
+  border-color: var(--primary);
+  color: var(--text);
+}
+
+.wins-rows { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+.wins-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+.wins-row.wins-total {
+  background: transparent;
+  border-style: dashed;
+  margin-top: 4px;
+}
+.wins-row-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.wins-side-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--primary);
+}
+.wins-bet365 .wins-side-dot { background: #ffc107; }
+.wins-poly   .wins-side-dot { background: #26c6da; }
+
+.wins-row-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.wins-count {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.wins-count-label { font-size: 11px; color: var(--text-muted); }
+.wins-profit {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-left: 8px;
 }
 
 .volume-header {

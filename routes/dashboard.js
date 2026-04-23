@@ -167,18 +167,32 @@ router.get('/stats', async (req, res) => {
       userId
     );
 
-    // Per-side win breakdown (all-time). Count of ops that settled each way +
-    // aggregate profit on those ops. Excludes pending/void/generic 'won'.
-    const sideRows = await db.all(
-      `SELECT result, COUNT(*) as count, COALESCE(SUM(profit), 0) as profit
-       FROM operations
-       WHERE user_id = ? AND result IN ('bet365_won','poly_won')
-       GROUP BY result`,
-      userId
-    );
-    const bySide = { bet365_won: { count: 0, profit: 0 }, poly_won: { count: 0, profit: 0 } };
-    for (const r of sideRows) {
-      if (bySide[r.result]) bySide[r.result] = { count: r.count, profit: Number(r.profit) || 0 };
+    // Per-side win breakdown across periods. For each bucket we count ops that
+    // settled as bet365_won / poly_won and aggregate their profit. Pending, void
+    // and generic 'won' (arb BR) are ignored since they don't have a "side".
+    const yearStart = today.substring(0, 4) + '-01-01';
+    const winsPeriods = {
+      today:   { clause: `${OP_DATE_EXPR} = ?`,      args: [today] },
+      week:    { clause: `${OP_DATE_EXPR} >= ?`,     args: [weekStart] },
+      month:   { clause: `${OP_DATE_EXPR} >= ?`,     args: [monthStart] },
+      year:    { clause: `${OP_DATE_EXPR} >= ?`,     args: [yearStart] },
+      allTime: { clause: '1=1',                      args: [] },
+    };
+    const emptySide = () => ({ bet365_won: { count: 0, profit: 0 }, poly_won: { count: 0, profit: 0 } });
+    const winsBySide = {};
+    for (const [period, spec] of Object.entries(winsPeriods)) {
+      const rows = await db.all(
+        `SELECT o.result, COUNT(*) as count, COALESCE(SUM(o.profit), 0) as profit
+         FROM operations o
+         WHERE o.user_id = ? AND o.result IN ('bet365_won','poly_won') AND ${spec.clause}
+         GROUP BY o.result`,
+        userId, ...spec.args
+      );
+      const bucket = emptySide();
+      for (const r of rows) {
+        if (bucket[r.result]) bucket[r.result] = { count: r.count, profit: Number(r.profit) || 0 };
+      }
+      winsBySide[period] = bucket;
     }
 
     const dailyProfits = await db.all(
@@ -275,7 +289,7 @@ router.get('/stats', async (req, res) => {
         allTime: girosAllRow,
       },
       operators,
-      winsBySide: bySide,
+      winsBySide,
     });
   } catch (err) {
     console.error(err);

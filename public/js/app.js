@@ -474,7 +474,10 @@ async function renderDashboard() {
     <div id="dash-alerts" class="dash-alerts"></div>
     <div class="stats-grid" id="stats-grid"></div>
     <div id="dash-operators-card"></div>
-    <div class="volume-card" id="volume-card"></div>
+    <div class="dash-pair">
+      <div class="volume-card" id="volume-card"></div>
+      <div class="wins-card" id="wins-card"></div>
+    </div>
     <div class="charts-row">
       <div class="chart-container">
         <h3 class="chart-title">Lucro Diário (últimos 30 dias)</h3>
@@ -501,6 +504,7 @@ async function renderDashboard() {
     renderStats(data);
     renderDashOperators(data.operators);
     renderVolumeTracker(data);
+    renderWinsBySideCard(data.winsBySide);
     renderProfitChart(data.dailyProfits);
     renderTypeChart(data.profitByType);
     renderRecentTable(data.recentOps);
@@ -632,27 +636,78 @@ function renderStats(data) {
         ${avgDaily > 0 ? `<span class="stat-avg" title="Média diária desde a primeira operação">\u00D8 ${formatBRL(avgDaily)}/dia</span>` : ''}
       </div>
       ${mkLine(data.allTime.profit, giros.allTime.profit || 0)}
-    ${renderWinsBySide(data.winsBySide)}
     </div>
   `;
 }
 
-function renderWinsBySide(wins) {
-  if (!wins) return '';
-  const b = wins.bet365_won || { count: 0, profit: 0 };
-  const p = wins.poly_won   || { count: 0, profit: 0 };
-  return `
-    <div class="stat-card">
-      <div class="stat-label">Vit\u00F3rias Bet365</div>
-      <div class="stat-value ${profitClass(b.profit)}">${formatBRL(b.profit)}</div>
-      <div class="stat-sub">${b.count} opera\u00E7\u00E3o(\u00F5es) venceram pela Bet365</div>
+// ===== Wins by side (dedicated card, period-selectable) =====
+const WINS_PERIODS = [
+  { key: 'today',   label: 'Hoje'    },
+  { key: 'week',    label: 'Semana'  },
+  { key: 'month',   label: 'M\u00EAs'     },
+  { key: 'year',    label: 'Ano'     },
+  { key: 'allTime', label: 'Total'   },
+];
+let dashWinsPeriod = localStorage.getItem('dashWinsPeriod') || 'allTime';
+if (!WINS_PERIODS.some(p => p.key === dashWinsPeriod)) dashWinsPeriod = 'allTime';
+
+function renderWinsBySideCard(wins) {
+  const el = document.getElementById('wins-card');
+  if (!el) return;
+  window._dashWinsCache = wins || null;
+  if (!wins) { el.innerHTML = ''; return; }
+  const bucket = wins[dashWinsPeriod] || { bet365_won: { count: 0, profit: 0 }, poly_won: { count: 0, profit: 0 } };
+  const b = bucket.bet365_won || { count: 0, profit: 0 };
+  const p = bucket.poly_won   || { count: 0, profit: 0 };
+  const totalProfit = (b.profit || 0) + (p.profit || 0);
+  const totalCount  = (b.count  || 0) + (p.count  || 0);
+  el.innerHTML = `
+    <div class="wins-header">
+      <div>
+        <div class="wins-title">Vit\u00F3rias por Side</div>
+        <div class="wins-sub">Bet365 vs Polymarket no per\u00EDodo selecionado</div>
+      </div>
+      <div class="wins-tabs">
+        ${WINS_PERIODS.map(p => `
+          <button class="wins-tab ${p.key === dashWinsPeriod ? 'on' : ''}"
+            onclick="setDashWinsPeriod('${p.key}')">${p.label}</button>
+        `).join('')}
+      </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-label">Vit\u00F3rias Polymarket</div>
-      <div class="stat-value ${profitClass(p.profit)}">${formatBRL(p.profit)}</div>
-      <div class="stat-sub">${p.count} opera\u00E7\u00E3o(\u00F5es) venceram pela Poly</div>
+    <div class="wins-rows">
+      <div class="wins-row wins-bet365">
+        <div class="wins-row-label"><span class="wins-side-dot"></span>Bet365 venceu</div>
+        <div class="wins-row-value">
+          <span class="wins-count">${b.count}</span>
+          <span class="wins-count-label">opera\u00E7\u00E3o(\u00F5es)</span>
+          <span class="wins-profit ${profitClass(b.profit)}">${formatBRL(b.profit)}</span>
+        </div>
+      </div>
+      <div class="wins-row wins-poly">
+        <div class="wins-row-label"><span class="wins-side-dot"></span>Polymarket venceu</div>
+        <div class="wins-row-value">
+          <span class="wins-count">${p.count}</span>
+          <span class="wins-count-label">opera\u00E7\u00E3o(\u00F5es)</span>
+          <span class="wins-profit ${profitClass(p.profit)}">${formatBRL(p.profit)}</span>
+        </div>
+      </div>
+      <div class="wins-row wins-total">
+        <div class="wins-row-label">Total</div>
+        <div class="wins-row-value">
+          <span class="wins-count">${totalCount}</span>
+          <span class="wins-count-label">opera\u00E7\u00E3o(\u00F5es)</span>
+          <span class="wins-profit ${profitClass(totalProfit)}">${formatBRL(totalProfit)}</span>
+        </div>
+      </div>
     </div>
   `;
+}
+
+function setDashWinsPeriod(period) {
+  if (!WINS_PERIODS.some(p => p.key === period)) return;
+  dashWinsPeriod = period;
+  localStorage.setItem('dashWinsPeriod', period);
+  renderWinsBySideCard(window._dashWinsCache);
 }
 
 function renderVolumeTracker(data) {
