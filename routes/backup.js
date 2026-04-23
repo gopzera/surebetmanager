@@ -198,14 +198,27 @@ router.post('/restore', async (req, res) => {
       }
 
       // 3. Operations + child rows (operation_accounts + tags).
+      // Freebet ids need remapping because account ids changed in step 2;
+      // we keep the legacy scalar column in sync with the first remapped id.
       const opMap = new Map();
       for (const o of (data.operations || [])) {
+        let remappedIds = null;
+        if (o.freebet_account_ids) {
+          let raw = o.freebet_account_ids;
+          if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = null; } }
+          if (Array.isArray(raw)) {
+            const mapped = raw.map(id => accMap.get(Number(id))).filter(Boolean);
+            if (mapped.length) remappedIds = mapped;
+          }
+        }
+        const legacyRemapped = o.freebet_account_id != null ? (accMap.get(o.freebet_account_id) || null) : null;
+        if (!remappedIds && legacyRemapped) remappedIds = [legacyRemapped];
         const r = await tx.run(
           `INSERT INTO operations
              (user_id, type, game, event_date, stake_bet365, odd_bet365,
               stake_poly_usd, odd_poly, exchange_rate, result, profit, notes,
-              extra_bets, uses_freebet, freebet_account_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              extra_bets, uses_freebet, freebet_account_id, freebet_account_ids, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           uid, o.type, o.game, o.event_date || null,
           o.stake_bet365 || 0, o.odd_bet365 || 0,
           o.stake_poly_usd || 0, o.odd_poly || 0,
@@ -213,7 +226,8 @@ router.post('/restore', async (req, res) => {
           o.result || 'pending', o.profit || 0, o.notes || null,
           o.extra_bets || null,
           o.uses_freebet ? 1 : 0,
-          o.freebet_account_id != null ? (accMap.get(o.freebet_account_id) || null) : null,
+          remappedIds && remappedIds.length ? remappedIds[0] : null,
+          remappedIds && remappedIds.length ? JSON.stringify(remappedIds) : null,
           o.created_at || null
         );
         opMap.set(o.id, r.lastInsertRowid);

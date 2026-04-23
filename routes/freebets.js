@@ -76,6 +76,7 @@ router.get('/', async (req, res) => {
       `SELECT
          o.stake_bet365,
          o.freebet_account_id,
+         o.freebet_account_ids,
          COALESCE(o.uses_freebet, 0) as uses_freebet,
          o.extra_bets,
          ${OP_DATE_EXPR} as eff_date
@@ -97,8 +98,22 @@ router.get('/', async (req, res) => {
       spendDate.setDate(spendDate.getDate() - 7);
       const earningWeek = spendDate.toISOString().split('T')[0];
 
-      if (fbOp.uses_freebet && fbOp.freebet_account_id) {
-        addUsed(fbOp.freebet_account_id, earningWeek, Number(fbOp.stake_bet365) || 0);
+      if (fbOp.uses_freebet) {
+        // Multi-account freebet splits the stake evenly across each selected
+        // account. Legacy rows with only freebet_account_id keep single-account
+        // semantics (full stake charged to one account).
+        let ids = null;
+        if (fbOp.freebet_account_ids) {
+          try {
+            const parsed = JSON.parse(fbOp.freebet_account_ids);
+            if (Array.isArray(parsed) && parsed.length) ids = parsed;
+          } catch {}
+        }
+        if (!ids && fbOp.freebet_account_id) ids = [fbOp.freebet_account_id];
+        if (ids && ids.length) {
+          const share = (Number(fbOp.stake_bet365) || 0) / ids.length;
+          for (const aid of ids) addUsed(aid, earningWeek, share);
+        }
       }
       if (fbOp.extra_bets) {
         let extras = [];

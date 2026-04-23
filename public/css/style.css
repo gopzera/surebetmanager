@@ -847,6 +847,31 @@ tbody tr:last-child td { border-bottom: none; }
   color: var(--text-muted);
 }
 
+/* Freebet multi-account picker (operation form + edit modal) */
+.freebet-accounts-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.freebet-account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: border-color .15s, background .15s;
+}
+.freebet-account-chip:hover { border-color: var(--primary); }
+.freebet-account-chip input { accent-color: var(--primary); cursor: pointer; }
+.freebet-account-chip:has(input:checked) {
+  background: rgba(108, 92, 231, 0.14);
+  border-color: var(--primary);
+}
+
 /* Account chips in history table */
 .account-chips {
   display: inline-flex;

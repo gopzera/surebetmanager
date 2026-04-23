@@ -8,6 +8,34 @@ const { evaluateRules } = require('../utils/tagRules');
 const router = express.Router();
 router.use(auth);
 
+// Normalize freebet account payload from the client. Accepts either the legacy
+// `freebet_account_id` (single int) or the new `freebet_account_ids` array; dedupes
+// and filters to accounts the user owns. Returns { ids, legacyId } where legacyId
+// is just ids[0] (kept on operations.freebet_account_id for backward compat with
+// old data / callers still reading the scalar column).
+function normalizeFreebetAccounts(payload, validIds) {
+  const allowed = new Set(validIds.map(Number));
+  let raw = [];
+  if (Array.isArray(payload.freebet_account_ids)) {
+    raw = payload.freebet_account_ids;
+  } else if (payload.freebet_account_id != null) {
+    raw = [payload.freebet_account_id];
+  }
+  const seen = new Set();
+  const ids = [];
+  for (const v of raw) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || !allowed.has(n) || seen.has(n)) continue;
+    seen.add(n);
+    ids.push(n);
+  }
+  return {
+    ids,
+    json: ids.length > 0 ? JSON.stringify(ids) : null,
+    legacyId: ids.length > 0 ? ids[0] : null,
+  };
+}
+
 // Flexible JSON column. Shape varies by operation type:
 //   aumentada25:  [{stake, odd, uses_freebet, account_id}]   (extra Bet365 legs;
 //                                                             account_id attributes
@@ -119,7 +147,7 @@ router.get('/', async (req, res) => {
 // Create operation
 router.post('/', async (req, res) => {
   try {
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet, freebet_account_id } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet } = req.body;
 
     if (!type || !game) {
       return res.status(400).json({ error: 'Tipo e jogo são obrigatórios' });
@@ -131,8 +159,7 @@ router.post('/', async (req, res) => {
     const userAccountIds = userAccountsList.map(a => a.id);
 
     const extraBetsStr = serializeExtraBets(extra_bets, userAccountIds);
-    const freebetAccountId = (uses_freebet && freebet_account_id != null && userAccountIds.includes(Number(freebet_account_id)))
-      ? Number(freebet_account_id) : null;
+    const freebet = uses_freebet ? normalizeFreebetAccounts(req.body, userAccountIds) : { ids: [], json: null, legacyId: null };
     const accountEntries = [];
     if (Array.isArray(account_stakes) && account_stakes.length > 0) {
       for (const entry of account_stakes) {
@@ -152,14 +179,14 @@ router.post('/', async (req, res) => {
 
     const id = await db.transaction(async (tx) => {
       const r = await tx.run(
-        `INSERT INTO operations (user_id, type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, extra_bets, uses_freebet, freebet_account_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO operations (user_id, type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, extra_bets, uses_freebet, freebet_account_id, freebet_account_ids)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         req.user.id, type, game, event_date || null,
         stake_bet365 || 0, odd_bet365 || 0,
         stake_poly_usd || 0, odd_poly || 0,
         exchange_rate || 5.0,
         result || 'pending', profit || 0, notes || null,
-        extraBetsStr, uses_freebet ? 1 : 0, freebetAccountId
+        extraBetsStr, uses_freebet ? 1 : 0, freebet.legacyId, freebet.json
       );
 
       for (const entry of accountEntries) {
@@ -209,16 +236,30 @@ router.put('/:id', async (req, res) => {
     const op = await db.get('SELECT * FROM operations WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!op) return res.status(404).json({ error: 'Operação não encontrada' });
 
-    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet, freebet_account_id } = req.body;
+    const { type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, account_ids, account_stakes, tags, extra_bets, uses_freebet } = req.body;
 
     const userAccounts = await db.all('SELECT id FROM accounts WHERE user_id = ?', req.user.id);
     const userAccountIds = userAccounts.map(a => a.id);
 
     const nextExtraBets = extra_bets !== undefined ? serializeExtraBets(extra_bets, userAccountIds) : op.extra_bets;
     const nextUsesFreebet = uses_freebet !== undefined ? (uses_freebet ? 1 : 0) : (op.uses_freebet || 0);
-    const nextFreebetAccountId = freebet_account_id !== undefined
-      ? (freebet_account_id != null && userAccountIds.includes(Number(freebet_account_id)) ? Number(freebet_account_id) : null)
-      : (op.freebet_account_id || null);
+
+    // Freebet account(s): if the client sent either field, renormalize. Otherwise
+    // preserve whatever's on the row already (JSON wins over the legacy scalar).
+    let nextFreebetIdsJson, nextFreebetLegacyId;
+    if (req.body.freebet_account_ids !== undefined || req.body.freebet_account_id !== undefined || uses_freebet !== undefined) {
+      if (nextUsesFreebet) {
+        const n = normalizeFreebetAccounts(req.body, userAccountIds);
+        nextFreebetIdsJson = n.json;
+        nextFreebetLegacyId = n.legacyId;
+      } else {
+        nextFreebetIdsJson = null;
+        nextFreebetLegacyId = null;
+      }
+    } else {
+      nextFreebetIdsJson = op.freebet_account_ids || null;
+      nextFreebetLegacyId = op.freebet_account_id || null;
+    }
 
     const auditPayload = diff(
       { type: op.type, game: op.game, event_date: op.event_date, profit: op.profit, result: op.result,
@@ -232,14 +273,14 @@ router.put('/:id', async (req, res) => {
       await tx.run(
         `UPDATE operations SET type=?, game=?, event_date=?, stake_bet365=?, odd_bet365=?,
           stake_poly_usd=?, odd_poly=?, exchange_rate=?, result=?, profit=?, notes=?,
-          extra_bets=?, uses_freebet=?, freebet_account_id=?
+          extra_bets=?, uses_freebet=?, freebet_account_id=?, freebet_account_ids=?
         WHERE id = ?`,
         type ?? op.type, game ?? op.game, event_date ?? op.event_date,
         stake_bet365 ?? op.stake_bet365, odd_bet365 ?? op.odd_bet365,
         stake_poly_usd ?? op.stake_poly_usd, odd_poly ?? op.odd_poly,
         exchange_rate ?? op.exchange_rate,
         result ?? op.result, profit ?? op.profit, notes ?? op.notes,
-        nextExtraBets, nextUsesFreebet, nextFreebetAccountId,
+        nextExtraBets, nextUsesFreebet, nextFreebetLegacyId, nextFreebetIdsJson,
         op.id
       );
 
@@ -346,6 +387,11 @@ router.delete('/:id', async (req, res) => {
     });
     let extraBets = null;
     if (op.extra_bets) { try { extraBets = JSON.parse(op.extra_bets); } catch { extraBets = null; } }
+    let freebetAccountIds = null;
+    if (op.freebet_account_ids) { try { freebetAccountIds = JSON.parse(op.freebet_account_ids); } catch {} }
+    if ((!freebetAccountIds || !freebetAccountIds.length) && op.freebet_account_id) {
+      freebetAccountIds = [op.freebet_account_id];
+    }
     res.json({
       ok: true,
       snapshot: {
@@ -354,7 +400,9 @@ router.delete('/:id', async (req, res) => {
         stake_poly_usd: op.stake_poly_usd, odd_poly: op.odd_poly,
         exchange_rate: op.exchange_rate, result: op.result,
         profit: op.profit, notes: op.notes,
-        uses_freebet: op.uses_freebet, freebet_account_id: op.freebet_account_id,
+        uses_freebet: op.uses_freebet,
+        freebet_account_id: op.freebet_account_id,
+        freebet_account_ids: freebetAccountIds,
         extra_bets: extraBets,
         account_stakes: accRows.map(r => ({ account_id: r.account_id, stake: r.stake_bet365 })),
         tags: tagList,

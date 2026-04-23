@@ -167,6 +167,20 @@ router.get('/stats', async (req, res) => {
       userId
     );
 
+    // Per-side win breakdown (all-time). Count of ops that settled each way +
+    // aggregate profit on those ops. Excludes pending/void/generic 'won'.
+    const sideRows = await db.all(
+      `SELECT result, COUNT(*) as count, COALESCE(SUM(profit), 0) as profit
+       FROM operations
+       WHERE user_id = ? AND result IN ('bet365_won','poly_won')
+       GROUP BY result`,
+      userId
+    );
+    const bySide = { bet365_won: { count: 0, profit: 0 }, poly_won: { count: 0, profit: 0 } };
+    for (const r of sideRows) {
+      if (bySide[r.result]) bySide[r.result] = { count: r.count, profit: Number(r.profit) || 0 };
+    }
+
     const dailyProfits = await db.all(
       `SELECT ${OP_DATE_EXPR} as date, SUM(o.profit) as profit, COUNT(*) as count
        FROM operations o
@@ -261,6 +275,7 @@ router.get('/stats', async (req, res) => {
         allTime: girosAllRow,
       },
       operators,
+      winsBySide: bySide,
     });
   } catch (err) {
     console.error(err);

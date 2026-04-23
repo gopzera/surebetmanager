@@ -632,6 +632,25 @@ function renderStats(data) {
         ${avgDaily > 0 ? `<span class="stat-avg" title="Média diária desde a primeira operação">\u00D8 ${formatBRL(avgDaily)}/dia</span>` : ''}
       </div>
       ${mkLine(data.allTime.profit, giros.allTime.profit || 0)}
+    ${renderWinsBySide(data.winsBySide)}
+    </div>
+  `;
+}
+
+function renderWinsBySide(wins) {
+  if (!wins) return '';
+  const b = wins.bet365_won || { count: 0, profit: 0 };
+  const p = wins.poly_won   || { count: 0, profit: 0 };
+  return `
+    <div class="stat-card">
+      <div class="stat-label">Vit\u00F3rias Bet365</div>
+      <div class="stat-value ${profitClass(b.profit)}">${formatBRL(b.profit)}</div>
+      <div class="stat-sub">${b.count} opera\u00E7\u00E3o(\u00F5es) venceram pela Bet365</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Vit\u00F3rias Polymarket</div>
+      <div class="stat-value ${profitClass(p.profit)}">${formatBRL(p.profit)}</div>
+      <div class="stat-sub">${p.count} opera\u00E7\u00E3o(\u00F5es) venceram pela Poly</div>
     </div>
   `;
 }
@@ -892,9 +911,12 @@ async function renderNewOperation() {
               <div style="font-size:13px">Usar saldo de freebet nesta aposta (n\u00E3o conta no volume e paga s\u00F3 o lucro)</div>
             </label>
             <div id="new-freebet-account-wrap" style="display:none;margin-left:32px;margin-top:6px">
-              <select class="form-select" id="new-freebet-account" style="max-width:240px">
-                ${freebetAccountOptions()}
-              </select>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">
+                Selecione uma ou mais contas — o stake é dividido igualmente entre elas pra desconto da freebet
+              </div>
+              <div class="freebet-accounts-grid" id="new-freebet-accounts">
+                ${freebetAccountCheckboxes([])}
+              </div>
             </div>
           </div>
         </div>
@@ -1087,10 +1109,12 @@ async function renderNewOperation() {
       const fb = document.getElementById('new-uses-freebet');
       if (fb) fb.checked = true;
       toggleMainFreebetAccount('new');
-      if (imp.freebetAccountId) {
-        const sel = document.getElementById('new-freebet-account');
-        if (sel) sel.value = imp.freebetAccountId;
-      }
+      // imp may bring either a single id (legacy) or an array. Seed the checkboxes.
+      const ids = Array.isArray(imp.freebetAccountIds) && imp.freebetAccountIds.length
+        ? imp.freebetAccountIds
+        : (imp.freebetAccountId ? [imp.freebetAccountId] : []);
+      const box = document.getElementById('new-freebet-accounts');
+      if (box && ids.length) box.innerHTML = freebetAccountCheckboxes(ids);
     }
     if (imp.extraBets && imp.extraBets.length) {
       if (imp.type === 'arbitragem_br') {
@@ -1206,6 +1230,30 @@ function freebetAccountOptions(selectedId) {
   const active = userAccounts.filter(a => a.active);
   return '<option value="">— conta —</option>' +
     active.map(a => `<option value="${a.id}" ${a.id === Number(selectedId) ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('');
+}
+
+// Multi-account freebet picker. Renders one checkbox per active account; the
+// collectFreebetAccountIds() helper reads the checked state back into an array
+// the backend accepts as `freebet_account_ids`.
+function freebetAccountCheckboxes(selectedIds = []) {
+  const sel = new Set((selectedIds || []).map(Number));
+  const active = userAccounts.filter(a => a.active);
+  if (!active.length) {
+    return '<div style="font-size:12px;color:var(--text-muted)">Nenhuma conta ativa disponível</div>';
+  }
+  return active.map(a => `
+    <label class="freebet-account-chip">
+      <input type="checkbox" class="freebet-account-cb" value="${a.id}" ${sel.has(a.id) ? 'checked' : ''}>
+      <span>${escapeHtml(a.name)}</span>
+    </label>
+  `).join('');
+}
+
+function collectFreebetAccountIds(containerId) {
+  const box = document.getElementById(containerId);
+  if (!box) return [];
+  return Array.from(box.querySelectorAll('.freebet-account-cb:checked'))
+    .map(cb => Number(cb.value)).filter(Number.isFinite);
 }
 function extraBetRowHtml(idx, data = {}) {
   const uid = `extra-${++_extraBetSeq}`;
@@ -1349,8 +1397,8 @@ async function submitNewOperation(e) {
     notes: document.getElementById('new-notes').value.trim(),
     tags: getTagsFromInput('new-tags'),
     uses_freebet: isBR ? false : (document.getElementById('new-uses-freebet')?.checked || false),
-    freebet_account_id: (!isBR && document.getElementById('new-uses-freebet')?.checked)
-      ? (document.getElementById('new-freebet-account')?.value || null) : null,
+    freebet_account_ids: (!isBR && document.getElementById('new-uses-freebet')?.checked)
+      ? collectFreebetAccountIds('new-freebet-accounts') : [],
   };
   if (type === 'aumentada25') {
     body.extra_bets = collectExtraBets();
@@ -1878,9 +1926,20 @@ function fillEditModal(op) {
   const editFb = document.getElementById('edit-uses-freebet');
   if (editFb) editFb.checked = !!op.uses_freebet;
 
-  // Freebet account picker for main bet
-  const fbAcctSel = document.getElementById('edit-freebet-account');
-  if (fbAcctSel) fbAcctSel.innerHTML = freebetAccountOptions(op.freebet_account_id);
+  // Freebet account picker for main bet. New rows carry freebet_account_ids as a
+  // JSON string; legacy rows have only freebet_account_id (scalar).
+  const fbAcctBox = document.getElementById('edit-freebet-accounts');
+  if (fbAcctBox) {
+    let ids = [];
+    if (op.freebet_account_ids) {
+      try {
+        const parsed = JSON.parse(op.freebet_account_ids);
+        if (Array.isArray(parsed)) ids = parsed;
+      } catch {}
+    }
+    if (!ids.length && op.freebet_account_id) ids = [op.freebet_account_id];
+    fbAcctBox.innerHTML = freebetAccountCheckboxes(ids);
+  }
   const fbAcctWrap = document.getElementById('edit-freebet-account-wrap');
   if (fbAcctWrap) fbAcctWrap.style.display = op.uses_freebet ? '' : 'none';
 
@@ -2072,8 +2131,8 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     notes: document.getElementById('edit-notes').value,
     tags: getTagsFromInput('edit-tags'),
     uses_freebet: !!document.getElementById('edit-uses-freebet')?.checked,
-    freebet_account_id: document.getElementById('edit-uses-freebet')?.checked
-      ? (document.getElementById('edit-freebet-account')?.value || null) : null,
+    freebet_account_ids: document.getElementById('edit-uses-freebet')?.checked
+      ? collectFreebetAccountIds('edit-freebet-accounts') : [],
   };
   // Send extra_bets for aumentada25 edits
   const editType = document.getElementById('edit-type')?.value;
