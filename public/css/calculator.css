@@ -547,48 +547,202 @@
   background: var(--poly-bg);
 }
 
-/* Liquidity-split panel (expanded state) */
-.calc-page .c-split-panel {
+/* Summary chip shown when split is active */
+.calc-page .c-split-summary {
   margin-top: 6px;
-  padding: 8px 10px;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.calc-page .c-split-chip {
+  background: var(--poly-bg);
+  border: 1px solid var(--poly-border);
+  color: var(--poly);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font: 600 10px/1 var(--mono);
+  cursor: pointer;
+}
+.calc-page .c-split-chip:hover {
+  background: var(--poly);
+  color: #fff;
+}
+.calc-page .c-split-off {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text3);
+  border-radius: 999px;
+  width: 20px; height: 20px;
+  padding: 0; font-size: 11px;
+  cursor: pointer; line-height: 1;
+}
+.calc-page .c-split-off:hover { color: var(--red); border-color: var(--red); }
+
+/* Split modal (singleton, appended to body) */
+.c-split-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.c-split-modal-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(2px);
+}
+.c-split-modal-content {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  max-width: 860px; width: calc(100vw - 32px);
+  max-height: calc(100vh - 40px);
+  display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+.c-split-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.c-split-modal-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.c-split-modal-sub   { font-size: 12px; color: var(--text3); margin-top: 2px; }
+.c-split-modal-close {
+  background: transparent; border: none;
+  color: var(--text3); font-size: 18px;
+  cursor: pointer; padding: 4px 8px;
+}
+.c-split-modal-close:hover { color: var(--red); }
+.c-split-modal-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.c-split-modal-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface2);
+}
+.c-split-modal-foot .c-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 7px 14px;
+  border-radius: var(--r-xs);
+  font-size: 13px; font-weight: 600;
+  cursor: pointer;
+}
+.c-split-modal-foot .c-btn:hover { border-color: var(--poly); }
+.c-split-modal-foot .c-btn-secondary {
+  background: var(--poly-bg);
+  border-color: var(--poly-border);
+  color: var(--poly);
+}
+
+/* Tier table inside modal */
+.c-split-tiers { display: flex; flex-direction: column; gap: 6px; }
+.c-split-tier-head {
+  display: grid;
+  grid-template-columns: 80px 140px 110px 90px 1fr 30px;
+  gap: 10px;
+  font: 600 10px/1 var(--mono);
+  color: var(--text3);
+  text-transform: uppercase; letter-spacing: .5px;
+  padding: 0 8px;
+}
+.c-split-tier-row {
+  display: grid;
+  grid-template-columns: 80px 140px 110px 90px 1fr 30px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+}
+.c-split-tier-idx {
+  font: 600 11px/1 var(--mono);
+  color: var(--text2);
+}
+.c-split-tier-field { display: flex; flex-direction: column; gap: 2px; }
+.c-split-tier-field > span { display: none; } /* header already has labels */
+.c-split-tier-field input[type="number"] {
+  width: 100%; text-align: right;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  padding: 5px 8px; font-size: 12px;
+}
+.c-split-tier-field input[disabled] { opacity: 0.5; cursor: not-allowed; }
+.c-split-tier-fee {
+  flex-direction: row !important;
+  align-items: center; gap: 6px;
+  font-size: 12px;
+}
+.c-split-tier-fee > span { display: inline; color: var(--text2); }
+.c-split-tier-fee input { width: 16px; height: 16px; margin: 0; }
+.c-split-tier-used {
+  font: 400 11px/1.3 var(--mono);
+  color: var(--text2);
+}
+.c-split-tier-remove {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text3);
+  border-radius: var(--r-xs);
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.c-split-tier-remove:hover:not(:disabled) { color: var(--red); border-color: var(--red); }
+.c-split-tier-remove:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.c-split-note {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border-radius: var(--r-xs);
+  font-size: 12px; color: var(--text2);
+  line-height: 1.5;
+}
+.c-split-preview {
+  margin-top: 12px;
+  padding: 10px 12px;
   background: var(--poly-bg);
   border: 1px solid var(--poly-border);
   border-radius: var(--r-xs);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font: 500 10px/1.3 var(--mono);
-  min-width: 220px;
+  font-size: 12px;
+  display: flex; flex-direction: column; gap: 4px;
 }
-.calc-page .c-split-head {
-  display: flex; align-items: center; justify-content: space-between;
-  border-bottom: 1px solid var(--poly-border);
-  padding-bottom: 4px;
-  margin-bottom: 2px;
+.c-split-preview > div {
+  display: flex; justify-content: space-between;
+  color: var(--text2);
 }
-.calc-page .c-split-title { color: var(--poly); font-weight: 600; font-size: 11px; }
-.calc-page .c-split-close {
-  background: transparent; border: none; color: var(--text3);
-  cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px;
+.c-split-preview strong {
+  color: var(--text);
+  font: 700 13px/1 var(--mono);
 }
-.calc-page .c-split-close:hover { color: var(--red); }
-.calc-page .c-split-row {
-  display: flex; gap: 8px; flex-wrap: wrap;
+.c-split-warn {
+  margin-top: 6px !important;
+  padding: 8px 10px;
+  background: rgba(239, 83, 80, 0.15);
+  border: 1px solid rgba(239, 83, 80, 0.4);
+  border-radius: var(--r-xs);
+  color: #ffcdd2 !important;
+  font-size: 11px !important;
+  display: block !important;
 }
-.calc-page .c-split-row label {
-  display: flex; flex-direction: column; gap: 2px;
-  font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: .5px;
+
+/* Narrow screens: stack tier cells */
+@media (max-width: 640px) {
+  .c-split-tier-head { display: none; }
+  .c-split-tier-row {
+    grid-template-columns: 1fr 30px;
+  }
+  .c-split-tier-field { width: 100%; }
+  .c-split-tier-field > span { display: block; font-size: 10px; color: var(--text3); }
+  .c-split-tier-idx { grid-column: 1 / -1; }
 }
-.calc-page .c-split-row input[type="number"] {
-  width: 88px; text-align: right; font-size: 11px;
-  padding: 3px 6px;
-}
-.calc-page .c-split-check {
-  flex-direction: row !important; align-items: center; gap: 4px !important;
-  font-size: 10px !important; color: var(--text2) !important; text-transform: none !important;
-  letter-spacing: 0 !important; cursor: pointer;
-}
-.calc-page .c-split-check input { width: 14px; height: 14px; margin: 0; }
 
 /* ── SUMMARY CARDS ── */
 .calc-page .c-cards {

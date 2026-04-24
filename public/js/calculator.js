@@ -48,62 +48,92 @@ function makeCalcRow(id) {
     manualStake: null,    // user-typed override when another row is the fixed anchor
     customRate: null,     // custom BRL/USD rate for display on USD rows
     usesFreebet: false,   // freebet rows use (eff - 1) and don't count in the stake total
-    // Liquidity split (Poly back only). When enabled: tier A uses the row's primary
-    // odd for up to `sharesA` shares (capA USD = sharesA × 1/odds); any overflow
-    // goes to tier B at `oddB`. Each tier has its own fee flag (limit orders on
-    // non-current prices pay no taker fee). Solver logic in window.SurebetMath.
+    // Liquidity split (Poly back only). When enabled: the leg's stake is distributed
+    // across N user-defined tiers (shares available @ odd, each with its own fee
+    // flag). Greedy-fill in list order; user is responsible for ordering best-odd
+    // first (calcSortSplitTiers enforces this on save). Structure:
+    //   polySplit = { tiers: [{ shares: string, odd: string, fee: boolean }, ...] }
+    // First tier (tiers[0]) mirrors the row's main odd — that field stays editable
+    // in the main table row. Additional tiers live entirely in the modal.
     polySplit: null,
   };
 }
 
+// Normalize polySplit from legacy 2-tier shape {sharesA, oddB, feeA, feeB} to the
+// new {tiers: [...]} shape. Called on load (calcRestoreState) and when legacy
+// callers hand us old objects. Returns a fresh object ready for the solver.
+function calcMigrateSplit(split, rowOdds) {
+  if (!split || typeof split !== 'object') return null;
+  if (Array.isArray(split.tiers)) return split; // already new format
+  const sharesA = split.sharesA;
+  if (sharesA == null || sharesA === '') return null;
+  // Old tier B odd defaulted to rowOdds when empty (same-price/different-fee case).
+  const oddBval = (split.oddB == null || split.oddB === '') ? String(rowOdds ?? '') : String(split.oddB);
+  return {
+    tiers: [
+      { shares: String(sharesA), odd: String(rowOdds ?? ''), fee: split.feeA !== false },
+      { shares: '', odd: oddBval, fee: !!split.feeB },
+    ],
+  };
+}
+
 // Build the "legs" payload for SurebetMath.solveSplitLegs from the current row state.
-// Returns one leg per row; split-only rows get { effA, effB, capA } populated.
+// Returns one leg per row; split rows get {tiers: [{eff, cap}]} populated; tier 0's
+// odd is taken from the main row input, not polySplit.tiers[0].odd.
 function calcBuildSolveLegs() {
   return calcRows.map(r => {
     const comm = parseFloat(r.comm) || 0;
     const rawOdd = parseFloat(r.odds);
-    const split = calcIsSplitActive(r) ? r.polySplit : null;
 
-    // Tier A effective odd honors the row's own fee flag; with split, it honors
-    // the split's feeA override so the user can tell the math "no fee here".
-    const effA = calcEffOdds(
-      rawOdd, comm, r.betType,
-      r.usePoly && (split ? split.feeA : true),
-      r.cat
-    );
-    let effB = null, capA = null;
-    if (split) {
-      // Tier B odd defaults to the row's main odd when the user leaves it empty —
-      // this supports the "same price, different fee" case (taker at current tape
-      // vs maker from a resting limit order; maker pays no fee).
-      const oddBRaw = parseFloat(split.oddB);
-      const oddB = (Number.isFinite(oddBRaw) && oddBRaw > 1) ? oddBRaw : rawOdd;
-      effB = calcEffOdds(oddB, comm, r.betType, r.usePoly && split.feeB, r.cat);
-      const sharesA = parseFloat(split.sharesA) || 0;
-      if (rawOdd > 1) capA = sharesA * (1 / rawOdd);
+    if (!calcIsSplitActive(r)) {
+      // Non-split: row-wide usePoly flag drives the fee.
+      const effA = calcEffOdds(rawOdd, comm, r.betType, r.usePoly, r.cat);
+      return { effA, usesFreebet: !!r.usesFreebet };
     }
-    return { effA, effB, capA, usesFreebet: !!r.usesFreebet };
+
+    // Split: first tier uses the row's main odd; subsequent tiers use their own.
+    // The last tier's `shares` can be empty → treat as unbounded absorber.
+    const tiers = r.polySplit.tiers.map((t, idx) => {
+      const tierOdd = idx === 0 ? rawOdd : parseFloat(t.odd);
+      if (!(tierOdd > 1)) return null;
+      const eff = calcEffOdds(tierOdd, comm, r.betType, r.usePoly && t.fee, r.cat);
+      if (!(eff > 1)) return null;
+      const sharesRaw = parseFloat(t.shares);
+      const isLast = idx === r.polySplit.tiers.length - 1;
+      let cap;
+      if (isLast && (t.shares === '' || !(sharesRaw > 0))) {
+        cap = Number.POSITIVE_INFINITY;
+      } else if (sharesRaw > 0) {
+        cap = sharesRaw * (1 / tierOdd);
+      } else {
+        return null; // non-last tier with no shares = invalid, drop it
+      }
+      return { eff, cap };
+    }).filter(Boolean);
+
+    if (tiers.length === 0) {
+      const effA = calcEffOdds(rawOdd, comm, r.betType, r.usePoly, r.cat);
+      return { effA, usesFreebet: !!r.usesFreebet };
+    }
+    return { tiers, usesFreebet: !!r.usesFreebet };
   });
 }
 
-// Split is a back-only Poly feature with sane inputs. Prevent it from coexisting
-// with isFixed/usesFreebet (the UI disables those toggles when split is on, but
-// guard defensively in case of stale state).
-// NOTE: oddB IS allowed to equal the main odd — that's the "same price, only fee
-// differs" case (part taker / part maker). If both odd AND fee flags end up equal,
-// effA === effB and the split becomes a mathematical no-op, which is fine.
+// Split is active when the row is a valid Poly back row AND polySplit has at
+// least one non-first tier (i.e., user explicitly added overflow capacity).
+// A lone tier 0 would be equivalent to no split at all.
 function calcIsSplitActive(row) {
   if (!row.polySplit) return false;
   if (row.betType !== 'back' || !row.usePoly) return false;
   if (row.isFixed || row.usesFreebet) return false;
-  const sharesA = parseFloat(row.polySplit.sharesA);
+  if (!Array.isArray(row.polySplit.tiers) || row.polySplit.tiers.length < 2) return false;
   const rawOdd = parseFloat(row.odds);
-  if (!(sharesA > 0) || !(rawOdd > 1)) return false;
-  // Empty oddB = "same as current"; else must be a valid odd.
-  const oddBRaw = row.polySplit.oddB;
-  if (oddBRaw === '' || oddBRaw == null) return true;
-  const oddB = parseFloat(oddBRaw);
-  return oddB > 1;
+  if (!(rawOdd > 1)) return false;
+  // At least tier 0 needs a cap (shares) OR tier 0 is unbounded and there's
+  // still a second tier defining additional capacity.
+  const t0 = row.polySplit.tiers[0];
+  const sharesA = parseFloat(t0.shares);
+  return sharesA > 0;
 }
 
 // -- Math -- (calcEffOdds, calcTakerFeePct imported from window.SurebetMath at top of file)
@@ -218,82 +248,88 @@ function calcToggleShowComm() {
 // -- Core calculation --
 // Freebet rows: stake is the bookie's credit (not user's money). Row contribution
 // when won is S*(eff-1) rather than S*eff. Real outlay and invSum exclude them.
-// Split rows (polySplit active): stake is allocated across tier A (capped at
-// sharesA × 1/odd) and tier B (fallback odd), each with independent fee flag.
+// Split rows (polySplit active): stake is allocated across N user-defined tiers
+// via SurebetMath.solveSplitLegs. Greedy-fills tiers in list order; caps from
+// shares × price per tier. Last tier can be unbounded (shares empty) to absorb
+// overflow; otherwise the solver may clamp target and flag insufficientLiquidity.
 function calcCompute() {
   const legs = calcBuildSolveLegs();
-  if (!legs.every(l => l.effA !== null && l.effA > 1)) { calcResult = null; return; }
-  // Active-split legs need a valid effB too; calcIsSplitActive already gates on odds/shares.
-  if (calcRows.some((r, i) => calcIsSplitActive(r) && !(legs[i].effB > 1))) {
-    calcResult = null; return;
-  }
+  // For invSum / margin display we use each leg's "effective worst odd" — that
+  // is the eff of the last tier (where overflow lands). Non-split legs have
+  // a single `effA`. This gives a realistic arbitrage-margin estimate.
+  const legDisplayEff = legs.map(l => {
+    if (Array.isArray(l.tiers) && l.tiers.length) return l.tiers[l.tiers.length - 1].eff;
+    return l.effA;
+  });
+  if (!legDisplayEff.every(e => e != null && e > 1)) { calcResult = null; return; }
 
   const invSum = calcRows.reduce((s, r, i) => {
     if (r.usesFreebet) return s;
-    const l = legs[i];
-    return s + (calcIsSplitActive(r) ? 1 / l.effB : 1 / l.effA);
+    return s + 1 / legDisplayEff[i];
   }, 0);
   const margin = invSum;
   const isSurebet = margin < 1 && invSum > 0;
 
   const fixIdx = calcRows.findIndex(r => r.isFixed);
 
-  // perRow: { tierA, tierB, total, payoutOnWin, splitActive } per row, in USD.
+  // perRow: { tiers: [stakePerTier], total, payoutOnWin, splitActive } per row, in USD.
   // total == USD real money out for this row (0 on freebet legs).
   // payoutOnWin == USD returned to user if THIS row's outcome wins.
   let perRow;
+  let insufficientLiquidity = false;
 
   if (fixIdx >= 0) {
+    // Fixed-row path: split is forbidden on fixed rows (UI enforced); use the
+    // solver with a synthetic desiredTotal that yields the right fixed stake.
     const fRow = calcRows[fixIdx];
     const raw = parseFloat(fRow.fixedStake) || 0;
     let usdFixed;
     if (fRow.currency === "USD") usdFixed = raw;
     else if (fRow.currency === "BRL") usdFixed = calcUsdcBrl ? raw / calcUsdcBrl : raw;
     else usdFixed = raw;
-    // UI enforces split OFF on fixed row — payout uses effA directly.
-    const lf = legs[fixIdx];
-    const fixPayoutFactor = fRow.usesFreebet ? (lf.effA - 1) : lf.effA;
+    const fixEff = legDisplayEff[fixIdx];
+    const fixPayoutFactor = fRow.usesFreebet ? (fixEff - 1) : fixEff;
     const target = usdFixed * fixPayoutFactor;
 
-    perRow = calcRows.map((r, i) => {
+    // Given target, recompute desiredTotal so the shared solver produces the
+    // same target. desiredTotal = target × invSum + K (for split legs).
+    let K = 0;
+    for (let i = 0; i < legs.length; i++) {
       const l = legs[i];
-      if (r.usesFreebet) {
-        const stake = target / (l.effA - 1);
-        return { tierA: stake, tierB: 0, total: 0, payoutOnWin: target, splitActive: false };
-      }
-      if (calcIsSplitActive(r)) {
-        const tierBRaw = (target - l.capA * l.effA) / l.effB;
-        if (tierBRaw < 0) {
-          // Cap exceeds what this leg needs — collapse to single-tier on effA.
-          const stake = target / l.effA;
-          return { tierA: stake, tierB: 0, total: stake, payoutOnWin: target, splitActive: false };
+      if (calcRows[i].usesFreebet || !Array.isArray(l.tiers)) continue;
+      const lastEff = l.tiers[l.tiers.length - 1].eff;
+      for (let j = 0; j < l.tiers.length - 1; j++) {
+        if (Number.isFinite(l.tiers[j].cap)) {
+          K += l.tiers[j].cap * (1 - l.tiers[j].eff / lastEff);
         }
-        return {
-          tierA: l.capA, tierB: tierBRaw, total: l.capA + tierBRaw,
-          payoutOnWin: l.capA * l.effA + tierBRaw * l.effB, splitActive: true,
-        };
       }
-      const stake = target / l.effA;
-      return { tierA: stake, tierB: 0, total: stake, payoutOnWin: target, splitActive: false };
-    });
+    }
+    const desiredTotal = target * invSum + K;
+    const solved = solveSplitLegs(legs, desiredTotal);
+    if (!solved) { calcResult = null; return; }
+    insufficientLiquidity = !!solved.insufficientLiquidity;
+    perRow = solved.stakes.map((s, i) => ({
+      tiers: s.tiers.slice(),
+      total: s.total,
+      payoutOnWin: s.payoutOnWin,
+      splitActive: s.splitActive,
+    }));
   } else {
     const desiredTotal = calcTotalStakeOverride !== null ? calcTotalStakeOverride : 100;
     const solved = solveSplitLegs(legs, desiredTotal);
     if (!solved) { calcResult = null; return; }
-    perRow = solved.stakes.map((s, i) => {
-      const l = legs[i];
-      const r = calcRows[i];
-      if (r.usesFreebet) {
-        // solveSplitLegs reports the freebet credit value in s.tierA; payoutOnWin is
-        // the net (eff-1)×credit that a freebet row contributes when it wins.
-        return { tierA: s.tierA, tierB: 0, total: 0, payoutOnWin: s.tierA * (l.effA - 1), splitActive: false };
-      }
-      const payoutOnWin = s.splitActive ? s.tierA * l.effA + s.tierB * l.effB : s.tierA * l.effA;
-      return { ...s, payoutOnWin };
-    });
+    insufficientLiquidity = !!solved.insufficientLiquidity;
+    perRow = solved.stakes.map((s, i) => ({
+      tiers: s.tiers.slice(),
+      total: s.total,
+      payoutOnWin: s.payoutOnWin,
+      splitActive: s.splitActive,
+    }));
   }
 
-  // Manual stake overrides (user typed a total USD for this row).
+  // Manual stake overrides (user typed a total USD for this row). We distribute
+  // the manual total across tiers greedily so the UI stays consistent with the
+  // tier structure, but the arb may go unbalanced — that's the user's call.
   calcRows.forEach((r, i) => {
     if (r.manualStake === null || r.isFixed) return;
     const raw = r.manualStake === "" ? null : parseFloat(r.manualStake);
@@ -305,27 +341,34 @@ function calcCompute() {
     const l = legs[i];
     if (r.usesFreebet) {
       perRow[i] = {
-        tierA: usdManual, tierB: 0, total: 0,
+        tiers: [usdManual], total: 0,
         payoutOnWin: usdManual * (l.effA - 1), splitActive: false,
       };
-    } else if (calcIsSplitActive(r)) {
-      const tierA = Math.min(usdManual, l.capA);
-      const tierB = Math.max(0, usdManual - l.capA);
-      perRow[i] = {
-        tierA, tierB, total: usdManual,
-        payoutOnWin: tierA * l.effA + tierB * l.effB,
-        splitActive: tierB > 0,
-      };
+    } else if (Array.isArray(l.tiers) && l.tiers.length > 1) {
+      // Greedy-fill manual total across tiers.
+      const tierStakes = new Array(l.tiers.length).fill(0);
+      let remaining = usdManual;
+      for (let j = 0; j < l.tiers.length && remaining > 0; j++) {
+        const take = Math.min(remaining, l.tiers[j].cap);
+        tierStakes[j] = take;
+        remaining -= take;
+      }
+      const payoutOnWin = tierStakes.reduce((s, st, j) => s + st * l.tiers[j].eff, 0);
+      const total = tierStakes.reduce((a, b) => a + b, 0);
+      const used = tierStakes.filter(s => s > 1e-9).length;
+      perRow[i] = { tiers: tierStakes, total, payoutOnWin, splitActive: used > 1 };
     } else {
+      const eff = l.effA || (l.tiers && l.tiers[0] && l.tiers[0].eff);
       perRow[i] = {
-        tierA: usdManual, tierB: 0, total: usdManual,
-        payoutOnWin: usdManual * l.effA, splitActive: false,
+        tiers: [usdManual], total: usdManual,
+        payoutOnWin: usdManual * eff, splitActive: false,
       };
     }
   });
 
-  // Rounding: applied to the row total; for split rows, tier A stays pinned at
-  // capA (liquidity constraint) and tier B absorbs the rounding delta.
+  // Rounding: applied to the row total; for split rows, earlier tiers stay at
+  // their caps (liquidity is a hard limit) and the last-used tier absorbs the
+  // rounding delta.
   if (calcRoundValue > 0) {
     perRow = perRow.map((p, i) => {
       const r = calcRows[i];
@@ -339,32 +382,49 @@ function calcCompute() {
         roundedTotal = Math.ceil(p.total / calcRoundValue) * calcRoundValue;
       }
       const l = legs[i];
-      if (p.splitActive && l.capA != null && l.effB > 1) {
-        const tierA = Math.min(roundedTotal, l.capA);
-        const tierB = Math.max(0, roundedTotal - l.capA);
-        return {
-          tierA, tierB, total: roundedTotal,
-          payoutOnWin: tierA * l.effA + tierB * l.effB,
-          splitActive: tierB > 0,
-        };
+      if (p.splitActive && Array.isArray(l.tiers)) {
+        // Greedy-fill roundedTotal.
+        const tierStakes = new Array(l.tiers.length).fill(0);
+        let remaining = roundedTotal;
+        for (let j = 0; j < l.tiers.length && remaining > 0; j++) {
+          const take = Math.min(remaining, l.tiers[j].cap);
+          tierStakes[j] = take;
+          remaining -= take;
+        }
+        const payoutOnWin = tierStakes.reduce((s, st, j) => s + st * l.tiers[j].eff, 0);
+        const total = tierStakes.reduce((a, b) => a + b, 0);
+        const used = tierStakes.filter(s => s > 1e-9).length;
+        return { tiers: tierStakes, total, payoutOnWin, splitActive: used > 1 };
       }
+      const eff = l.effA || (l.tiers && l.tiers[0] && l.tiers[0].eff);
       return {
-        tierA: roundedTotal, tierB: 0, total: roundedTotal,
-        payoutOnWin: roundedTotal * l.effA, splitActive: false,
+        tiers: [roundedTotal], total: roundedTotal,
+        payoutOnWin: roundedTotal * eff, splitActive: false,
       };
     });
   }
 
-  // Backward-compat arrays: existing display code reads stakesUSD[], returnsUSD[], profitsUSD[].
+  // Backward-compat: existing display code still reads tierA/tierB on perRow[i].
+  for (const p of perRow) {
+    p.tierA = p.tiers[0] || 0;
+    p.tierB = p.tiers.length > 1 ? p.tiers[p.tiers.length - 1] : 0;
+  }
+
+  // Aggregate arrays for legacy display paths.
   const totalUSD   = perRow.reduce((s, p) => s + p.total, 0);
   const stakesUSD  = perRow.map(p => p.total);
   const returnsUSD = perRow.map(p => p.payoutOnWin);
   const profitsUSD = returnsUSD.map(r => r - totalUSD);
   const minProfit  = Math.min(...profitsUSD);
   const roi        = totalUSD ? (minProfit / totalUSD) * 100 : 0;
-  const effArr     = legs.map(l => l.effA);
+  // effArr: for the simulator and Prob% columns, use the row's primary odd's eff
+  // (tier 0 for split, effA otherwise) — that's what the user sees in the table.
+  const effArr = legs.map(l => Array.isArray(l.tiers) ? l.tiers[0].eff : l.effA);
 
-  calcResult = { margin, isSurebet, effArr, stakesUSD, totalUSD, returnsUSD, profitsUSD, minProfit, roi, perRow, legs };
+  calcResult = {
+    margin, isSurebet, effArr, stakesUSD, totalUSD, returnsUSD, profitsUSD,
+    minProfit, roi, perRow, legs, insufficientLiquidity,
+  };
 }
 
 // -- Build table --
@@ -400,23 +460,24 @@ function calcBuildPolySharesHint(row, idx) {
   const p = calcResult.perRow?.[idx];
   if (!p || p.total <= 0) return "";
 
-  // Split active: show tier A + tier B breakdown (shares per tier).
-  // Tier B odd defaults to the row's main odd when the user left it empty
-  // (same-price-different-fee scenario).
-  if (p.splitActive && row.polySplit) {
-    const oddBRaw = parseFloat(row.polySplit.oddB);
-    const oddB = (Number.isFinite(oddBRaw) && oddBRaw > 1) ? oddBRaw : s.rawOdd;
-    const priceB = 1 / oddB;
-    const priceBRounded = Math.round(priceB * 100) / 100;
-    const sharesA = p.tierA / s.priceRounded;
-    const sharesB = priceBRounded > 0 ? p.tierB / priceBRounded : null;
-    const feeLabel = (on) => on ? 'c/fee' : 's/fee';
-    const sp = row.polySplit;
-    return `
-      <div class="c-shares-badge c-shares-split" title="Tier A (${feeLabel(sp.feeA)}): ${sharesA.toFixed(2)} sh @ $${s.priceRounded.toFixed(2)} | Tier B (${feeLabel(sp.feeB)}): ${sharesB != null ? sharesB.toFixed(2) : '—'} sh @ $${priceBRounded.toFixed(2)}">
-        <div>Tier A (${feeLabel(sp.feeA)}): ${sharesA.toFixed(2)} sh × $${s.priceRounded.toFixed(2)} = $${p.tierA.toFixed(2)}</div>
-        <div>Tier B (${feeLabel(sp.feeB)}): ${sharesB != null ? sharesB.toFixed(2) : '—'} sh × $${priceBRounded.toFixed(2)} = $${p.tierB.toFixed(2)}</div>
-      </div>`;
+  // Split active: show per-tier breakdown (shares × price = stake).
+  if (p.splitActive && row.polySplit && Array.isArray(row.polySplit.tiers) && Array.isArray(p.tiers)) {
+    const lines = row.polySplit.tiers.map((t, j) => {
+      if (j >= p.tiers.length) return '';
+      const stakeUsd = p.tiers[j];
+      if (stakeUsd <= 1e-9) return '';
+      // Tier 0 uses the row's main odd; tier j>0 uses t.odd.
+      const tierOdd = j === 0 ? s.rawOdd : parseFloat(t.odd);
+      if (!(tierOdd > 1)) return '';
+      const price = 1 / tierOdd;
+      const priceRounded = Math.round(price * 100) / 100;
+      if (!(priceRounded > 0)) return '';
+      const shares = stakeUsd / priceRounded;
+      const feeLabel = t.fee ? 'c/fee' : 's/fee';
+      return `<div>T${j + 1} (${feeLabel}): ${shares.toFixed(2)} sh × $${priceRounded.toFixed(2)} = $${stakeUsd.toFixed(2)}</div>`;
+    }).filter(Boolean).join('');
+    if (!lines) return '';
+    return `<div class="c-shares-badge c-shares-split" title="Split de liquidez ativo — breakdown por tier">${lines}</div>`;
   }
 
   const shares = p.total / s.priceRounded;
@@ -769,51 +830,36 @@ function calcToggleBL(id) {
 }
 
 // -- Liquidity split controls (Poly back rows only) --
-// Scenario: you want N shares at the current Poly price but only M < N are available.
-// The overflow goes to a lower odd. Tier A captures the constrained slice (fixed capA
-// in USD = sharesA × 1/odds), tier B absorbs the rest at `oddB`. Fee flag per tier
-// handles the "limit order at non-current price → no taker fee" quirk.
+// Inline, the row shows a compact toggle button (when off) or a summary chip
+// (when on) that opens the modal. All tier editing lives in the modal so the
+// main table stays clean. Modal markup is injected into document.body on first
+// open; subsequent opens just update contents.
 function calcBuildSplitControls(row) {
   const canSplit = row.betType === 'back' && row.usePoly && !row.isFixed && !row.usesFreebet;
   if (!canSplit && !row.polySplit) return '';
   if (!canSplit && row.polySplit) { row.polySplit = null; return ''; }
 
   if (!row.polySplit) {
-    return `<button type="button" class="c-split-toggle" onclick="calcToggleSplit(${row.id})"
-              title="Divida o stake entre a odd atual (limitada por liquidez) e uma odd fallback">
+    return `<button type="button" class="c-split-toggle" onclick="calcOpenSplitModal(${row.id})"
+              title="Configurar split de liquidez (múltiplos tiers de preço)">
               + Split por liquidez
             </button>`;
   }
 
-  const sp = row.polySplit;
+  // Split is on: show a summary chip with tier count and total shares available.
+  const tiers = row.polySplit.tiers || [];
+  const totalShares = tiers.reduce((s, t) => {
+    const n = parseFloat(t.shares);
+    return s + (Number.isFinite(n) && n > 0 ? n : 0);
+  }, 0);
+  const unbounded = tiers.some((t, idx) => idx === tiers.length - 1 && (t.shares === '' || !(parseFloat(t.shares) > 0)));
   return `
-    <div class="c-split-panel">
-      <div class="c-split-head">
-        <span class="c-split-title">Split por liquidez</span>
-        <button type="button" class="c-split-close" onclick="calcToggleSplit(${row.id})" title="Desativar split">✕</button>
-      </div>
-      <div class="c-split-row">
-        <label>Shares na odd ${row.odds}
-          <input type="number" min="0" step="1" value="${sp.sharesA === '' ? '' : sp.sharesA}"
-            oninput="calcOnSplitInput(${row.id},'sharesA',this.value)"
-            placeholder="ex: 270">
-        </label>
-        <label title="Deixe vazio para usar a mesma odd (split só pela diferença de fee)">Odd fallback
-          <input type="number" min="1.001" step="0.01" value="${sp.oddB === '' ? '' : sp.oddB}"
-            oninput="calcOnSplitInput(${row.id},'oddB',this.value)"
-            placeholder="vazio = mesma odd">
-        </label>
-      </div>
-      <div class="c-split-row">
-        <label class="c-split-check">
-          <input type="checkbox" ${sp.feeA?'checked':''} onchange="calcOnSplitFee(${row.id},'feeA',this.checked)">
-          Taker fee no tier A
-        </label>
-        <label class="c-split-check">
-          <input type="checkbox" ${sp.feeB?'checked':''} onchange="calcOnSplitFee(${row.id},'feeB',this.checked)">
-          Taker fee no tier B
-        </label>
-      </div>
+    <div class="c-split-summary">
+      <button type="button" class="c-split-chip" onclick="calcOpenSplitModal(${row.id})"
+        title="Editar tiers">
+        ✓ Split: ${tiers.length} tier${tiers.length === 1 ? '' : 's'} · ${totalShares.toFixed(0)}${unbounded ? '+' : ''} sh
+      </button>
+      <button type="button" class="c-split-off" onclick="calcToggleSplit(${row.id})" title="Desativar split">✕</button>
     </div>
   `;
 }
@@ -824,25 +870,196 @@ function calcToggleSplit(id) {
   if (row.polySplit) {
     row.polySplit = null;
   } else {
-    // feeA defaults to ON (current odd is usually taker → pays fee).
-    // feeB defaults to OFF (the common "limit order at non-current price" scenario).
-    row.polySplit = { sharesA: '', oddB: '', feeA: true, feeB: false };
+    // Seed with 2 tiers: tier 0 mirrors the row's main odd (fee ON — taker at
+    // current tape), tier 1 is an overflow with empty shares (unbounded absorber)
+    // at the same odd with fee OFF (maker limit order assumed). User adjusts.
+    row.polySplit = {
+      tiers: [
+        { shares: '', odd: String(row.odds || ''), fee: true  },
+        { shares: '', odd: String(row.odds || ''), fee: false },
+      ],
+    };
   }
   calcCompute(); calcBuildTable();
 }
 
-function calcOnSplitInput(id, key, val) {
-  const row = calcRows.find(r => r.id === id);
-  if (!row || !row.polySplit) return;
-  row.polySplit[key] = val;
-  calcCompute(); calcUpdateDisplay();
+// ===== Split modal =====
+// Modal is a singleton element appended to document.body on first open and
+// re-rendered on every edit. Edits live in row.polySplit immediately; the
+// table re-renders via calcCompute so the user sees live shares/profit updates.
+
+let _calcSplitModalRowId = null;
+
+function calcEnsureSplitModal() {
+  let modal = document.getElementById('calc-split-modal');
+  if (modal) return modal;
+  modal = document.createElement('div');
+  modal.id = 'calc-split-modal';
+  modal.className = 'calc-page c-split-modal';
+  modal.style.display = 'none';
+  modal.innerHTML = `
+    <div class="c-split-modal-backdrop" onclick="calcCloseSplitModal()"></div>
+    <div class="c-split-modal-content" onclick="event.stopPropagation()">
+      <div class="c-split-modal-head">
+        <div>
+          <div class="c-split-modal-title">Split de liquidez</div>
+          <div class="c-split-modal-sub" id="calc-split-modal-sub"></div>
+        </div>
+        <button type="button" class="c-split-modal-close" onclick="calcCloseSplitModal()">✕</button>
+      </div>
+      <div class="c-split-modal-body" id="calc-split-modal-body"></div>
+      <div class="c-split-modal-foot">
+        <button type="button" class="c-btn c-btn-secondary" onclick="calcAddSplitTier()">+ Adicionar tier</button>
+        <div style="flex:1"></div>
+        <button type="button" class="c-btn" onclick="calcCloseSplitModal()">Fechar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  return modal;
 }
 
-function calcOnSplitFee(id, key, val) {
+function calcOpenSplitModal(id) {
   const row = calcRows.find(r => r.id === id);
+  if (!row) return;
+  if (!row.polySplit) {
+    // Seed with 2 tiers matching the row's current odd.
+    row.polySplit = {
+      tiers: [
+        { shares: '', odd: String(row.odds || ''), fee: true  },
+        { shares: '', odd: String(row.odds || ''), fee: false },
+      ],
+    };
+  }
+  _calcSplitModalRowId = id;
+  calcEnsureSplitModal().style.display = 'flex';
+  calcRenderSplitModal();
+  calcCompute(); calcBuildTable();
+}
+
+function calcCloseSplitModal() {
+  const m = document.getElementById('calc-split-modal');
+  if (m) m.style.display = 'none';
+  _calcSplitModalRowId = null;
+}
+
+function calcRenderSplitModal() {
+  if (_calcSplitModalRowId == null) return;
+  const row = calcRows.find(r => r.id === _calcSplitModalRowId);
+  if (!row || !row.polySplit) { calcCloseSplitModal(); return; }
+  const body = document.getElementById('calc-split-modal-body');
+  const sub  = document.getElementById('calc-split-modal-sub');
+  if (!body || !sub) return;
+
+  const tiers = row.polySplit.tiers;
+  sub.textContent = `Row ${calcRows.indexOf(row) + 1} · odd principal ${row.odds} · ${tiers.length} tier(s)`;
+
+  // Compute per-tier allocation for preview.
+  const idx = calcRows.indexOf(row);
+  const per = calcResult?.perRow?.[idx];
+  const getTierStake = (j) => (per && Array.isArray(per.tiers) && per.tiers[j] != null) ? per.tiers[j] : 0;
+
+  const tierRows = tiers.map((t, j) => {
+    const isFirst = j === 0;
+    const isLast = j === tiers.length - 1;
+    const oddForTier = isFirst ? row.odds : t.odd;
+    const tierOddNum = parseFloat(oddForTier);
+    const price = (tierOddNum > 1) ? Math.round((1 / tierOddNum) * 100) / 100 : null;
+
+    const sharesNum = parseFloat(t.shares);
+    const capUsed = getTierStake(j);
+    const capMax = (price > 0 && sharesNum > 0) ? sharesNum * price : null;
+    const sharesUsed = (price > 0 && capUsed > 0) ? capUsed / price : 0;
+    const usedLabel = capMax != null
+      ? `${sharesUsed.toFixed(1)} / ${sharesNum.toFixed(0)} sh  ($${capUsed.toFixed(2)})`
+      : (isLast && (t.shares === '' || !(sharesNum > 0)))
+        ? `${sharesUsed.toFixed(1)} sh (absorber) · $${capUsed.toFixed(2)}`
+        : '—';
+
+    return `
+      <div class="c-split-tier-row" data-tier="${j}">
+        <div class="c-split-tier-idx">T${j + 1}${isFirst ? ' (principal)' : ''}</div>
+        <label class="c-split-tier-field">
+          <span>Shares disponíveis${isLast ? ' *' : ''}</span>
+          <input type="number" min="0" step="1" value="${t.shares === '' ? '' : t.shares}"
+            placeholder="${isLast ? 'vazio = absorber' : 'ex: 19'}"
+            oninput="calcOnSplitTierChange(${row.id},${j},'shares',this.value)">
+        </label>
+        <label class="c-split-tier-field">
+          <span>Odd</span>
+          <input type="number" min="1.001" step="0.01" value="${isFirst ? row.odds : (t.odd ?? '')}"
+            ${isFirst ? 'disabled title="Tier principal usa a odd da linha"' : ''}
+            oninput="calcOnSplitTierChange(${row.id},${j},'odd',this.value)">
+        </label>
+        <label class="c-split-tier-field c-split-tier-fee">
+          <input type="checkbox" ${t.fee ? 'checked' : ''}
+            onchange="calcOnSplitTierChange(${row.id},${j},'fee',this.checked)">
+          <span>Taker fee</span>
+        </label>
+        <div class="c-split-tier-used">${price ? `$${price.toFixed(2)}/sh · ${usedLabel}` : ''}</div>
+        <button type="button" class="c-split-tier-remove"
+          ${tiers.length <= 2 ? 'disabled title="Mínimo 2 tiers"' : ''}
+          onclick="calcRemoveSplitTier(${row.id},${j})">✕</button>
+      </div>`;
+  }).join('');
+
+  const insufficient = calcResult?.insufficientLiquidity;
+  const perLeg = per;
+  const allocTotal = perLeg ? perLeg.total : 0;
+  const payout = perLeg ? perLeg.payoutOnWin : 0;
+
+  body.innerHTML = `
+    <div class="c-split-tiers">
+      <div class="c-split-tier-head">
+        <span></span>
+        <span>Shares</span>
+        <span>Odd</span>
+        <span>Fee</span>
+        <span>Preview (usado / disponível)</span>
+        <span></span>
+      </div>
+      ${tierRows}
+    </div>
+    <div class="c-split-note">
+      <strong>*</strong> Deixe "Shares disponíveis" vazio no último tier para marcá-lo como
+      <em>absorber</em> (capacidade ilimitada, garante que a surebet balanceia).
+      Sem absorber, o solver clampará o total se a liquidez acabar.
+    </div>
+    <div class="c-split-preview">
+      <div><span>Alocação total nessa perna</span><strong>$${allocTotal.toFixed(2)}</strong></div>
+      <div><span>Retorno se essa perna vencer</span><strong>$${payout.toFixed(2)}</strong></div>
+      ${insufficient ? `
+        <div class="c-split-warn">
+          ⚠ Liquidez insuficiente — o stake total foi reduzido pra manter a surebet balanceada.
+          Adicione um tier absorber ou reduza o stake total da operação.
+        </div>
+      ` : ''}
+    </div>`;
+}
+
+function calcOnSplitTierChange(rowId, tierIdx, field, value) {
+  const row = calcRows.find(r => r.id === rowId);
+  if (!row || !row.polySplit || !row.polySplit.tiers[tierIdx]) return;
+  if (field === 'fee') row.polySplit.tiers[tierIdx].fee = !!value;
+  else                 row.polySplit.tiers[tierIdx][field] = value;
+  calcCompute(); calcBuildTable(); calcRenderSplitModal();
+}
+
+function calcAddSplitTier() {
+  if (_calcSplitModalRowId == null) return;
+  const row = calcRows.find(r => r.id === _calcSplitModalRowId);
   if (!row || !row.polySplit) return;
-  row.polySplit[key] = !!val;
-  calcCompute(); calcUpdateDisplay();
+  // Insert before the last tier so the last one stays as the absorber.
+  const last = row.polySplit.tiers.pop();
+  row.polySplit.tiers.push({ shares: '', odd: String(row.odds || ''), fee: false }, last);
+  calcCompute(); calcBuildTable(); calcRenderSplitModal();
+}
+
+function calcRemoveSplitTier(rowId, tierIdx) {
+  const row = calcRows.find(r => r.id === rowId);
+  if (!row || !row.polySplit) return;
+  if (row.polySplit.tiers.length <= 2) return;
+  row.polySplit.tiers.splice(tierIdx, 1);
+  calcCompute(); calcBuildTable(); calcRenderSplitModal();
 }
 
 function calcCycleCur(id) {
@@ -1246,7 +1463,9 @@ function calcSaveState() {
       isFixed: r.isFixed, fixedStake: r.fixedStake,
       manualStake: r.manualStake, customRate: r.customRate,
       usesFreebet: r.usesFreebet,
-      polySplit: r.polySplit ? { ...r.polySplit } : null,
+      polySplit: r.polySplit && Array.isArray(r.polySplit.tiers)
+        ? { tiers: r.polySplit.tiers.map(t => ({ ...t })) }
+        : null,
     })),
   };
   sessionStorage.setItem('calcState', JSON.stringify(state));
@@ -1273,12 +1492,9 @@ function calcRestoreState() {
         manualStake: r.manualStake !== undefined ? r.manualStake : null,
         customRate: r.customRate !== undefined ? r.customRate : null,
         usesFreebet: !!r.usesFreebet,
-        polySplit: r.polySplit && typeof r.polySplit === 'object' ? {
-          sharesA: r.polySplit.sharesA ?? '',
-          oddB:    r.polySplit.oddB ?? '',
-          feeA:    r.polySplit.feeA !== false,
-          feeB:    !!r.polySplit.feeB,
-        } : null,
+        // polySplit may be in legacy {sharesA, oddB, feeA, feeB} form from an
+        // older sessionStorage blob. calcMigrateSplit upgrades it.
+        polySplit: calcMigrateSplit(r.polySplit, r.odds),
       }));
     } else {
       return false;

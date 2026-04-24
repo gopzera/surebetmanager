@@ -76,49 +76,88 @@
 
   // Solve stake distribution for a surebet with optional liquidity splits per leg.
   //
-  // Each leg: { effA, effB, capA, usesFreebet }
-  //   effA:        effective odd at tier A (also used as the sole odd when split disabled)
-  //   effB/capA:   null when split disabled; otherwise effB = fallback odd, capA = USD cap
-  //                of tier A (derived from "shares available × price").
-  //   usesFreebet: excluded from invSum and from real-money totals.
+  // Leg input formats (both supported; internally unified to the tier form):
+  //   1) Split with N tiers: { tiers: [{eff, cap}, ...], usesFreebet }
+  //      tiers MUST be sorted descending by `eff` (best odd first). All tiers
+  //      have a `cap` in USD. The last tier's cap may be Infinity to model an
+  //      "overflow absorber". If cap is null/0 on any non-last tier, that tier
+  //      is ignored.
+  //   2) Legacy 2-tier: { effA, effB, capA, usesFreebet }
+  //      Converted internally to [{eff:effA, cap:capA}, {eff:effB, cap:Infinity}].
+  //   3) Non-split: { effA, usesFreebet }
+  //      Converted to [{eff:effA, cap:Infinity}].
   //
-  // Derivation:
-  //   When leg i wins, payout = target (same across legs by arbitrage).
-  //   Split leg:      capA·effA + tierB·effB = target  ⇒  tierB = (target - capA·effA)/effB
-  //                   total_stake_i = capA + tierB     = capA·(1 - effA/effB) + target/effB
-  //   Non-split leg:  tierA = target/effA              = total_stake_i
-  //   Σ total_stake_i = desiredTotalUSD (excl. freebet legs)
-  //   Let invSum = Σ (1/effB for split, 1/effA for non-split),
-  //       K      = Σ capA·(1 - effA/effB)  over split legs.
+  // Algorithm (arbitrage with piecewise-linear per-leg payout):
+  //   When leg i wins, payout = target (same across legs by arb definition).
+  //   Each split leg greedy-fills tiers in order until target is met. Some tier
+  //   t* ends up partially filled; tiers before t* are full (capped), tiers
+  //   after t* unused.
+  //   Given t*:
+  //     stake_i = Σ_{j<t*} cap_j + (target - Σ_{j<t*} cap_j·eff_j) / eff_{t*}
+  //             = target/eff_{t*} + Σ_{j<t*} cap_j·(1 - eff_j/eff_{t*})
+  //   Let invSum = Σ 1/eff_{t*_i} over split legs + 1/eff for non-split.
+  //       K      = Σ Σ_{j<t*_i} cap_j·(1 - eff_j/eff_{t*_i}) over split legs.
   //   Then target = (desiredTotalUSD - K) / invSum.
   //
-  // If a split leg's computed tierB < 0, its capA exceeds what the solver needs — the
-  // leg effectively doesn't need the fallback tier. We deactivate split for that leg
-  // and re-solve (bounded iteration: each pass deactivates at least one leg).
+  //   We initially guess t*_i = tiers.length - 1 (all but last full). Then
+  //   verify: if partial stake at t*_i < 0, decrement t*_i (earlier tier is
+  //   the partial one). If partial > cap at the last tier (would need more
+  //   liquidity than available), cap out and flag `shortfall`. Bounded
+  //   iteration — converges in O(Σ tiers) passes.
+  //
+  // Output:
+  //   { target, stakes: [{ tiers: [stakePerTier], total, payoutOnWin, splitActive,
+  //                        shortfall }], totalUSD, shortfallUSD }
+  //   - stakes[i].tiers[j] = USD allocated to tier j on leg i
+  //   - shortfall (leg-level) > 0 means the leg's last tier was saturated and
+  //     the leg's payoutOnWin is below target. The surebet can't fully balance;
+  //     UI should warn.
   function solveSplitLegs(rawLegs, desiredTotalUSD) {
     if (!Array.isArray(rawLegs) || rawLegs.length === 0) return null;
-    const legs = rawLegs.map(l => ({
-      effA: Number(l.effA),
-      effB: l.effB != null ? Number(l.effB) : null,
-      capA: l.capA != null ? Number(l.capA) : null,
-      usesFreebet: !!l.usesFreebet,
-      _splitActive: !!(
-        l.capA != null && l.effB != null &&
-        Number(l.capA) > 0 && Number(l.effB) > 1 && !l.usesFreebet
-      ),
-    }));
-    if (legs.some(l => !(l.effA > 1))) return null;
-    if (legs.some(l => l._splitActive && !(l.effB > 1))) return null;
+    const INF = Number.POSITIVE_INFINITY;
 
-    for (let iter = 0; iter <= legs.length + 1; iter++) {
+    // Normalize every input to tier form.
+    const legs = rawLegs.map(l => {
+      const usesFreebet = !!l.usesFreebet;
+      let tiers;
+      if (Array.isArray(l.tiers)) {
+        tiers = l.tiers
+          .map((t, idx) => ({
+            eff: Number(t.eff),
+            cap: t.cap == null ? (idx === l.tiers.length - 1 ? INF : 0) : Number(t.cap),
+          }))
+          .filter(t => t.eff > 1 && t.cap > 0);
+        // If tiers don't end with an Infinity cap, last one becomes the absorb
+        // tier implicitly (still capped at its cap — we'll flag shortfall if
+        // target demand exceeds it).
+      } else if (l.effA != null && l.effB != null && l.capA != null &&
+                 Number(l.capA) > 0 && Number(l.effB) > 1) {
+        tiers = [
+          { eff: Number(l.effA), cap: Number(l.capA) },
+          { eff: Number(l.effB), cap: INF },
+        ];
+      } else {
+        tiers = [{ eff: Number(l.effA), cap: INF }];
+      }
+      return { tiers, usesFreebet, _tStar: tiers.length - 1 };
+    });
+
+    if (legs.some(l => !(l.tiers[0]?.eff > 1))) return null;
+
+    // Iterative solve: each pass picks the partial tier t*_i per leg; if t*_i
+    // turns out inconsistent (stake < 0 → earlier tier is partial; stake > cap
+    // on non-last tier → later tier is partial), bump it and re-solve.
+    // Upper bound: one move per tier total.
+    const maxIters = legs.reduce((s, l) => s + l.tiers.length, 0) + legs.length + 2;
+    for (let iter = 0; iter <= maxIters; iter++) {
       let invSum = 0, K = 0;
       for (const l of legs) {
         if (l.usesFreebet) continue;
-        if (l._splitActive) {
-          invSum += 1 / l.effB;
-          K      += l.capA * (1 - l.effA / l.effB);
-        } else {
-          invSum += 1 / l.effA;
+        const star = l._tStar;
+        const effStar = l.tiers[star].eff;
+        invSum += 1 / effStar;
+        for (let j = 0; j < star; j++) {
+          K += l.tiers[j].cap * (1 - l.tiers[j].eff / effStar);
         }
       }
       if (invSum <= 0) return null;
@@ -126,26 +165,109 @@
 
       let changed = false;
       for (const l of legs) {
-        if (!l._splitActive) continue;
-        const tierB = (target - l.capA * l.effA) / l.effB;
-        if (tierB < 0) { l._splitActive = false; changed = true; }
+        if (l.usesFreebet) continue;
+        const star = l._tStar;
+        const effStar = l.tiers[star].eff;
+        // prefix_payout = Σ_{j<star} cap_j × eff_j
+        let prefixPayout = 0;
+        for (let j = 0; j < star; j++) prefixPayout += l.tiers[j].cap * l.tiers[j].eff;
+        const partial = (target - prefixPayout) / effStar;
+
+        if (partial < 0 && star > 0) {
+          // Earlier tier is actually the partial one.
+          l._tStar = star - 1;
+          changed = true;
+        } else if (partial > l.tiers[star].cap && star < l.tiers.length - 1) {
+          // Later tier needed — more demand than this tier can hold.
+          l._tStar = star + 1;
+          changed = true;
+        }
       }
       if (changed) continue;
 
+      // Liquidity clamp: if any real-money leg's full tier capacity can't reach
+      // `target`, the arb can't balance at desiredTotal. Clamp target to the
+      // smallest feasible max-payout so all legs pay the same on win (surebet
+      // stays balanced) and totalUSD drops below desiredTotal. The caller sees
+      // the reduced total and the `insufficientLiquidity` flag.
+      let finalTarget = target;
+      let insufficient = false;
+      let maxFeasible = Infinity;
+      for (const l of legs) {
+        if (l.usesFreebet) continue;
+        const cap = l.tiers.reduce((s, t) => s + t.cap * t.eff, 0);
+        if (Number.isFinite(cap) && cap < maxFeasible) maxFeasible = cap;
+      }
+      if (Number.isFinite(maxFeasible) && target > maxFeasible) {
+        finalTarget = maxFeasible;
+        insufficient = true;
+        // Rederive the partial tier for each leg under the clamped target.
+        for (const l of legs) {
+          if (l.usesFreebet) continue;
+          let remaining = finalTarget;
+          let star = 0;
+          for (let j = 0; j < l.tiers.length; j++) {
+            const tp = l.tiers[j].cap * l.tiers[j].eff;
+            if (remaining <= tp + 1e-9) { star = j; break; }
+            remaining -= tp;
+            star = j;
+          }
+          l._tStar = star;
+        }
+      }
+
+      // Stable — build the result.
       const stakes = legs.map(l => {
         if (l.usesFreebet) {
-          const eff = l.effA;
-          return { tierA: target / (eff - 1), tierB: 0, total: 0, splitActive: false };
+          const eff = l.tiers[0].eff;
+          // Freebet legs: "stake" is the bookie's credit; payout-on-win is
+          // (eff-1) × credit. They don't cost real money and aren't split.
+          return {
+            tiers: [finalTarget / (eff - 1)],
+            total: 0,
+            payoutOnWin: finalTarget,
+            splitActive: false,
+          };
         }
-        if (l._splitActive) {
-          const tierB = Math.max(0, (target - l.capA * l.effA) / l.effB);
-          return { tierA: l.capA, tierB, total: l.capA + tierB, splitActive: true };
-        }
-        const tierA = target / l.effA;
-        return { tierA, tierB: 0, total: tierA, splitActive: false };
+        const star = l._tStar;
+        const effStar = l.tiers[star].eff;
+        let prefixPayout = 0;
+        for (let j = 0; j < star; j++) prefixPayout += l.tiers[j].cap * l.tiers[j].eff;
+        let partial = (finalTarget - prefixPayout) / effStar;
+        // Clamp to tier cap (only matters if rounding/float error pushes slightly over).
+        if (partial > l.tiers[star].cap) partial = l.tiers[star].cap;
+        if (partial < 0) partial = 0;
+        const tierStakes = l.tiers.map((t, j) =>
+          j < star ? t.cap : (j === star ? partial : 0)
+        );
+        const payoutOnWin = tierStakes.reduce((s, st, j) => s + st * l.tiers[j].eff, 0);
+        const total = tierStakes.reduce((a, b) => a + b, 0);
+        const tiersUsed = tierStakes.filter(s => s > 1e-9).length;
+        return {
+          tiers: tierStakes,
+          total,
+          payoutOnWin,
+          splitActive: tiersUsed > 1,
+        };
       });
       const totalUSD = stakes.reduce((s, x) => s + x.total, 0);
-      return { target, stakes, totalUSD };
+
+      // --- Legacy fields for backward compatibility ---
+      // Old callers read stakes[i].{tierA, tierB, total, splitActive, shortfall}.
+      // Map tiers[0] → tierA, tiers[last>0] → tierB (if split active).
+      for (const st of stakes) {
+        st.tierA = st.tiers[0] || 0;
+        st.tierB = st.tiers.length > 1 ? st.tiers[st.tiers.length - 1] : 0;
+        st.shortfall = 0; // shortfall is now a leg-level concept folded into totalUSD clamp
+      }
+
+      return {
+        target: finalTarget,
+        stakes,
+        totalUSD,
+        insufficientLiquidity: insufficient,
+        shortfallUSD: insufficient ? Math.max(0, desiredTotalUSD - totalUSD) : 0,
+      };
     }
     return null;
   }

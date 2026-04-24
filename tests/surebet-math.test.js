@@ -230,6 +230,102 @@ describe('solveSplitLegs', () => {
   });
 });
 
+describe('solveSplitLegs — N-tier form', () => {
+  it('accepts tiers array format (3 tiers) with an absorb tier', () => {
+    // Scenario: user's real case — one Bet365 leg at 5.5, Poly leg has 3 tiers:
+    // 17 sh @ 1.43 (committed with fee), 19 sh @ 1.37, 90 sh @ 1.32. Add an
+    // unbounded absorb tier at the end so liquidity isn't clamped.
+    const tiers = [
+      { eff: 1.43, cap: 17 * (1 / 1.43) }, // ~$11.89
+      { eff: 1.37, cap: 19 * (1 / 1.37) }, // ~$13.87
+      { eff: 1.32, cap: 90 * (1 / 1.32) }, // ~$68.18
+      { eff: 1.28, cap: Infinity },        // unbounded fallback
+    ];
+    const r = solveSplitLegs([
+      { effA: 5.5 },
+      { tiers },
+    ], 1000);
+    expect(r).not.toBe(null);
+    expect(r.insufficientLiquidity).toBe(false);
+    // Payouts balance: both legs pay target on win.
+    expect(r.stakes[0].tiers[0] * 5.5).toBeCloseTo(r.target, 4);
+    const payout1 = r.stakes[1].tiers.reduce((s, t, i) => s + t * tiers[i].eff, 0);
+    expect(payout1).toBeCloseTo(r.target, 4);
+    // Total stake adds up to desiredTotal.
+    expect(r.totalUSD).toBeCloseTo(1000, 4);
+  });
+
+  it('greedy-fills in tier order: tier 0 fully before tier 1 is touched', () => {
+    const tiers = [
+      { eff: 2.0, cap: 50 },
+      { eff: 1.8, cap: 50 },
+      { eff: 1.5, cap: Infinity },
+    ];
+    // Target payout of exactly 40 would fit entirely inside tier 0.
+    // We set stake total so target ≈ 20 on a balanced 2-leg surebet.
+    const r = solveSplitLegs([
+      { effA: 2.0 },
+      { tiers },
+    ], 20);
+    // Only tier 0 should be used.
+    expect(r.stakes[1].tiers[0]).toBeGreaterThan(0);
+    expect(r.stakes[1].tiers[1]).toBe(0);
+    expect(r.stakes[1].tiers[2]).toBe(0);
+    expect(r.stakes[1].splitActive).toBe(false);
+  });
+
+  it('clamps target when liquidity is insufficient (no absorb tier)', () => {
+    // Tiers have finite caps and no unbounded absorber. The solver clamps the
+    // target to the smallest max-payout so the surebet still balances, and
+    // flags insufficientLiquidity so the UI can warn.
+    const tiers = [
+      { eff: 1.5, cap: 10 },  // max payout contribution: 15
+      { eff: 1.4, cap: 10 },  // max payout contribution: 14
+    ];
+    const r = solveSplitLegs([
+      { effA: 5.0 },
+      { tiers },
+    ], 10000);
+    expect(r).not.toBe(null);
+    expect(r.insufficientLiquidity).toBe(true);
+    // The leg's max payout is 15 + 14 = 29 — target clamped there.
+    expect(r.target).toBeCloseTo(29, 4);
+    // Both tiers should be fully used.
+    expect(r.stakes[1].tiers[0]).toBeCloseTo(10, 6);
+    expect(r.stakes[1].tiers[1]).toBeCloseTo(10, 6);
+    // Leg 0 (non-split) stakes target / 5.0 = 5.8
+    expect(r.stakes[0].tiers[0]).toBeCloseTo(29 / 5, 4);
+    // Both legs pay target on win (balance preserved).
+    expect(r.stakes[0].tiers[0] * 5.0).toBeCloseTo(29, 4);
+    // totalUSD is way less than requested 10000; shortfallUSD reports the gap.
+    expect(r.totalUSD).toBeLessThan(50);
+    expect(r.shortfallUSD).toBeGreaterThan(9900);
+  });
+
+  it('degenerate 1-tier split returns same result as non-split leg', () => {
+    const a = solveSplitLegs([{ effA: 2.0 }, { effA: 2.0 }], 200);
+    const b = solveSplitLegs(
+      [{ tiers: [{ eff: 2.0, cap: Infinity }] }, { tiers: [{ eff: 2.0, cap: Infinity }] }],
+      200
+    );
+    expect(a.target).toBeCloseTo(b.target, 6);
+    expect(a.totalUSD).toBeCloseTo(b.totalUSD, 6);
+  });
+
+  it('tiers provided in non-sorted order: greedy-fill in list order is still coherent', () => {
+    // Math doesn't auto-sort; it trusts the caller's order. Verify internal
+    // consistency: the payout-on-win equals target for the split leg.
+    const tiers = [
+      { eff: 1.5, cap: 10 },
+      { eff: 1.8, cap: 10 }, // out of order on purpose
+      { eff: 1.3, cap: Infinity }, // absorber
+    ];
+    const r = solveSplitLegs([{ effA: 3.0 }, { tiers }], 50);
+    const payout = r.stakes[1].tiers.reduce((s, t, i) => s + t * tiers[i].eff, 0);
+    expect(payout).toBeCloseTo(r.target, 4);
+  });
+});
+
 describe('POLY_CATS contract', () => {
   it('has all expected categories with numeric feeRate', () => {
     const expected = [
