@@ -93,12 +93,16 @@ function calcBuildSolveLegs() {
 
     // Split: first tier uses the row's main odd; subsequent tiers use their own.
     // The last tier's `shares` can be empty → treat as unbounded absorber.
+    // Defensive parseFloat: normalize commas → dots for decimal strings coming
+    // from old persistence or locale-sensitive input (shares/odd are stored as
+    // strings to preserve mid-typing state).
+    const toNum = (v) => parseFloat(typeof v === 'string' ? v.replace(',', '.') : v);
     const tiers = r.polySplit.tiers.map((t, idx) => {
-      const tierOdd = idx === 0 ? rawOdd : parseFloat(t.odd);
+      const tierOdd = idx === 0 ? rawOdd : toNum(t.odd);
       if (!(tierOdd > 1)) return null;
       const eff = calcEffOdds(tierOdd, comm, r.betType, r.usePoly && t.fee, r.cat);
       if (!(eff > 1)) return null;
-      const sharesRaw = parseFloat(t.shares);
+      const sharesRaw = toNum(t.shares);
       const isLast = idx === r.polySplit.tiers.length - 1;
       let cap;
       if (isLast && (t.shares === '' || !(sharesRaw > 0))) {
@@ -130,9 +134,10 @@ function calcIsSplitActive(row) {
   const rawOdd = parseFloat(row.odds);
   if (!(rawOdd > 1)) return false;
   // At least tier 0 needs a cap (shares) OR tier 0 is unbounded and there's
-  // still a second tier defining additional capacity.
+  // still a second tier defining additional capacity. Comma-aware parse.
   const t0 = row.polySplit.tiers[0];
-  const sharesA = parseFloat(t0.shares);
+  const raw0 = typeof t0.shares === 'string' ? t0.shares.replace(',', '.') : t0.shares;
+  const sharesA = parseFloat(raw0);
   return sharesA > 0;
 }
 
@@ -942,6 +947,10 @@ function calcCloseSplitModal() {
   _calcSplitModalRowId = null;
 }
 
+// Full structural render — rebuilds the tier rows + footer. Called only on open,
+// add tier and remove tier. DO NOT call on per-keystroke input events because
+// replacing the <input> the user is typing in destroys focus and cursor position
+// (the reason typing reset on every character).
 function calcRenderSplitModal() {
   if (_calcSplitModalRowId == null) return;
   const row = calcRows.find(r => r.id === _calcSplitModalRowId);
@@ -953,40 +962,26 @@ function calcRenderSplitModal() {
   const tiers = row.polySplit.tiers;
   sub.textContent = `Row ${calcRows.indexOf(row) + 1} · odd principal ${row.odds} · ${tiers.length} tier(s)`;
 
-  // Compute per-tier allocation for preview.
-  const idx = calcRows.indexOf(row);
-  const per = calcResult?.perRow?.[idx];
-  const getTierStake = (j) => (per && Array.isArray(per.tiers) && per.tiers[j] != null) ? per.tiers[j] : 0;
-
   const tierRows = tiers.map((t, j) => {
     const isFirst = j === 0;
     const isLast = j === tiers.length - 1;
-    const oddForTier = isFirst ? row.odds : t.odd;
-    const tierOddNum = parseFloat(oddForTier);
-    const price = (tierOddNum > 1) ? Math.round((1 / tierOddNum) * 100) / 100 : null;
-
-    const sharesNum = parseFloat(t.shares);
-    const capUsed = getTierStake(j);
-    const capMax = (price > 0 && sharesNum > 0) ? sharesNum * price : null;
-    const sharesUsed = (price > 0 && capUsed > 0) ? capUsed / price : 0;
-    const usedLabel = capMax != null
-      ? `${sharesUsed.toFixed(1)} / ${sharesNum.toFixed(0)} sh  ($${capUsed.toFixed(2)})`
-      : (isLast && (t.shares === '' || !(sharesNum > 0)))
-        ? `${sharesUsed.toFixed(1)} sh (absorber) · $${capUsed.toFixed(2)}`
-        : '—';
-
+    // Shares field is type="text" inputmode="decimal" so browsers accept commas,
+    // partial decimals, and multi-digit strings mid-typing without normalizing
+    // away the in-progress value. Comma is converted to dot on state write.
     return `
       <div class="c-split-tier-row" data-tier="${j}">
         <div class="c-split-tier-idx">T${j + 1}${isFirst ? ' (principal)' : ''}</div>
         <label class="c-split-tier-field">
           <span>Shares disponíveis${isLast ? ' *' : ''}</span>
-          <input type="number" min="0" step="1" value="${t.shares === '' ? '' : t.shares}"
+          <input type="text" inputmode="decimal" autocomplete="off"
+            value="${t.shares === '' ? '' : String(t.shares)}"
             placeholder="${isLast ? 'vazio = absorber' : 'ex: 19'}"
             oninput="calcOnSplitTierChange(${row.id},${j},'shares',this.value)">
         </label>
         <label class="c-split-tier-field">
           <span>Odd</span>
-          <input type="number" min="1.001" step="0.01" value="${isFirst ? row.odds : (t.odd ?? '')}"
+          <input type="text" inputmode="decimal" autocomplete="off"
+            value="${isFirst ? String(row.odds || '') : String(t.odd || '')}"
             ${isFirst ? 'disabled title="Tier principal usa a odd da linha"' : ''}
             oninput="calcOnSplitTierChange(${row.id},${j},'odd',this.value)">
         </label>
@@ -995,17 +990,12 @@ function calcRenderSplitModal() {
             onchange="calcOnSplitTierChange(${row.id},${j},'fee',this.checked)">
           <span>Taker fee</span>
         </label>
-        <div class="c-split-tier-used">${price ? `$${price.toFixed(2)}/sh · ${usedLabel}` : ''}</div>
+        <div class="c-split-tier-used" id="calc-split-tier-used-${j}"></div>
         <button type="button" class="c-split-tier-remove"
           ${tiers.length <= 2 ? 'disabled title="Mínimo 2 tiers"' : ''}
           onclick="calcRemoveSplitTier(${row.id},${j})">✕</button>
       </div>`;
   }).join('');
-
-  const insufficient = calcResult?.insufficientLiquidity;
-  const perLeg = per;
-  const allocTotal = perLeg ? perLeg.total : 0;
-  const payout = perLeg ? perLeg.payoutOnWin : 0;
 
   body.innerHTML = `
     <div class="c-split-tiers">
@@ -1024,24 +1014,107 @@ function calcRenderSplitModal() {
       <em>absorber</em> (capacidade ilimitada, garante que a surebet balanceia).
       Sem absorber, o solver clampará o total se a liquidez acabar.
     </div>
-    <div class="c-split-preview">
-      <div><span>Alocação total nessa perna</span><strong>$${allocTotal.toFixed(2)}</strong></div>
-      <div><span>Retorno se essa perna vencer</span><strong>$${payout.toFixed(2)}</strong></div>
-      ${insufficient ? `
-        <div class="c-split-warn">
-          ⚠ Liquidez insuficiente — o stake total foi reduzido pra manter a surebet balanceada.
-          Adicione um tier absorber ou reduza o stake total da operação.
-        </div>
-      ` : ''}
-    </div>`;
+    <div class="c-split-preview" id="calc-split-preview"></div>`;
+
+  calcUpdateSplitPreview();
 }
 
+// Live update — just refreshes the "used/available" text per tier and the
+// footer preview (totals, averages, warning). Does NOT touch the <input>
+// elements, so typing preserves focus and cursor.
+function calcUpdateSplitPreview() {
+  if (_calcSplitModalRowId == null) return;
+  const row = calcRows.find(r => r.id === _calcSplitModalRowId);
+  if (!row || !row.polySplit) return;
+  const tiers = row.polySplit.tiers;
+  const idx = calcRows.indexOf(row);
+  const per = calcResult?.perRow?.[idx];
+  const getTierStake = (j) => (per && Array.isArray(per.tiers) && per.tiers[j] != null) ? per.tiers[j] : 0;
+
+  for (let j = 0; j < tiers.length; j++) {
+    const el = document.getElementById(`calc-split-tier-used-${j}`);
+    if (!el) continue;
+    const t = tiers[j];
+    const isFirst = j === 0;
+    const isLast = j === tiers.length - 1;
+    const oddForTier = isFirst ? parseFloat(row.odds) : parseFloat(String(t.odd).replace(',', '.'));
+    const sharesNum = parseFloat(String(t.shares).replace(',', '.'));
+    const price = (oddForTier > 1) ? Math.round((1 / oddForTier) * 100) / 100 : null;
+    const capUsed = getTierStake(j);
+    const sharesUsed = (price > 0 && capUsed > 0) ? capUsed / price : 0;
+    if (!(price > 0)) { el.textContent = ''; continue; }
+    if (sharesNum > 0) {
+      el.textContent = `$${price.toFixed(2)}/sh · ${sharesUsed.toFixed(1)} / ${sharesNum.toFixed(0)} sh ($${capUsed.toFixed(2)})`;
+    } else if (isLast) {
+      el.textContent = `$${price.toFixed(2)}/sh · ${sharesUsed.toFixed(1)} sh (absorber) · $${capUsed.toFixed(2)}`;
+    } else {
+      el.textContent = `$${price.toFixed(2)}/sh · —`;
+    }
+  }
+
+  // Footer preview: totals + weighted averages across the tiers that got stake.
+  const footer = document.getElementById('calc-split-preview');
+  if (!footer) return;
+  const insufficient = !!calcResult?.insufficientLiquidity;
+  const allocTotal = per ? per.total : 0;
+  const payout     = per ? per.payoutOnWin : 0;
+
+  // Weighted averages: weight = shares bought at that tier, not USD spent.
+  // Matches user intuition ("médio por share").
+  let totalShares = 0;
+  let sumSharesTimesPrice = 0;
+  let sumSharesTimesOdd = 0;
+  if (per && Array.isArray(per.tiers)) {
+    for (let j = 0; j < tiers.length; j++) {
+      const t = tiers[j];
+      const stake = per.tiers[j] || 0;
+      if (stake <= 1e-9) continue;
+      const isFirst = j === 0;
+      const oddForTier = isFirst ? parseFloat(row.odds) : parseFloat(String(t.odd).replace(',', '.'));
+      if (!(oddForTier > 1)) continue;
+      const price = 1 / oddForTier;
+      const priceRounded = Math.round(price * 100) / 100;
+      if (!(priceRounded > 0)) continue;
+      const shares = stake / priceRounded;
+      totalShares          += shares;
+      sumSharesTimesPrice  += shares * priceRounded;
+      sumSharesTimesOdd    += shares * oddForTier;
+    }
+  }
+  const avgPrice = totalShares > 0 ? sumSharesTimesPrice / totalShares : 0;
+  const avgOdd   = totalShares > 0 ? sumSharesTimesOdd   / totalShares : 0;
+
+  footer.innerHTML = `
+    <div><span>Alocação total nessa perna</span><strong>$${allocTotal.toFixed(2)}</strong></div>
+    <div><span>Retorno se essa perna vencer</span><strong>$${payout.toFixed(2)}</strong></div>
+    <div><span>Shares compradas (total)</span><strong>${totalShares.toFixed(2)}</strong></div>
+    <div><span>Preço médio por share</span><strong>${totalShares > 0 ? '$' + avgPrice.toFixed(4) : '—'}</strong></div>
+    <div><span>Odd média (ponderada por shares)</span><strong>${totalShares > 0 ? avgOdd.toFixed(4) : '—'}</strong></div>
+    ${insufficient ? `
+      <div class="c-split-warn">
+        ⚠ Liquidez insuficiente — o stake total foi reduzido pra manter a surebet balanceada.
+        Adicione um tier absorber ou reduza o stake total da operação.
+      </div>
+    ` : ''}
+  `;
+}
+
+// Called on every input/change event inside the modal. For typing fields
+// (shares/odd), we normalize commas to dots into state but leave the raw user
+// string as-is (so "17.5" stays "17.5" mid-typing) and only refresh preview —
+// never the whole modal, which would destroy the focused input.
 function calcOnSplitTierChange(rowId, tierIdx, field, value) {
   const row = calcRows.find(r => r.id === rowId);
   if (!row || !row.polySplit || !row.polySplit.tiers[tierIdx]) return;
-  if (field === 'fee') row.polySplit.tiers[tierIdx].fee = !!value;
-  else                 row.polySplit.tiers[tierIdx][field] = value;
-  calcCompute(); calcBuildTable(); calcRenderSplitModal();
+  if (field === 'fee') {
+    row.polySplit.tiers[tierIdx].fee = !!value;
+    calcCompute(); calcBuildTable(); calcUpdateSplitPreview();
+    return;
+  }
+  // Accept "17,5" or "17.5" — store with dot so parseFloat works everywhere.
+  const normalized = typeof value === 'string' ? value.replace(',', '.') : value;
+  row.polySplit.tiers[tierIdx][field] = normalized;
+  calcCompute(); calcBuildTable(); calcUpdateSplitPreview();
 }
 
 function calcAddSplitTier() {
