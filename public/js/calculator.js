@@ -807,10 +807,11 @@ function calcOnFreebetChange(id, checked) {
   const row = calcRows.find(r => r.id === id);
   if (!row) return;
   row.usesFreebet = checked;
-  // Manual / fixed overrides don't survive a freebet toggle — the stake basis changed.
-  row.manualStake = null;
-  if (row.isFixed) { row.isFixed = false; row.fixedStake = ""; }
-  if (checked) row.polySplit = null;  // freebet + split don't mesh (no real money on tier allocation)
+  // Preserve manualStake / isFixed / fixedStake across the toggle — those are
+  // user inputs and should survive flag flips. The math reinterprets them
+  // correctly (freebet rows use eff-1 instead of eff). Only polySplit is
+  // cleared, since tier-based real-money allocation doesn't apply to a freebet.
+  if (checked) row.polySplit = null;
   calcCompute(); calcBuildTable();
   calcSaveState();
 }
@@ -1422,10 +1423,21 @@ function calcSaveToHistory() {
     roi: calcResult.roi,
     minProfit: calcResult.minProfit,
     totalUSD: calcResult.totalUSD,
+    // Persist the user's inputs that drive the calculation, not just the
+    // displayed odds — restoring should reproduce the exact same stakes.
+    totalStakeOverride: calcTotalStakeOverride,
+    roundValue: calcRoundValue,
+    roundUseFx: calcRoundUseFx,
     rows: calcRows.map(r => ({
       odds: r.odds, comm: r.comm, betType: r.betType,
       usePoly: r.usePoly, cat: r.cat, currency: r.currency,
       customRate: r.customRate, usesFreebet: r.usesFreebet,
+      // Per-row anchors / overrides — these decide how the solver allocates.
+      isFixed: r.isFixed, fixedStake: r.fixedStake,
+      manualStake: r.manualStake,
+      polySplit: r.polySplit && Array.isArray(r.polySplit.tiers)
+        ? { tiers: r.polySplit.tiers.map(t => ({ ...t })) }
+        : null,
     })),
   };
   const history = calcGetHistory();
@@ -1448,14 +1460,28 @@ function calcLoadFromHistory(idx) {
   if (!entry) return;
   calcNumOut = entry.numOut || 2;
   calcForkType = entry.forkType || "1-2";
-  calcTotalStakeOverride = null;
+  // Restore the calculated total. Legacy entries (pre-this-fix) didn't save
+  // totalStakeOverride; fall back to entry.totalUSD if present so we don't
+  // silently snap back to the $100 default.
+  if (entry.totalStakeOverride != null && Number.isFinite(Number(entry.totalStakeOverride))) {
+    calcTotalStakeOverride = Number(entry.totalStakeOverride);
+  } else if (Number.isFinite(Number(entry.totalUSD)) && entry.totalUSD > 0) {
+    calcTotalStakeOverride = Number(entry.totalUSD);
+  } else {
+    calcTotalStakeOverride = null;
+  }
+  calcRoundValue = Number(entry.roundValue) || 0;
+  calcRoundUseFx = !!entry.roundUseFx;
   calcRows = entry.rows.map((r, i) => ({
     id: i + 1, odds: r.odds || "", comm: r.comm || "0",
     betType: r.betType || "back", usePoly: !!r.usePoly,
     cat: r.cat || "Sports", currency: r.currency || "USD",
-    isFixed: false, fixedStake: "", manualStake: null,
+    isFixed: !!r.isFixed,
+    fixedStake: r.fixedStake || "",
+    manualStake: r.manualStake !== undefined ? r.manualStake : null,
     customRate: r.customRate !== undefined ? r.customRate : null,
     usesFreebet: !!r.usesFreebet,
+    polySplit: calcMigrateSplit(r.polySplit, r.odds),
   }));
   calcNextId = calcRows.length + 1;
 
@@ -1466,6 +1492,12 @@ function calcLoadFromHistory(idx) {
   calcBuildForkSelect();
   const forkSel = document.getElementById('calc-fork-type');
   if (forkSel) forkSel.value = calcForkType;
+
+  // Sync the total-stake input so the user sees the restored value.
+  const totalInput = document.getElementById('calc-total-stake-input');
+  if (totalInput) {
+    totalInput.value = calcTotalStakeOverride != null ? cf2(calcTotalStakeOverride) : '';
+  }
 
   calcCompute();
   calcBuildTable();
