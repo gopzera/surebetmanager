@@ -107,6 +107,7 @@ function typeLabel(type) {
     arbitragem: 'Arbitragem',
     aumentada25: 'Aumentada 25%',
     arbitragem_br: 'Arbitragem BR',
+    punter: 'Punter',
   };
   return labels[type] || type;
 }
@@ -116,7 +117,8 @@ function resultLabel(result) {
     pending: 'Pendente',
     bet365_won: 'Bet365',
     poly_won: 'Poly',
-    won: 'Concluída',
+    won: 'Ganhou',
+    lost: 'Perdeu',
     void: 'Anulado',
   };
   return labels[result] || result;
@@ -826,17 +828,19 @@ function renderRecentTable(ops) {
       </tr></thead>
       <tbody>
         ${ops.map(op => {
-          const isBR = op.type === 'arbitragem_br';
-          const br = isBR ? brLegsSummary(op) : null;
+          // Both arbitragem_br and punter store legs in extra_bets and zero out
+          // the bet365/poly columns. brLegsSummary works generically for both.
+          const isSingleLegStyle = op.type === 'arbitragem_br' || op.type === 'punter';
+          const br = isSingleLegStyle ? brLegsSummary(op) : null;
           return `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
           <td>${renderTagsDisplay(op.tags)}</td>
-          <td>${isBR ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
-          <td>${isBR ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
+          <td>${isSingleLegStyle ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
+          <td>${isSingleLegStyle ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
-          <td>${isBR ? (br.bookmakers.map(escapeHtml).join(', ') || '-') : ((op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-')}</td>
+          <td>${isSingleLegStyle ? (br.bookmakers.map(escapeHtml).join(', ') || '-') : ((op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-')}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
         </tr>`;
         }).join('')}
@@ -893,6 +897,11 @@ async function renderNewOperation() {
           <div class="type-option-name">Arbitragem BR</div>
           <div class="type-option-desc">Casas brasileiras variadas (só R$)</div>
         </div>
+        <div class="type-option" data-type="punter" onclick="selectType(this)">
+          <div class="type-option-icon">&#127919;</div>
+          <div class="type-option-name">Punter</div>
+          <div class="type-option-desc">Aposta single-leg (sem proteção)</div>
+        </div>
       </div>
       <input type="hidden" id="new-type">
 
@@ -943,6 +952,8 @@ async function renderNewOperation() {
             <option value="bet365_won" data-for="bet365-poly">Bet365 Ganhou</option>
             <option value="poly_won" data-for="bet365-poly">Polymarket Ganhou</option>
             <option value="won" data-for="br" hidden>Concluída</option>
+            <option value="won" data-for="single" hidden>Ganhou</option>
+            <option value="lost" data-for="single" hidden>Perdeu</option>
             <option value="void">Anulado</option>
           </select>
         </div>
@@ -1014,6 +1025,30 @@ async function renderNewOperation() {
         </h3>
         <div id="new-br-legs-list"></div>
         <button type="button" class="btn btn-ghost btn-sm" onclick="addBrLeg()">+ Adicionar aposta</button>
+      </div>
+
+      <div id="new-punter-section" style="display:none">
+        <h3 class="chart-title" style="margin:24px 0 12px">Aposta single-leg
+          <span style="font-size:12px;font-weight:400;color:var(--text-muted)">sem proteção / sem cálculo de hedge</span>
+        </h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Casa de aposta</label>
+            <input type="text" class="form-input" id="new-punter-bookmaker" placeholder="Ex: Bet365, Pinnacle, Polymarket...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Stake (R$)</label>
+            <input type="number" step="0.01" min="0" class="form-input" id="new-punter-stake" placeholder="0,00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Odd</label>
+            <input type="number" step="0.01" min="1" class="form-input" id="new-punter-odd" placeholder="0,00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Retorno potencial (R$)</label>
+            <input type="text" class="form-input" id="new-punter-return" readonly style="opacity:0.7">
+          </div>
+        </div>
       </div>
 
       <h3 class="chart-title" style="margin:24px 0 16px">Resultado Financeiro</h3>
@@ -1098,6 +1133,19 @@ async function renderNewOperation() {
     cb.addEventListener('change', updateStakePerAccount);
   });
 
+  // Punter: live "potential return" preview as the user types stake/odd.
+  const punterStake = document.getElementById('new-punter-stake');
+  const punterOdd   = document.getElementById('new-punter-odd');
+  const punterRet   = document.getElementById('new-punter-return');
+  function updatePunterReturn() {
+    if (!punterRet) return;
+    const s = parseFloat(punterStake?.value) || 0;
+    const o = parseFloat(punterOdd?.value)   || 0;
+    punterRet.value = (s > 0 && o > 1) ? formatBRL(s * o) : '';
+  }
+  punterStake?.addEventListener('input', updatePunterReturn);
+  punterOdd?.addEventListener('input', updatePunterReturn);
+
   // Auto-profit calculation when result changes
   const resultSelect = document.getElementById('new-result');
   const oddBet365Input = document.getElementById('new-odd-bet365');
@@ -1108,8 +1156,32 @@ async function renderNewOperation() {
   function updateAutoProfit() {
     const result = resultSelect?.value;
     const type = document.getElementById('new-type')?.value;
-    // BR arbitrage doesn't fit the bet365/poly profit formula — leave to manual entry.
-    if (result === 'pending' || type === 'arbitragem_br') {
+    if (result === 'pending') {
+      autoProfitInfo.style.display = 'none';
+      return;
+    }
+    // Punter (single-leg): profit is purely stake/odd-driven. won = stake×(odd-1),
+    // lost = -stake, void = 0. Auto-fill so the user doesn't have to do mental math.
+    if (type === 'punter') {
+      const stake = parseFloat(punterStake?.value) || 0;
+      const odd   = parseFloat(punterOdd?.value)   || 0;
+      let p = null;
+      if (result === 'won' && stake > 0 && odd > 1) p = stake * (odd - 1);
+      else if (result === 'lost' && stake > 0)      p = -stake;
+      else if (result === 'void')                   p = 0;
+      if (p !== null) {
+        profitInput.value = p.toFixed(2);
+        const label = result === 'won'  ? `Lucro: ${formatBRL(p)} (vitória)`
+                    : result === 'lost' ? `Prejuízo: ${formatBRL(p)} (derrota)`
+                    : 'Anulado — lucro zerado';
+        autoProfitInfo.textContent = label;
+        autoProfitInfo.style.display = 'block';
+        autoProfitInfo.style.color = p >= 0 ? 'var(--success)' : 'var(--danger)';
+      }
+      return;
+    }
+    // BR arbitrage uses arbitrary leg combinations — leave profit to manual entry.
+    if (type === 'arbitragem_br') {
       autoProfitInfo.style.display = 'none';
       return;
     }
@@ -1130,7 +1202,8 @@ async function renderNewOperation() {
 
   resultSelect?.addEventListener('change', updateAutoProfit);
   // Recalculate when stakes/odds change if result is not pending
-  [stakeBet365Input, oddBet365Input, polyUsdInput, oddPolyInput, rateInput].forEach(el => {
+  [stakeBet365Input, oddBet365Input, polyUsdInput, oddPolyInput, rateInput,
+   punterStake, punterOdd].forEach(el => {
     el?.addEventListener('input', () => {
       if (resultSelect?.value !== 'pending') updateAutoProfit();
       updatePolyBRL();
@@ -1244,25 +1317,31 @@ function selectType(el) {
   const t = el.dataset.type;
   document.getElementById('new-type').value = t;
   const isBR = t === 'arbitragem_br';
+  const isPunter = t === 'punter';
+  const isStandard = !isBR && !isPunter; // bet365 + poly two-leg shape
 
-  // Toggle bet365/poly/accounts sections (hidden for BR).
+  // Section visibility per type.
   const setDisplay = (id, show) => { const n = document.getElementById(id); if (n) n.style.display = show ? '' : 'none'; };
-  setDisplay('new-bet365-section', !isBR);
-  setDisplay('new-poly-section', !isBR);
-  setDisplay('new-accounts-section', !isBR);
+  setDisplay('new-bet365-section', isStandard);
+  setDisplay('new-poly-section', isStandard);
+  setDisplay('new-accounts-section', isStandard);
   setDisplay('new-br-legs-section', isBR);
+  setDisplay('new-punter-section', isPunter);
 
   const extraSection = document.getElementById('new-extra-bets-section');
   const label = document.getElementById('new-bet365-label');
   if (extraSection) extraSection.style.display = t === 'aumentada25' ? '' : 'none';
   if (label) label.textContent = t === 'aumentada25' ? '— aposta principal (aumentada)' : '';
 
-  // Result dropdown: BR uses generic "Concluída"; others use bet365_won / poly_won.
+  // Result dropdown:
+  //   bet365-poly types → bet365_won / poly_won
+  //   BR / punter (single bet) → won / lost
   const resultSel = document.getElementById('new-result');
   if (resultSel) {
+    const wantsSingle = isBR || isPunter;
     for (const opt of resultSel.options) {
-      if (opt.dataset.for === 'bet365-poly') opt.hidden = isBR;
-      if (opt.dataset.for === 'br') opt.hidden = !isBR;
+      if (opt.dataset.for === 'bet365-poly') opt.hidden = wantsSingle;
+      if (opt.dataset.for === 'br' || opt.dataset.for === 'single') opt.hidden = !wantsSingle;
     }
     const curOpt = resultSel.selectedOptions[0];
     if (curOpt && curOpt.hidden) resultSel.value = 'pending';
@@ -1438,21 +1517,23 @@ async function submitNewOperation(e) {
   }
 
   const isBR = type === 'arbitragem_br';
+  const isPunter = type === 'punter';
+  const isStandard = !isBR && !isPunter;
   const body = {
     type,
     game: document.getElementById('new-game').value.trim(),
     event_date: document.getElementById('new-event-date').value,
-    stake_bet365: isBR ? 0 : totalStakeBet365,
-    odd_bet365: isBR ? 0 : (parseFloat(document.getElementById('new-odd-bet365').value) || 0),
-    stake_poly_usd: isBR ? 0 : (parseFloat(document.getElementById('new-stake-poly-usd').value) || 0),
-    odd_poly: isBR ? 0 : (parseFloat(document.getElementById('new-odd-poly').value) || 0),
-    exchange_rate: isBR ? 1 : (parseFloat(document.getElementById('new-exchange-rate').value) || 5.0),
+    stake_bet365: isStandard ? totalStakeBet365 : 0,
+    odd_bet365: isStandard ? (parseFloat(document.getElementById('new-odd-bet365').value) || 0) : 0,
+    stake_poly_usd: isStandard ? (parseFloat(document.getElementById('new-stake-poly-usd').value) || 0) : 0,
+    odd_poly: isStandard ? (parseFloat(document.getElementById('new-odd-poly').value) || 0) : 0,
+    exchange_rate: isStandard ? (parseFloat(document.getElementById('new-exchange-rate').value) || 5.0) : 1,
     result: document.getElementById('new-result').value,
     profit: parseFloat(document.getElementById('new-profit').value) || 0,
     notes: document.getElementById('new-notes').value.trim(),
     tags: getTagsFromInput('new-tags'),
-    uses_freebet: isBR ? false : (document.getElementById('new-uses-freebet')?.checked || false),
-    freebet_account_ids: (!isBR && document.getElementById('new-uses-freebet')?.checked)
+    uses_freebet: isStandard ? (document.getElementById('new-uses-freebet')?.checked || false) : false,
+    freebet_account_ids: (isStandard && document.getElementById('new-uses-freebet')?.checked)
       ? collectFreebetAccountIds('new-freebet-accounts') : [],
   };
   if (type === 'aumentada25') {
@@ -1461,8 +1542,18 @@ async function submitNewOperation(e) {
     const legs = collectBrLegs();
     if (legs.length < 2) { toast('Registre pelo menos 2 apostas', 'error'); return; }
     body.extra_bets = legs;
+  } else if (isPunter) {
+    // Punter is a single-leg bet. Reuse the BR shape (extra_bets with one entry)
+    // so the rest of the system (history display, profit calc) can treat it
+    // generically — bookmaker as free-text, no account tracking, no FX.
+    const stake = parseFloat(document.getElementById('new-punter-stake').value) || 0;
+    const odd   = parseFloat(document.getElementById('new-punter-odd').value)   || 0;
+    const bookmaker = document.getElementById('new-punter-bookmaker').value.trim();
+    if (!(stake > 0)) { toast('Informe o stake', 'error'); return; }
+    if (!(odd > 1)) { toast('Odd inválida', 'error'); return; }
+    body.extra_bets = [{ stake, odd, bookmaker }];
   }
-  if (isBR) {
+  if (isBR || isPunter) {
     body.account_ids = [];
   } else if (account_stakes) {
     body.account_stakes = account_stakes;
@@ -1705,16 +1796,16 @@ function renderHistoryTable(ops) {
       </tr></thead>
       <tbody>
         ${ops.map(op => {
-          const isBR = op.type === 'arbitragem_br';
-          const br = isBR ? brLegsSummary(op) : null;
+          const isSingleLegStyle = op.type === 'arbitragem_br' || op.type === 'punter';
+          const br = isSingleLegStyle ? brLegsSummary(op) : null;
           return `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
           <td>${renderTagsDisplay(op.tags)}</td>
-          <td>${isBR ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
-          <td>${isBR ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
-          <td>${isBR ? renderBookmakerChips(br.bookmakers) : renderAccountChips(op.accounts)}</td>
+          <td>${isSingleLegStyle ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
+          <td>${isSingleLegStyle ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
+          <td>${isSingleLegStyle ? renderBookmakerChips(br.bookmakers) : renderAccountChips(op.accounts)}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
           <td>
@@ -1966,6 +2057,8 @@ async function openEditModal(id) {
 
 function fillEditModal(op) {
   const isBR = op.type === 'arbitragem_br';
+  const isPunter = op.type === 'punter';
+  const isSingleLegStyle = isBR || isPunter;
   document.getElementById('edit-id').value = op.id;
   document.getElementById('edit-type').value = op.type;
   document.getElementById('edit-game').value = op.game;
@@ -2014,11 +2107,11 @@ function fillEditModal(op) {
     }
   }
 
-  // Toggle bet365/poly fields vs BR leg summary.
-  document.querySelectorAll('#edit-form .edit-bp-field').forEach(el => { el.style.display = isBR ? 'none' : ''; });
+  // Toggle bet365/poly fields vs single-leg-style summary (BR + punter).
+  document.querySelectorAll('#edit-form .edit-bp-field').forEach(el => { el.style.display = isSingleLegStyle ? 'none' : ''; });
   const brWrap = document.getElementById('edit-br-legs-wrap');
-  if (brWrap) brWrap.style.display = isBR ? '' : 'none';
-  if (isBR) {
+  if (brWrap) brWrap.style.display = isSingleLegStyle ? '' : 'none';
+  if (isSingleLegStyle) {
     const { legs, totalStake } = brLegsSummary(op);
     const view = document.getElementById('edit-br-legs-view');
     if (view) {
@@ -2033,12 +2126,12 @@ function fillEditModal(op) {
     }
   }
 
-  // Result select: hide bet365/poly options for BR, show won option.
+  // Result select: bet365_won/poly_won for two-leg types; won/lost for single-leg.
   const resSel = document.getElementById('edit-result');
   if (resSel) {
     for (const opt of resSel.options) {
-      if (opt.dataset.for === 'bet365-poly') opt.hidden = isBR;
-      if (opt.dataset.for === 'br') opt.hidden = !isBR;
+      if (opt.dataset.for === 'bet365-poly') opt.hidden = isSingleLegStyle;
+      if (opt.dataset.for === 'br' || opt.dataset.for === 'single') opt.hidden = !isSingleLegStyle;
     }
   }
 

@@ -221,6 +221,58 @@ describe('DELETE /api/operations/:id', () => {
   });
 });
 
+describe('operation types: arbitragem_br + punter', () => {
+  it('creates an arbitragem_br op (regression: schema CHECK previously rejected it)', async () => {
+    const r = await req('POST', '/api/operations', {
+      type: 'arbitragem_br',
+      game: 'BR Test',
+      stake_bet365: 0,
+      odd_bet365: 0,
+      result: 'pending',
+      profit: 0,
+      extra_bets: [
+        { stake: 100, odd: 2.0, bookmaker: 'Casa A' },
+        { stake: 80,  odd: 2.5, bookmaker: 'Casa B' },
+      ],
+      account_ids: [],
+    });
+    expect(r.status).toBe(200);
+    expect(r.data.id).toBeGreaterThan(0);
+  });
+
+  it('creates a punter op (single-leg) with extra_bets[0]', async () => {
+    const r = await req('POST', '/api/operations', {
+      type: 'punter',
+      game: 'Team Liquid vencer',
+      stake_bet365: 0, odd_bet365: 0,
+      result: 'pending', profit: 0,
+      extra_bets: [{ stake: 50, odd: 7.5, bookmaker: 'Bet365' }],
+      account_ids: [],
+    });
+    expect(r.status).toBe(200);
+    expect(r.data.id).toBeGreaterThan(0);
+  });
+
+  it("punter accepts 'won' and 'lost' result values", async () => {
+    const won = await req('POST', '/api/operations', {
+      type: 'punter', game: 'won test',
+      stake_bet365: 0, odd_bet365: 0,
+      result: 'won', profit: 325,
+      extra_bets: [{ stake: 50, odd: 7.5, bookmaker: 'X' }],
+      account_ids: [],
+    });
+    expect(won.status).toBe(200);
+    const lost = await req('POST', '/api/operations', {
+      type: 'punter', game: 'lost test',
+      stake_bet365: 0, odd_bet365: 0,
+      result: 'lost', profit: -50,
+      extra_bets: [{ stake: 50, odd: 7.5, bookmaker: 'X' }],
+      account_ids: [],
+    });
+    expect(lost.status).toBe(200);
+  });
+});
+
 describe('auth boundary', () => {
   it('rejects requests without a session cookie', async () => {
     // Bypass the shared jar to simulate an unauthenticated client.

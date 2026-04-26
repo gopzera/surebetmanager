@@ -425,6 +425,7 @@ tbody tr:last-child td { border-bottom: none; }
 .badge-arbitragem { background: rgba(0,200,83,0.15); color: var(--arbitragem); }
 .badge-aumentada25 { background: rgba(108,92,231,0.15); color: var(--aumentada); }
 .badge-arbitragem_br { background: rgba(38,198,218,0.15); color: var(--arbitragem-br); }
+.badge-punter { background: rgba(239,83,80,0.15); color: var(--danger); }
 .badge-pending { background: rgba(41,182,246,0.15); color: var(--info); }
 .badge-won { background: rgba(0,200,83,0.15); color: var(--success); }
 .badge-void { background: rgba(139,143,163,0.15); color: var(--text-muted); }
