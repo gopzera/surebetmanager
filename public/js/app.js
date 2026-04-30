@@ -3,6 +3,8 @@ let currentUser = null;
 let currentPage = 'dashboard';
 let charts = {};
 let userAccounts = []; // cached accounts
+let googleSheetsImportPayload = null;
+let googleSheetsImportPreview = null;
 
 // ===== API HELPERS =====
 function readCookie(name) {
@@ -2453,6 +2455,26 @@ async function renderSettings() {
       <div id="alerts-config-list"><div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">Carregando...</div></div>
     </div>
 
+    <!-- Google Sheets import -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:4px">Importar Google Sheets</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Envie um JSON exportado da planilha para pre-visualizar e importar novas operacoes.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <label class="btn btn-primary" style="cursor:pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Pre-visualizar JSON
+          <input type="file" accept=".json" style="display:none" onchange="previewGoogleSheetsImport(this)">
+        </label>
+        <button class="btn btn-primary" id="google-sheets-import-btn" onclick="commitGoogleSheetsImport()" disabled>
+          Importar operacoes
+        </button>
+        <button class="btn btn-ghost" onclick="clearGoogleSheetsImport()">Limpar</button>
+      </div>
+      <div id="google-sheets-import-result" style="margin-top:10px"></div>
+    </div>
+
     <!-- Backup / Restore -->
     <div class="chart-container" style="margin-bottom:20px">
       <h3 class="chart-title" style="margin-bottom:4px">Backup / Restauração</h3>
@@ -2621,6 +2643,124 @@ async function saveAlertConfig(key, btn) {
     });
     toast('Configuração salva!');
   } catch (err) { toast(err.message, 'error'); }
+}
+
+async function previewGoogleSheetsImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const resultEl = document.getElementById('google-sheets-import-result');
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (btn) btn.disabled = true;
+  googleSheetsImportPayload = null;
+  googleSheetsImportPreview = null;
+  if (resultEl) {
+    resultEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Validando arquivo...</div>';
+  }
+
+  try {
+    const text = await file.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch { throw new Error('Arquivo nao e JSON valido'); }
+
+    const preview = await api('/api/operations/import/preview', { method: 'POST', body: data });
+    googleSheetsImportPayload = data;
+    googleSheetsImportPreview = preview;
+    renderGoogleSheetsImportPreview(preview);
+  } catch (err) {
+    if (resultEl) {
+      resultEl.innerHTML = `<div style="color:var(--danger);font-size:13px">${escapeHtml(err.message)}</div>`;
+    }
+    toast(err.message, 'error');
+  } finally {
+    input.value = '';
+  }
+}
+
+function renderGoogleSheetsImportPreview(preview) {
+  const resultEl = document.getElementById('google-sheets-import-result');
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (!resultEl) return;
+  if (btn) btn.disabled = !preview?.ok;
+
+  const rows = Array.isArray(preview?.rows) ? preview.rows : [];
+  const invalidRows = rows.filter(r => !r.ok);
+  const validRows = rows.filter(r => r.ok);
+  const color = preview?.ok ? 'var(--success)' : 'var(--danger)';
+  const visibleInvalid = invalidRows.map(r => `
+    <div style="padding:8px 0;border-top:1px solid var(--border);font-size:12px">
+      <strong>Linha ${r.row_number || '-'}</strong>: ${escapeHtml((r.errors || []).join(' | '))}
+    </div>
+  `).join('');
+  const visibleValid = validRows.map(r => {
+    const s = r.summary || {};
+    return `
+      <tr>
+        <td>${r.row_number || '-'}</td>
+        <td>${escapeHtml(s.event_date || '-')}</td>
+        <td>${escapeHtml(s.game || '-')}</td>
+        <td><span class="badge badge-${escapeHtml(s.type || '')}">${escapeHtml(typeLabel(s.type || ''))}</span></td>
+        <td>${escapeHtml(resultLabel(s.result || 'pending'))}</td>
+        <td class="${profitClass(s.profit)}">${formatBRL(s.profit)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  resultEl.innerHTML = `
+    <div style="color:${color};font-size:13px;margin-bottom:10px">
+      ${preview.valid_count || 0} linha(s) validas, ${preview.invalid_count || 0} invalida(s).
+    </div>
+    ${visibleInvalid ? `<div style="max-height:220px;overflow:auto;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;padding:0 10px">${visibleInvalid}</div>` : ''}
+    ${visibleValid ? `
+      <div class="table-container" style="margin-top:10px;max-height:360px;overflow:auto">
+        <table>
+          <thead><tr><th>Linha</th><th>Data</th><th>Jogo</th><th>Tipo</th><th>Resultado</th><th>Lucro</th></tr></thead>
+          <tbody>${visibleValid}</tbody>
+        </table>
+      </div>
+    ` : ''}
+  `;
+}
+
+async function commitGoogleSheetsImport() {
+  if (!googleSheetsImportPayload || !googleSheetsImportPreview?.ok) {
+    toast('Pre-visualize um JSON valido antes de importar.', 'error');
+    return;
+  }
+  const total = googleSheetsImportPreview.valid_count || 0;
+  if (!confirm(`Importar ${total} operacao(oes)? Operacoes repetidas serao adicionadas novamente.`)) return;
+
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const result = await api('/api/operations/import/commit', {
+      method: 'POST',
+      body: googleSheetsImportPayload,
+    });
+    const resultEl = document.getElementById('google-sheets-import-result');
+    if (resultEl) {
+      resultEl.innerHTML = `<div style="color:var(--success);font-size:13px">${result.imported || 0} operacao(oes) importada(s).</div>`;
+    }
+    googleSheetsImportPayload = null;
+    googleSheetsImportPreview = null;
+    toast('Operacoes importadas com sucesso');
+    loadAccounts().catch(() => {});
+  } catch (err) {
+    if (btn) btn.disabled = !googleSheetsImportPreview?.ok;
+    const resultEl = document.getElementById('google-sheets-import-result');
+    if (err.preview && resultEl) renderGoogleSheetsImportPreview(err.preview);
+    else if (resultEl) resultEl.innerHTML = `<div style="color:var(--danger);font-size:13px">${escapeHtml(err.message)}</div>`;
+    toast(err.message, 'error');
+  }
+}
+
+function clearGoogleSheetsImport() {
+  googleSheetsImportPayload = null;
+  googleSheetsImportPreview = null;
+  const resultEl = document.getElementById('google-sheets-import-result');
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (resultEl) resultEl.innerHTML = '';
+  if (btn) btn.disabled = true;
 }
 
 async function downloadBackup() {
