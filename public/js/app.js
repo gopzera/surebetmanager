@@ -3,6 +3,8 @@ let currentUser = null;
 let currentPage = 'dashboard';
 let charts = {};
 let userAccounts = []; // cached accounts
+let googleSheetsImportPayload = null;
+let googleSheetsImportPreview = null;
 
 // ===== API HELPERS =====
 function readCookie(name) {
@@ -910,19 +912,20 @@ async function renderNewOperation() {
         <input type="text" class="form-input" id="new-game" placeholder="Ex: Real Madrid vs Barcelona - Vencedor" required>
       </div>
 
-      ${activeAccounts.length ? `
       <div id="new-accounts-section">
         <h3 class="chart-title" style="margin:24px 0 12px">Contas Utilizadas</h3>
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Selecione quais contas Bet365 foram usadas nesta operação</p>
+        ${activeAccounts.length ? `
         <label class="account-check" style="margin-bottom:12px;cursor:pointer;display:inline-flex">
           <input type="checkbox" id="new-custom-stakes-toggle" onchange="toggleCustomStakes('new')">
           <div class="account-check-dot"></div>
           <div style="font-size:13px">Usar stake personalizado por conta</div>
         </label>
+        ` : ''}
         <div class="accounts-checklist" id="new-accounts-list">
-          ${activeAccounts.map(acc => `
+          ${activeAccounts.length ? activeAccounts.map(acc => `
             <label class="account-check" onclick="accountCheckClick(event, this)">
-              <input type="checkbox" name="accounts" value="${acc.id}" data-account-id="${acc.id}">
+              <input type="checkbox" name="accounts" value="${acc.id}" data-account-id="${acc.id}" onchange="onAccountSelectionChange('new', this)">
               <div class="account-check-dot"></div>
               <div style="flex:1">
                 <div>${escapeHtml(acc.name)}</div>
@@ -933,13 +936,11 @@ async function renderNewOperation() {
                 placeholder="R$"
                 style="display:none;width:100px;margin-left:8px"
                 onclick="event.stopPropagation()"
-                oninput="onPerAccountStakeChange('new')">
+                oninput="onPerAccountStakeInput(event, 'new')">
             </label>
-          `).join('')}
+          `).join('') : '<span style="color:var(--text-muted);font-size:13px">Nenhuma conta Bet365 ativa. Ative ou adicione uma conta nas configuracoes.</span>'}
         </div>
       </div>
-      ` : ''}
-
       <div class="form-grid" style="margin-top:20px">
         <div class="form-group">
           <label class="form-label">Data do Evento</label>
@@ -1324,7 +1325,7 @@ function selectType(el) {
   const setDisplay = (id, show) => { const n = document.getElementById(id); if (n) n.style.display = show ? '' : 'none'; };
   setDisplay('new-bet365-section', isStandard);
   setDisplay('new-poly-section', isStandard);
-  setDisplay('new-accounts-section', isStandard);
+  setDisplay('new-accounts-section', !isPunter);
   setDisplay('new-br-legs-section', isBR);
   setDisplay('new-punter-section', isPunter);
 
@@ -1553,7 +1554,7 @@ async function submitNewOperation(e) {
     if (!(odd > 1)) { toast('Odd inválida', 'error'); return; }
     body.extra_bets = [{ stake, odd, bookmaker }];
   }
-  if (isBR || isPunter) {
+  if (isPunter) {
     body.account_ids = [];
   } else if (account_stakes) {
     body.account_stakes = account_stakes;
@@ -1585,11 +1586,35 @@ function toggleCustomStakes(mode) {
     totalInput.title = enabled ? 'Calculado automaticamente a partir das stakes por conta' : '';
   }
   if (enabled) onPerAccountStakeChange(mode);
+  if (!enabled && mode === 'new') {
+    const info = document.getElementById('stake-per-account-info');
+    if (info) info.textContent = '';
+  }
   // Update info text for 'new' mode
   if (mode === 'new') {
     const info = document.getElementById('stake-per-account-info');
     if (info && enabled) info.textContent = 'Stake personalizado ativo — defina o valor de cada conta';
   }
+}
+
+function onAccountSelectionChange(mode, checkbox) {
+  checkbox.closest('label.account-check')?.classList.toggle('checked', checkbox.checked);
+  onPerAccountStakeChange(mode);
+}
+
+function onPerAccountStakeInput(event, mode) {
+  const inp = event?.target;
+  const stake = parseFloat(inp?.value) || 0;
+  if (stake > 0) {
+    const list = inp.closest('.accounts-checklist');
+    const accId = inp.dataset.accountId;
+    const cb = list?.querySelector(`input[type="checkbox"][data-account-id="${accId}"]`);
+    if (cb && !cb.checked) {
+      cb.checked = true;
+      cb.closest('label.account-check')?.classList.add('checked');
+    }
+  }
+  onPerAccountStakeChange(mode);
 }
 
 function onPerAccountStakeChange(mode) {
@@ -1605,14 +1630,23 @@ function onPerAccountStakeChange(mode) {
     const inp = document.querySelector(`#${listId} input.per-account-stake[data-account-id="${accId}"]`);
     sum += parseFloat(inp?.value) || 0;
   }
-  if (totalInput) totalInput.value = sum ? sum.toFixed(2) : '';
+  if (totalInput) {
+    const nextValue = sum ? sum.toFixed(2) : '';
+    if (totalInput.value !== nextValue) {
+      totalInput.value = nextValue;
+      totalInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
 }
 
 // Wrapper: toggle checked state, but ignore clicks on the per-account stake input
 function accountCheckClick(event, label) {
   if (event.target.classList.contains('per-account-stake')) return;
   if (event.target.tagName === 'INPUT' && event.target.type !== 'checkbox') return;
-  label.classList.toggle('checked');
+  window.setTimeout(() => {
+    const cb = label.querySelector('input[type="checkbox"]');
+    if (cb) label.classList.toggle('checked', cb.checked);
+  }, 0);
 }
 
 // ===== HISTORY =====
@@ -2108,7 +2142,10 @@ function fillEditModal(op) {
   }
 
   // Toggle bet365/poly fields vs single-leg-style summary (BR + punter).
-  document.querySelectorAll('#edit-form .edit-bp-field').forEach(el => { el.style.display = isSingleLegStyle ? 'none' : ''; });
+  document.querySelectorAll('#edit-form .edit-bp-field').forEach(el => {
+    const isAccountsField = !!el.querySelector('#edit-accounts-list');
+    el.style.display = isSingleLegStyle && !(isBR && isAccountsField) ? 'none' : '';
+  });
   const brWrap = document.getElementById('edit-br-legs-wrap');
   if (brWrap) brWrap.style.display = isSingleLegStyle ? '' : 'none';
   if (isSingleLegStyle) {
@@ -2175,7 +2212,7 @@ function fillEditModal(op) {
     const stakeStr = stakeVal != null ? Number(stakeVal).toFixed(2) : '';
     return `
       <label class="account-check ${checked ? 'checked' : ''}" onclick="accountCheckClick(event, this)">
-        <input type="checkbox" name="edit-accounts" value="${acc.id}" data-account-id="${acc.id}" ${checked ? 'checked' : ''}>
+        <input type="checkbox" name="edit-accounts" value="${acc.id}" data-account-id="${acc.id}" onchange="onAccountSelectionChange('edit', this)" ${checked ? 'checked' : ''}>
         <div class="account-check-dot"></div>
         <div style="flex:1">${escapeHtml(acc.name)}</div>
         <input type="number" step="0.01" min="0" class="form-input per-account-stake"
@@ -2184,15 +2221,12 @@ function fillEditModal(op) {
           value="${stakeStr}"
           style="display:${hasCustomStakes ? '' : 'none'};width:100px;margin-left:8px"
           onclick="event.stopPropagation()"
-          oninput="onPerAccountStakeChange('edit')">
+          oninput="onPerAccountStakeInput(event, 'edit')">
       </label>
     `;
   }).join('') || '<span style="color:var(--text-muted);font-size:13px">Nenhuma conta cadastrada</span>';
 
-  if (hasCustomStakes) {
-    const totalEl = document.getElementById('edit-stake-bet365');
-    if (totalEl) { totalEl.readOnly = true; totalEl.style.opacity = '0.7'; }
-  }
+  toggleCustomStakes('edit');
 
   // Init tags
   initTagInput('edit-tags', op.tags || []);
@@ -2265,29 +2299,33 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     }
   }
 
+  const editType = document.getElementById('edit-type')?.value;
+  const isEditBR = editType === 'arbitragem_br';
+  const isEditPunter = editType === 'punter';
+  const isEditStandard = !isEditBR && !isEditPunter;
   const body = {
-    type: document.getElementById('edit-type').value,
+    type: editType,
     game: document.getElementById('edit-game').value,
     event_date: document.getElementById('edit-event-date').value,
     result: document.getElementById('edit-result').value,
-    stake_bet365: parseFloat(document.getElementById('edit-stake-bet365').value) || 0,
-    odd_bet365: parseFloat(document.getElementById('edit-odd-bet365').value) || 0,
-    stake_poly_usd: parseFloat(document.getElementById('edit-stake-poly-usd').value) || 0,
-    odd_poly: parseFloat(document.getElementById('edit-odd-poly').value) || 0,
-    exchange_rate: parseFloat(document.getElementById('edit-exchange-rate').value) || 5.0,
+    stake_bet365: isEditStandard ? (parseFloat(document.getElementById('edit-stake-bet365').value) || 0) : 0,
+    odd_bet365: isEditStandard ? (parseFloat(document.getElementById('edit-odd-bet365').value) || 0) : 0,
+    stake_poly_usd: isEditStandard ? (parseFloat(document.getElementById('edit-stake-poly-usd').value) || 0) : 0,
+    odd_poly: isEditStandard ? (parseFloat(document.getElementById('edit-odd-poly').value) || 0) : 0,
+    exchange_rate: isEditStandard ? (parseFloat(document.getElementById('edit-exchange-rate').value) || 5.0) : 1,
     profit: parseFloat(document.getElementById('edit-profit').value) || 0,
     notes: document.getElementById('edit-notes').value,
     tags: getTagsFromInput('edit-tags'),
-    uses_freebet: !!document.getElementById('edit-uses-freebet')?.checked,
-    freebet_account_ids: document.getElementById('edit-uses-freebet')?.checked
+    uses_freebet: isEditStandard ? !!document.getElementById('edit-uses-freebet')?.checked : false,
+    freebet_account_ids: isEditStandard && document.getElementById('edit-uses-freebet')?.checked
       ? collectFreebetAccountIds('edit-freebet-accounts') : [],
   };
   // Send extra_bets for aumentada25 edits
-  const editType = document.getElementById('edit-type')?.value;
   if (editType === 'aumentada25') {
     body.extra_bets = collectExtraBets('edit-extra-bets-list');
   }
-  if (account_stakes) body.account_stakes = account_stakes;
+  if (isEditPunter) body.account_ids = [];
+  else if (account_stakes) body.account_stakes = account_stakes;
   else body.account_ids = account_ids;
 
   try {
@@ -2451,6 +2489,26 @@ async function renderSettings() {
         Avisos visuais que aparecem no topo do dashboard quando as condições configuradas forem atendidas.
       </p>
       <div id="alerts-config-list"><div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">Carregando...</div></div>
+    </div>
+
+    <!-- Google Sheets import -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:4px">Importar Google Sheets</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Envie um JSON exportado da planilha para pre-visualizar e importar novas operacoes.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <label class="btn btn-primary" style="cursor:pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Pre-visualizar JSON
+          <input type="file" accept=".json" style="display:none" onchange="previewGoogleSheetsImport(this)">
+        </label>
+        <button class="btn btn-primary" id="google-sheets-import-btn" onclick="commitGoogleSheetsImport()" disabled>
+          Importar operacoes
+        </button>
+        <button class="btn btn-ghost" onclick="clearGoogleSheetsImport()">Limpar</button>
+      </div>
+      <div id="google-sheets-import-result" style="margin-top:10px"></div>
     </div>
 
     <!-- Backup / Restore -->
@@ -2621,6 +2679,124 @@ async function saveAlertConfig(key, btn) {
     });
     toast('Configuração salva!');
   } catch (err) { toast(err.message, 'error'); }
+}
+
+async function previewGoogleSheetsImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const resultEl = document.getElementById('google-sheets-import-result');
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (btn) btn.disabled = true;
+  googleSheetsImportPayload = null;
+  googleSheetsImportPreview = null;
+  if (resultEl) {
+    resultEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Validando arquivo...</div>';
+  }
+
+  try {
+    const text = await file.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch { throw new Error('Arquivo nao e JSON valido'); }
+
+    const preview = await api('/api/operations/import/preview', { method: 'POST', body: data });
+    googleSheetsImportPayload = data;
+    googleSheetsImportPreview = preview;
+    renderGoogleSheetsImportPreview(preview);
+  } catch (err) {
+    if (resultEl) {
+      resultEl.innerHTML = `<div style="color:var(--danger);font-size:13px">${escapeHtml(err.message)}</div>`;
+    }
+    toast(err.message, 'error');
+  } finally {
+    input.value = '';
+  }
+}
+
+function renderGoogleSheetsImportPreview(preview) {
+  const resultEl = document.getElementById('google-sheets-import-result');
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (!resultEl) return;
+  if (btn) btn.disabled = !preview?.ok;
+
+  const rows = Array.isArray(preview?.rows) ? preview.rows : [];
+  const invalidRows = rows.filter(r => !r.ok);
+  const validRows = rows.filter(r => r.ok);
+  const color = preview?.ok ? 'var(--success)' : 'var(--danger)';
+  const visibleInvalid = invalidRows.map(r => `
+    <div style="padding:8px 0;border-top:1px solid var(--border);font-size:12px">
+      <strong>Linha ${r.row_number || '-'}</strong>: ${escapeHtml((r.errors || []).join(' | '))}
+    </div>
+  `).join('');
+  const visibleValid = validRows.map(r => {
+    const s = r.summary || {};
+    return `
+      <tr>
+        <td>${r.row_number || '-'}</td>
+        <td>${escapeHtml(s.event_date || '-')}</td>
+        <td>${escapeHtml(s.game || '-')}</td>
+        <td><span class="badge badge-${escapeHtml(s.type || '')}">${escapeHtml(typeLabel(s.type || ''))}</span></td>
+        <td>${escapeHtml(resultLabel(s.result || 'pending'))}</td>
+        <td class="${profitClass(s.profit)}">${formatBRL(s.profit)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  resultEl.innerHTML = `
+    <div style="color:${color};font-size:13px;margin-bottom:10px">
+      ${preview.valid_count || 0} linha(s) validas, ${preview.invalid_count || 0} invalida(s).
+    </div>
+    ${visibleInvalid ? `<div style="max-height:220px;overflow:auto;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;padding:0 10px">${visibleInvalid}</div>` : ''}
+    ${visibleValid ? `
+      <div class="table-container" style="margin-top:10px;max-height:360px;overflow:auto">
+        <table>
+          <thead><tr><th>Linha</th><th>Data</th><th>Jogo</th><th>Tipo</th><th>Resultado</th><th>Lucro</th></tr></thead>
+          <tbody>${visibleValid}</tbody>
+        </table>
+      </div>
+    ` : ''}
+  `;
+}
+
+async function commitGoogleSheetsImport() {
+  if (!googleSheetsImportPayload || !googleSheetsImportPreview?.ok) {
+    toast('Pre-visualize um JSON valido antes de importar.', 'error');
+    return;
+  }
+  const total = googleSheetsImportPreview.valid_count || 0;
+  if (!confirm(`Importar ${total} operacao(oes)? Operacoes repetidas serao adicionadas novamente.`)) return;
+
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const result = await api('/api/operations/import/commit', {
+      method: 'POST',
+      body: googleSheetsImportPayload,
+    });
+    const resultEl = document.getElementById('google-sheets-import-result');
+    if (resultEl) {
+      resultEl.innerHTML = `<div style="color:var(--success);font-size:13px">${result.imported || 0} operacao(oes) importada(s).</div>`;
+    }
+    googleSheetsImportPayload = null;
+    googleSheetsImportPreview = null;
+    toast('Operacoes importadas com sucesso');
+    loadAccounts().catch(() => {});
+  } catch (err) {
+    if (btn) btn.disabled = !googleSheetsImportPreview?.ok;
+    const resultEl = document.getElementById('google-sheets-import-result');
+    if (err.preview && resultEl) renderGoogleSheetsImportPreview(err.preview);
+    else if (resultEl) resultEl.innerHTML = `<div style="color:var(--danger);font-size:13px">${escapeHtml(err.message)}</div>`;
+    toast(err.message, 'error');
+  }
+}
+
+function clearGoogleSheetsImport() {
+  googleSheetsImportPayload = null;
+  googleSheetsImportPreview = null;
+  const resultEl = document.getElementById('google-sheets-import-result');
+  const btn = document.getElementById('google-sheets-import-btn');
+  if (resultEl) resultEl.innerHTML = '';
+  if (btn) btn.disabled = true;
 }
 
 async function downloadBackup() {
