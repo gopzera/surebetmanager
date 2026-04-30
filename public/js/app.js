@@ -840,7 +840,7 @@ function renderRecentTable(ops) {
           <td>${isSingleLegStyle ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
           <td>${isSingleLegStyle ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
-          <td>${isSingleLegStyle ? (br.bookmakers.map(escapeHtml).join(', ') || '-') : ((op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-')}</td>
+          <td>${(op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-'}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
         </tr>`;
         }).join('')}
@@ -1805,7 +1805,7 @@ function renderHistoryTable(ops) {
           <td>${renderTagsDisplay(op.tags)}</td>
           <td>${isSingleLegStyle ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
           <td>${isSingleLegStyle ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
-          <td>${isSingleLegStyle ? renderBookmakerChips(br.bookmakers) : renderAccountChips(op.accounts)}</td>
+          <td>${renderAccountChips(op.accounts)}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
           <td>
