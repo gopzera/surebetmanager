@@ -94,6 +94,17 @@ function formatUSD(val) {
   return '$ ' + n.toFixed(2);
 }
 
+const OP_DECIMAL_PLACES = 10;
+const OP_DECIMAL_STEP = '0.0000000001';
+
+function formatOperationNumber(val, maxDecimals = OP_DECIMAL_PLACES) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return '';
+  return n.toFixed(maxDecimals)
+    .replace(/(\.\d*?[1-9])0+$/, '$1')
+    .replace(/\.0+$/, '');
+}
+
 function profitClass(val) {
   const n = Number(val) || 0;
   if (n > 0.005) return 'profit-positive';
@@ -928,7 +939,7 @@ async function renderNewOperation() {
                 <div>${escapeHtml(acc.name)}</div>
                 <div class="account-check-info">Max aumentada: ${formatBRL(acc.max_stake_aumentada)}</div>
               </div>
-              <input type="number" step="0.01" min="0" class="form-input per-account-stake"
+              <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input per-account-stake"
                 data-account-id="${acc.id}"
                 placeholder="R$"
                 style="display:none;width:100px;margin-left:8px"
@@ -964,11 +975,11 @@ async function renderNewOperation() {
         <div class="form-grid">
           <div class="form-group">
             <label class="form-label">Stake Total Bet365 (R$) <span style="font-size:11px;color:var(--text-muted)">(soma de todas as contas)</span></label>
-            <input type="number" step="0.01" min="0" class="form-input" id="new-stake-bet365" placeholder="0,00">
+            <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input" id="new-stake-bet365" placeholder="0,00">
           </div>
           <div class="form-group">
             <label class="form-label">Odd Bet365</label>
-            <input type="number" step="0.01" min="1" class="form-input" id="new-odd-bet365" placeholder="0,00">
+            <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input" id="new-odd-bet365" placeholder="0,00">
           </div>
           <div class="form-group full">
             <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 10px">
@@ -1002,15 +1013,15 @@ async function renderNewOperation() {
         <div class="form-grid">
           <div class="form-group">
             <label class="form-label">Stake Polymarket (USD)</label>
-            <input type="number" step="0.01" min="0" class="form-input" id="new-stake-poly-usd" placeholder="0,00">
+            <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input" id="new-stake-poly-usd" placeholder="0,00">
           </div>
           <div class="form-group">
             <label class="form-label">Odd Polymarket</label>
-            <input type="number" step="0.01" min="1" class="form-input" id="new-odd-poly" placeholder="0,00">
+            <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input" id="new-odd-poly" placeholder="0,00">
           </div>
           <div class="form-group">
             <label class="form-label">Cotação USD/BRL <span id="new-rate-status" style="font-size:11px"></span></label>
-            <input type="number" step="0.0001" min="0" class="form-input" id="new-exchange-rate" placeholder="Buscando...">
+            <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input" id="new-exchange-rate" placeholder="Buscando...">
           </div>
           <div class="form-group">
             <label class="form-label">Equivalente em BRL</label>
@@ -1038,11 +1049,11 @@ async function renderNewOperation() {
           </div>
           <div class="form-group">
             <label class="form-label">Stake (R$)</label>
-            <input type="number" step="0.01" min="0" class="form-input" id="new-punter-stake" placeholder="0,00">
+            <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input" id="new-punter-stake" placeholder="0,00">
           </div>
           <div class="form-group">
             <label class="form-label">Odd</label>
-            <input type="number" step="0.01" min="1" class="form-input" id="new-punter-odd" placeholder="0,00">
+            <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input" id="new-punter-odd" placeholder="0,00">
           </div>
           <div class="form-group">
             <label class="form-label">Retorno potencial (R$)</label>
@@ -1056,7 +1067,7 @@ async function renderNewOperation() {
       <div class="form-grid">
         <div class="form-group">
           <label class="form-label">Lucro Total da Operação (R$)</label>
-          <input type="number" step="0.01" class="form-input" id="new-profit" placeholder="0,00">
+          <input type="number" step="${OP_DECIMAL_STEP}" class="form-input" id="new-profit" placeholder="0,00">
         </div>
         <div class="form-group">
           <label class="form-label">Notas (opcional)</label>
@@ -1083,7 +1094,7 @@ async function renderNewOperation() {
   rateStatus.style.color = 'var(--warning)';
   fetchLiveRate().then(rate => {
     if (rate && rateInput && !rateInput.value) {
-      rateInput.value = rate.toFixed(4);
+      rateInput.value = formatOperationNumber(rate);
       rateStatus.textContent = `(${liveRateSource} - ao vivo)`;
       rateStatus.style.color = 'var(--success)';
       updatePolyBRL();
@@ -1170,7 +1181,7 @@ async function renderNewOperation() {
       else if (result === 'lost' && stake > 0)      p = -stake;
       else if (result === 'void')                   p = 0;
       if (p !== null) {
-        profitInput.value = p.toFixed(2);
+        profitInput.value = formatOperationNumber(p);
         const label = result === 'won'  ? `Lucro: ${formatBRL(p)} (vitória)`
                     : result === 'lost' ? `Prejuízo: ${formatBRL(p)} (derrota)`
                     : 'Anulado — lucro zerado';
@@ -1191,7 +1202,7 @@ async function renderNewOperation() {
       rateInput?.value, result
     );
     if (p !== null) {
-      profitInput.value = p.toFixed(2);
+      profitInput.value = formatOperationNumber(p);
       const label = result === 'void' ? 'Anulado - lucro zerado' :
         `Lucro calculado: ${formatBRL(p)} (${result === 'bet365_won' ? 'Bet365 ganhou' : 'Poly ganhou'})`;
       autoProfitInfo.textContent = label;
@@ -1229,10 +1240,10 @@ async function renderNewOperation() {
     if (typeEl) selectType(typeEl);
 
     // Fill fields
-    if (imp.stakeBet365) document.getElementById('new-stake-bet365').value = imp.stakeBet365.toFixed(2);
-    if (imp.oddBet365) document.getElementById('new-odd-bet365').value = imp.oddBet365.toFixed(2);
-    if (imp.stakePolyUSD) document.getElementById('new-stake-poly-usd').value = imp.stakePolyUSD.toFixed(2);
-    if (imp.oddPoly) document.getElementById('new-odd-poly').value = imp.oddPoly.toFixed(2);
+    if (imp.stakeBet365) document.getElementById('new-stake-bet365').value = formatOperationNumber(imp.stakeBet365);
+    if (imp.oddBet365) document.getElementById('new-odd-bet365').value = formatOperationNumber(imp.oddBet365);
+    if (imp.stakePolyUSD) document.getElementById('new-stake-poly-usd').value = formatOperationNumber(imp.stakePolyUSD);
+    if (imp.oddPoly) document.getElementById('new-odd-poly').value = formatOperationNumber(imp.oddPoly);
     if (imp.usesFreebet) {
       const fb = document.getElementById('new-uses-freebet');
       if (fb) fb.checked = true;
@@ -1260,7 +1271,7 @@ async function renderNewOperation() {
       }
     }
     if (imp.exchangeRate) {
-      rateInput.value = imp.exchangeRate.toFixed(4);
+      rateInput.value = formatOperationNumber(imp.exchangeRate);
       rateStatus.textContent = '(da calculadora)';
       rateStatus.style.color = 'var(--success)';
     }
@@ -1268,7 +1279,7 @@ async function renderNewOperation() {
 
     // Pre-fill profit from calculator (fee-adjusted guaranteed profit).
     if (imp.minProfitBRL != null) {
-      profitInput.value = imp.minProfitBRL.toFixed(2);
+      profitInput.value = formatOperationNumber(imp.minProfitBRL);
       if (autoProfitInfo) {
         autoProfitInfo.textContent = `Lucro garantido da calculadora: ${formatBRL(imp.minProfitBRL)}`;
         autoProfitInfo.style.display = 'block';
@@ -1296,7 +1307,7 @@ async function renderNewOperation() {
       }
       imp.accountStakes.forEach(({ account_id, stake }) => {
         const inp = document.querySelector(`#new-accounts-list input.per-account-stake[data-account-id="${account_id}"]`);
-        if (inp && stake != null) inp.value = Number(stake).toFixed(2);
+        if (inp && stake != null) inp.value = formatOperationNumber(stake);
       });
       onPerAccountStakeChange('new');
     }
@@ -1396,11 +1407,11 @@ function extraBetRowHtml(idx, data = {}) {
     <div class="form-grid extra-bet-row" data-uid="${uid}" style="align-items:end;padding:8px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">
       <div class="form-group">
         <label class="form-label">Stake (R$)</label>
-        <input type="number" step="0.01" min="0" class="form-input extra-bet-stake" value="${data.stake != null ? Number(data.stake).toFixed(2) : ''}" placeholder="0,00">
+        <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input extra-bet-stake" value="${data.stake != null ? formatOperationNumber(data.stake) : ''}" placeholder="0,00">
       </div>
       <div class="form-group">
         <label class="form-label">Odd</label>
-        <input type="number" step="0.01" min="1" class="form-input extra-bet-odd" value="${data.odd != null ? Number(data.odd).toFixed(2) : ''}" placeholder="0,00">
+        <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input extra-bet-odd" value="${data.odd != null ? formatOperationNumber(data.odd) : ''}" placeholder="0,00">
       </div>
       <div class="form-group">
         <label class="account-check" style="cursor:pointer;display:inline-flex;padding:4px 8px">
@@ -1463,11 +1474,11 @@ function brLegRowHtml(data = {}) {
       </div>
       <div class="form-group">
         <label class="form-label">Stake (R$)</label>
-        <input type="number" step="0.01" min="0" class="form-input br-leg-stake" value="${data.stake != null ? Number(data.stake).toFixed(2) : ''}" placeholder="0,00">
+        <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input br-leg-stake" value="${data.stake != null ? formatOperationNumber(data.stake) : ''}" placeholder="0,00">
       </div>
       <div class="form-group">
         <label class="form-label">Odd</label>
-        <input type="number" step="0.01" min="1" class="form-input br-leg-odd" value="${data.odd != null ? Number(data.odd).toFixed(2) : ''}" placeholder="0,00">
+        <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input br-leg-odd" value="${data.odd != null ? formatOperationNumber(data.odd) : ''}" placeholder="0,00">
       </div>
       <div class="form-group" style="text-align:right">
         <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.br-leg-row').remove()">Remover</button>
@@ -1605,7 +1616,7 @@ function onPerAccountStakeChange(mode) {
     const inp = document.querySelector(`#${listId} input.per-account-stake[data-account-id="${accId}"]`);
     sum += parseFloat(inp?.value) || 0;
   }
-  if (totalInput) totalInput.value = sum ? sum.toFixed(2) : '';
+  if (totalInput) totalInput.value = sum ? formatOperationNumber(sum) : '';
 }
 
 // Wrapper: toggle checked state, but ignore clicks on the per-account stake input
