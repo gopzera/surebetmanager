@@ -1227,6 +1227,7 @@ function calcShareOdds() {
 function calcImportToOperation() {
   if (!calcResult) return alert("Calcule uma surebet antes de importar.");
 
+  const fx = calcUsdcBrl || 5;
   const polyRows = [];
   const bet365Rows = [];
   calcRows.forEach((row, i) => {
@@ -1235,7 +1236,7 @@ function calcImportToOperation() {
       idx: i,
       odds: parseFloat(row.odds) || 0,
       stakeUSD: calcResult.stakesUSD[i],
-      stakeBRL: calcResult.stakesUSD[i] * (calcUsdcBrl || 5),
+      stakeBRL: calcResult.stakesUSD[i] * fx,
       currency: row.currency,
       usePoly: row.usePoly,
       usesFreebet: !!row.usesFreebet,
@@ -1244,8 +1245,33 @@ function calcImportToOperation() {
     else bet365Rows.push(data);
   });
 
-  if (!polyRows.length || !bet365Rows.length) {
-    return alert("Marque pelo menos um outcome como Poly e tenha pelo menos um outcome Bet365.");
+  // If nothing is marked as Polymarket, import the whole calculator as a BR
+  // arbitrage operation. This keeps the calculator useful for all-BRL books.
+  if (!polyRows.length) {
+    if (bet365Rows.length < 2) {
+      return alert("Tenha pelo menos 2 outcomes para importar como Arbitragem BR.");
+    }
+    const legs = bet365Rows.map(r => ({
+      bookmaker: `Linha ${r.idx + 1}`,
+      stake: r.stakeBRL,
+      odd: r.odds,
+    }));
+    window._calcImport = {
+      type: 'arbitragem_br',
+      extraBets: legs,
+      exchangeRate: fx,
+      notes: '',
+      profitsBRL: calcResult.profitsUSD.map(p => p * fx),
+      minProfitBRL: calcResult.minProfit * fx,
+    };
+
+    navigate('new-operation');
+    toast('Dados importados da calculadora como Arbitragem BR!', 'success');
+    return;
+  }
+
+  if (!bet365Rows.length) {
+    return alert("Marque pelo menos um outcome sem Poly para importar.");
   }
 
   const poly = polyRows[0];
@@ -1258,8 +1284,8 @@ function calcImportToOperation() {
   const aumentadaRow = bet365Rows.reduce((best, r) => r.stakeBRL > best.stakeBRL ? r : best, bet365Rows[0]);
   const mainStakeBRL = aumentadaRow.stakeBRL;
   const extras = bet365Rows.filter(r => r !== aumentadaRow).map(r => ({
-    stake: Number(r.stakeBRL.toFixed(2)),
-    odd: Number(r.odds.toFixed(2)),
+    stake: r.stakeBRL,
+    odd: r.odds,
     uses_freebet: r.usesFreebet,
   }));
 
@@ -1267,7 +1293,6 @@ function calcImportToOperation() {
   const type = isAumentada ? 'aumentada25' : 'arbitragem';
 
   // Per-outcome profit in BRL (from calculator, already fee-adjusted).
-  const fx = calcUsdcBrl || 5;
   const profitsBRL = calcResult.profitsUSD.map(p => p * fx);
 
   window._calcImport = {
