@@ -5,9 +5,37 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 router.use(auth);
 
-// Get ranking — users ranked by all-time profit (only those who opted in)
+// Users are in BRT (UTC-3). Match dashboard/freebets period bucketing.
+const BR_TZ_OFFSET_MS = -3 * 60 * 60 * 1000;
+const OP_DATE_EXPR = `COALESCE(o.event_date, DATE(o.created_at, '-3 hours'))`;
+const RANKING_PERIODS = new Set(['daily', 'weekly', 'monthly', 'allTime']);
+
+function brtDateStr(d) {
+  return new Date((d ? d.getTime() : Date.now()) + BR_TZ_OFFSET_MS)
+    .toISOString().split('T')[0];
+}
+
+function addDays(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+function rankingPeriodWhere(period, alias, today = brtDateStr()) {
+  const p = RANKING_PERIODS.has(period) ? period : 'monthly';
+  const dateExpr = alias === 'g'
+    ? `DATE(g.created_at, '-3 hours')`
+    : OP_DATE_EXPR;
+  if (p === 'allTime') return { period: p, clause: '1=1', params: [] };
+  if (p === 'daily') return { period: p, clause: `${dateExpr} = ?`, params: [today] };
+  const start = p === 'weekly' ? addDays(today, -6) : addDays(today, -29);
+  return { period: p, clause: `${dateExpr} >= ?`, params: [start] };
+}
+
+// Get ranking by selected period (only users who opted in)
 router.get('/', async (req, res) => {
   try {
+    const period = rankingPeriodWhere(String(req.query.period || 'monthly'), 'o');
     const rows = await db.all(
       `SELECT
         u.id,
@@ -18,10 +46,11 @@ router.get('/', async (req, res) => {
         COALESCE(SUM(o.profit), 0) as total_profit,
         COUNT(o.id) as total_ops
       FROM users u
-      LEFT JOIN operations o ON o.user_id = u.id
+      LEFT JOIN operations o ON o.user_id = u.id AND ${period.clause}
       WHERE u.show_in_ranking = 1
       GROUP BY u.id
-      ORDER BY total_profit DESC`
+      ORDER BY total_profit DESC`,
+      ...period.params
     );
     res.json(rows);
   } catch (err) {
@@ -33,6 +62,7 @@ router.get('/', async (req, res) => {
 // Sortudos — ranking based on giros profit only
 router.get('/sortudos', async (req, res) => {
   try {
+    const period = rankingPeriodWhere(String(req.query.period || 'monthly'), 'g');
     const rows = await db.all(
       `SELECT
         u.id,
@@ -44,11 +74,12 @@ router.get('/sortudos', async (req, res) => {
         COUNT(g.id) as total_giros,
         COALESCE(SUM(g.quantity), 0) as total_quantity
       FROM users u
-      LEFT JOIN giros g ON g.user_id = u.id
+      LEFT JOIN giros g ON g.user_id = u.id AND ${period.clause}
       WHERE u.show_in_giros_ranking = 1
       GROUP BY u.id
       HAVING total_giros > 0
-      ORDER BY total_profit DESC`
+      ORDER BY total_profit DESC`,
+      ...period.params
     );
     res.json(rows);
   } catch (err) {
