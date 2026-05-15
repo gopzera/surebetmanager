@@ -24,6 +24,7 @@ const app = require('../app');
 
 let server;
 let baseUrl;
+let currentUserId;
 
 // Minimal cookie jar — fetch in Node doesn't thread cookies automatically.
 const jar = {
@@ -80,6 +81,7 @@ beforeAll(async () => {
     display_name: 'Test User',
   });
   if (r.status !== 200) throw new Error('register failed: ' + JSON.stringify(r.data));
+  currentUserId = r.data.id;
 }, 30000);
 
 afterAll(async () => {
@@ -270,6 +272,40 @@ describe('operation types: arbitragem_br + punter', () => {
       account_ids: [],
     });
     expect(lost.status).toBe(200);
+  });
+});
+
+describe('GET /api/ranking period filters', () => {
+  function rowForCurrentUser(rows) {
+    return rows.find(r => r.id === currentUserId);
+  }
+
+  it('defaults to monthly and excludes old event-dated operations from monthly totals', async () => {
+    const old = await req('POST', '/api/operations', {
+      type: 'arbitragem',
+      game: 'Old Ranking Profit',
+      event_date: '2000-01-01',
+      stake_bet365: 10,
+      odd_bet365: 2,
+      result: 'bet365_won',
+      profit: 12345,
+    });
+    expect(old.status).toBe(200);
+
+    const defaultRanking = await req('GET', '/api/ranking');
+    const monthlyRanking = await req('GET', '/api/ranking?period=monthly');
+    const allTimeRanking = await req('GET', '/api/ranking?period=allTime');
+
+    expect(defaultRanking.status).toBe(200);
+    expect(monthlyRanking.status).toBe(200);
+    expect(allTimeRanking.status).toBe(200);
+
+    const defaultMe = rowForCurrentUser(defaultRanking.data);
+    const monthlyMe = rowForCurrentUser(monthlyRanking.data);
+    const allTimeMe = rowForCurrentUser(allTimeRanking.data);
+
+    expect(defaultMe.total_profit).toBeCloseTo(monthlyMe.total_profit);
+    expect(allTimeMe.total_profit).toBeGreaterThanOrEqual(monthlyMe.total_profit + 12345);
   });
 });
 

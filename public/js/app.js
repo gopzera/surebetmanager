@@ -3004,6 +3004,13 @@ async function saveTagRule(id) {
 
 // ===== RANKING =====
 let rankingTab = 'general'; // 'general' | 'sortudos'
+let rankingPeriod = 'monthly'; // 'daily' | 'weekly' | 'monthly' | 'allTime'
+const RANKING_PERIOD_OPTIONS = [
+  { key: 'daily', label: 'Hoje' },
+  { key: 'weekly', label: '7 dias' },
+  { key: 'monthly', label: '30 dias' },
+  { key: 'allTime', label: 'Todo período' },
+];
 
 async function renderRanking() {
   const mc = document.getElementById('main-content');
@@ -3014,9 +3021,16 @@ async function renderRanking() {
         <p class="page-description">Membros do grupo ranqueados por lucro</p>
       </div>
     </div>
-    <div class="watcher-tabs" style="margin-bottom:16px">
-      <button class="watcher-tab ${rankingTab === 'general' ? 'active' : ''}" onclick="switchRankingTab('general')">Ranking Geral</button>
-      <button class="watcher-tab ${rankingTab === 'sortudos' ? 'active' : ''}" onclick="switchRankingTab('sortudos')">Sortudos (Giros)</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div class="watcher-tabs" id="ranking-tab-tabs" style="margin-bottom:0">
+        <button class="watcher-tab ${rankingTab === 'general' ? 'active' : ''}" onclick="switchRankingTab('general')">Ranking Geral</button>
+        <button class="watcher-tab ${rankingTab === 'sortudos' ? 'active' : ''}" onclick="switchRankingTab('sortudos')">Sortudos (Giros)</button>
+      </div>
+      <div class="watcher-tabs" id="ranking-period-tabs" style="margin:0 0 0 auto;flex-wrap:wrap">
+        ${RANKING_PERIOD_OPTIONS.map(p => `
+          <button class="watcher-tab ${rankingPeriod === p.key ? 'active' : ''}" data-period="${p.key}" onclick="switchRankingPeriod('${p.key}')">${p.label}</button>
+        `).join('')}
+      </div>
     </div>
     <div class="table-container">
       <div id="ranking-content"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
@@ -3027,10 +3041,19 @@ async function renderRanking() {
 
 function switchRankingTab(tab) {
   rankingTab = tab;
-  document.querySelectorAll('.watcher-tabs .watcher-tab').forEach(b => {
+  document.querySelectorAll('#ranking-tab-tabs .watcher-tab').forEach(b => {
     b.classList.toggle('active',
       (tab === 'general' && b.textContent.includes('Geral')) ||
       (tab === 'sortudos' && b.textContent.includes('Sortudos')));
+  });
+  loadRankingTab();
+}
+
+function switchRankingPeriod(period) {
+  if (!RANKING_PERIOD_OPTIONS.some(p => p.key === period)) return;
+  rankingPeriod = period;
+  document.querySelectorAll('#ranking-period-tabs .watcher-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.period === period);
   });
   loadRankingTab();
 }
@@ -3040,7 +3063,8 @@ async function loadRankingTab() {
   if (!container) return;
   container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div>`;
   try {
-    const endpoint = rankingTab === 'sortudos' ? '/api/ranking/sortudos' : '/api/ranking';
+    const baseEndpoint = rankingTab === 'sortudos' ? '/api/ranking/sortudos' : '/api/ranking';
+    const endpoint = `${baseEndpoint}?period=${encodeURIComponent(rankingPeriod)}`;
     const data = await api(endpoint);
     if (!data.length) {
       const emptyText = rankingTab === 'sortudos' ? 'Nenhum giro registrado ainda' : 'Nenhum membro visivel no ranking';
