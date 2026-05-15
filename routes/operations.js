@@ -4,6 +4,7 @@ const auth = require('../middleware/auth');
 const { attachMany, attachScalars } = require('../utils/batch');
 const { audit, diff } = require('../utils/audit');
 const { evaluateRules } = require('../utils/tagRules');
+const { buildPreview } = require('../utils/googleSheetsImport');
 
 const router = express.Router();
 router.use(auth);
@@ -77,6 +78,27 @@ function serializeExtraBets(val, validAccountIds) {
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 50;
 
+function previewForResponse(payload) {
+  const preview = buildPreview(payload);
+  return {
+    ok: preview.ok,
+    total: preview.total,
+    valid_count: preview.valid_count,
+    invalid_count: preview.invalid_count,
+    rows: preview.rows.map(row => row.ok ? {
+      row_number: row.row_number,
+      ok: true,
+      errors: [],
+      summary: row.summary,
+      operation: row.operation,
+    } : {
+      row_number: row.row_number,
+      ok: false,
+      errors: row.errors,
+    }),
+  };
+}
+
 // List operations with filters
 router.get('/', async (req, res) => {
   try {
@@ -141,6 +163,82 @@ router.get('/', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Preview Google Sheets JSON import without writing anything.
+router.post('/import/preview', async (req, res) => {
+  try {
+    res.json(previewForResponse(req.body));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao validar importacao' });
+  }
+});
+
+// Commit Google Sheets JSON import. Always revalidates server-side and appends.
+router.post('/import/commit', async (req, res) => {
+  try {
+    const preview = buildPreview(req.body);
+    if (!preview.ok) {
+      return res.status(400).json({
+        error: 'Corrija as linhas invalidas antes de importar.',
+        preview: previewForResponse(req.body),
+      });
+    }
+
+    const prepared = [];
+    for (const row of preview.rows) {
+      const op = row.operation;
+      const autoTags = await evaluateRules(db, req.user.id, {
+        type: op.type,
+        game: op.game,
+        notes: op.notes,
+        result: op.result,
+        odd_bet365: op.odd_bet365,
+        odd_poly: op.odd_poly,
+        stake_bet365: op.stake_bet365,
+        stake_poly_usd: op.stake_poly_usd,
+        profit: op.profit,
+      });
+      prepared.push({ op, autoTags });
+    }
+
+    const ids = await db.transaction(async (tx) => {
+      const inserted = [];
+      for (const item of prepared) {
+        const op = item.op;
+        const extraBetsStr = serializeExtraBets(op.extra_bets, []);
+        const r = await tx.run(
+          `INSERT INTO operations (user_id, type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, extra_bets, uses_freebet, freebet_account_id, freebet_account_ids)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          req.user.id, op.type, op.game, op.event_date || null,
+          op.stake_bet365 || 0, op.odd_bet365 || 0,
+          op.stake_poly_usd || 0, op.odd_poly || 0,
+          op.exchange_rate || 1,
+          op.result || 'pending', op.profit || 0, op.notes || null,
+          extraBetsStr, 0, null, null
+        );
+        inserted.push(r.lastInsertRowid);
+
+        for (const t of item.autoTags) {
+          await tx.run(
+            'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
+            r.lastInsertRowid, t
+          );
+        }
+      }
+      return inserted;
+    });
+
+    await audit(req, 'user', req.user.id, 'imported_google_sheets_operations', {
+      count: ids.length,
+      operation_ids: ids.slice(0, 25),
+    });
+    res.json({ ok: true, imported: ids.length, ids });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao importar operacoes' });
   }
 });
 

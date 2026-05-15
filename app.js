@@ -16,6 +16,8 @@ app.use('/api/finances', express.json({ limit: '7mb' }));
 // Restore payload carries an entire user's history (operations, giros, etc.) —
 // JSON-only but can easily exceed the default limit for heavy users.
 app.use('/api/restore', express.json({ limit: '20mb' }));
+// Google Sheets operation imports are JSON arrays read client-side from .json files.
+app.use('/api/operations/import', express.json({ limit: '5mb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 

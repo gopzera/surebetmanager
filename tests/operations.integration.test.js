@@ -240,6 +240,58 @@ describe('operation types: arbitragem_br + punter', () => {
     });
     expect(r.status).toBe(200);
     expect(r.data.id).toBeGreaterThan(0);
+
+    const list = await req('GET', '/api/operations?limit=100');
+    const op = list.data.operations.find(o => o.id === r.data.id);
+    expect(op.accounts).toEqual([]);
+  });
+
+  it('persists optional account attribution on arbitragem_br ops', async () => {
+    const accA = await req('POST', '/api/accounts', {
+      name: 'BR Conta A',
+      max_stake_aumentada: 250,
+    });
+    const accB = await req('POST', '/api/accounts', {
+      name: 'BR Conta B',
+      max_stake_aumentada: 250,
+    });
+    expect(accA.status).toBe(200);
+    expect(accB.status).toBe(200);
+
+    const created = await req('POST', '/api/operations', {
+      type: 'arbitragem_br',
+      game: 'BR With Accounts',
+      stake_bet365: 0,
+      odd_bet365: 0,
+      result: 'pending',
+      profit: 0,
+      extra_bets: [
+        { stake: 120, odd: 2.1, bookmaker: 'Casa A' },
+        { stake: 100, odd: 2.4, bookmaker: 'Casa B' },
+      ],
+      account_ids: [accA.data.id, accB.data.id],
+    });
+    expect(created.status).toBe(200);
+
+    let list = await req('GET', '/api/operations?limit=100');
+    let op = list.data.operations.find(o => o.id === created.data.id);
+    expect(op.accounts.map(a => a.id).sort((a, b) => a - b)).toEqual(
+      [accA.data.id, accB.data.id].sort((a, b) => a - b)
+    );
+
+    const updated = await req('PUT', '/api/operations/' + created.data.id, {
+      account_stakes: [
+        { account_id: accA.data.id, stake: 60 },
+        { account_id: accB.data.id, stake: 40 },
+      ],
+    });
+    expect(updated.status).toBe(200);
+
+    list = await req('GET', '/api/operations?limit=100');
+    op = list.data.operations.find(o => o.id === created.data.id);
+    const stakes = Object.fromEntries(op.accounts.map(a => [a.id, a.stake]));
+    expect(stakes[accA.data.id]).toBeCloseTo(60);
+    expect(stakes[accB.data.id]).toBeCloseTo(40);
   });
 
   it('creates a punter op (single-leg) with extra_bets[0]', async () => {
