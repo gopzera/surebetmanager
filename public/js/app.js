@@ -470,6 +470,7 @@ function navigate(page) {
     'new-operation': renderNewOperation,
     'history': renderHistory,
     'ranking': renderRanking,
+    'bookmakers': renderBookmakersPage,
     'calculator': renderCalculator,
     'freebets': renderFreebets,
     'settings': renderSettings,
@@ -3592,6 +3593,249 @@ async function loadRankingTab() {
   } catch (err) {
     container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
   }
+}
+
+// ===== CASAS (bookmaker analytics) =====
+let bookmakerPeriod = 'monthly'; // reuses RANKING_PERIOD_OPTIONS
+
+// Minimal stat card matching the dashboard markup (.stat-card/.stat-label/...).
+function statCardHtml(label, value, sub) {
+  return `<div class="stat-card">
+    <div class="stat-label">${escapeHtml(label)}</div>
+    <div class="stat-value">${value}</div>
+    ${sub ? `<div class="stat-sub">${escapeHtml(sub)}</div>` : ''}
+  </div>`;
+}
+
+const WEEKDAY_NAMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+const WEEKDAY_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+async function renderBookmakersPage() {
+  const mc = document.getElementById('main-content');
+  mc.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Análises</h1>
+        <p class="page-description">Casas, horários e dias — volume, lucro e atividade</p>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div class="watcher-tabs" id="bookmaker-period-tabs" style="margin:0;flex-wrap:wrap">
+        ${RANKING_PERIOD_OPTIONS.map(p => `
+          <button class="watcher-tab ${bookmakerPeriod === p.key ? 'active' : ''}" data-period="${p.key}" onclick="switchBookmakerPeriod('${p.key}')">${p.label}</button>
+        `).join('')}
+      </div>
+    </div>
+    <div id="bookmaker-summary" class="stats-grid" style="margin-bottom:20px"></div>
+
+    <h3 class="chart-title" style="margin:0 0 12px">Casas</h3>
+    <div class="chart-container" style="margin-bottom:16px">
+      <h4 class="chart-title" style="margin-bottom:16px;font-size:14px">Volume por casa (R$)</h4>
+      <div style="position:relative;height:280px"><canvas id="bookmaker-chart"></canvas></div>
+    </div>
+    <div class="table-container" style="margin-bottom:24px">
+      <div id="bookmaker-content"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+    </div>
+
+    <h3 class="chart-title" style="margin:0 0 12px">Combinações de casas mais frequentes</h3>
+    <div class="table-container" style="margin-bottom:24px">
+      <div id="bookmaker-combos"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div></div>
+    </div>
+
+    <h3 class="chart-title" style="margin:0 0 12px">Atividade</h3>
+    <div class="chart-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">
+      <div class="chart-container">
+        <h4 class="chart-title" style="margin-bottom:16px;font-size:14px">Operações por horário</h4>
+        <div style="position:relative;height:240px"><canvas id="bookmaker-hour-chart"></canvas></div>
+      </div>
+      <div class="chart-container">
+        <h4 class="chart-title" style="margin-bottom:16px;font-size:14px">Por dia da semana</h4>
+        <div style="position:relative;height:240px"><canvas id="bookmaker-weekday-chart"></canvas></div>
+      </div>
+    </div>
+  `;
+  loadBookmakerPerformance();
+}
+
+function switchBookmakerPeriod(period) {
+  if (!RANKING_PERIOD_OPTIONS.some(p => p.key === period)) return;
+  bookmakerPeriod = period;
+  document.querySelectorAll('#bookmaker-period-tabs .watcher-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.period === period);
+  });
+  loadBookmakerPerformance();
+}
+
+async function loadBookmakerPerformance() {
+  const container = document.getElementById('bookmaker-content');
+  if (!container) return;
+  container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</div>`;
+  try {
+    const data = await api(`/api/bookmakers/performance?period=${encodeURIComponent(bookmakerPeriod)}`);
+    const rows = data.bookmakers || [];
+    const byHour = data.byHour || [];
+    const byWeekday = data.byWeekday || [];
+    const combos = data.combos || [];
+
+    // Summary: turnover, peak registration hour, most profitable weekday.
+    const totalVolume = rows.reduce((s, r) => s + (Number(r.volume) || 0), 0);
+    const peakHour = byHour.reduce((best, h) => (h.count > (best?.count || 0) ? h : best), null);
+    const bestDay = byWeekday.reduce((best, d) => (d.profit > (best?.profit || -Infinity) ? d : best), null);
+    const summary = document.getElementById('bookmaker-summary');
+    if (summary) {
+      summary.innerHTML = `
+        ${statCardHtml('Casas com movimento', String(rows.length), 'no período')}
+        ${statCardHtml('Volume total', formatBRL(totalVolume), 'soma dos stakes')}
+        ${statCardHtml('Horário de pico', peakHour && peakHour.count ? `${String(peakHour.hour).padStart(2, '0')}h` : '—', peakHour && peakHour.count ? `${peakHour.count} operação(ões)` : 'sem dados')}
+        ${statCardHtml('Dia mais lucrativo', bestDay && bestDay.profit > -Infinity && bestDay.count ? WEEKDAY_NAMES[bestDay.weekday] : '—', bestDay && bestDay.count ? formatBRL(bestDay.profit) : 'sem dados')}
+      `;
+    }
+
+    renderBookmakerChart(rows);
+    renderBookmakerHourChart(byHour);
+    renderBookmakerWeekdayChart(byWeekday);
+    renderBookmakerCombos(combos);
+
+    if (!rows.length) {
+      container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">&#127914;</div><div class="empty-state-text">Nenhuma operação no período</div><div class="empty-state-sub">Registre operações com casas para ver o ranking</div></div>`;
+      return;
+    }
+
+    container.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>#</th><th>Casa</th><th>Moeda</th><th style="text-align:right">Volume</th>
+          <th style="text-align:right">Nº ops</th><th style="text-align:right">Lucro</th><th style="text-align:right">ROI</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map((r, i) => {
+            const profit = Number(r.profit) || 0;
+            const roi = Number(r.roi_pct) || 0;
+            return `<tr>
+              <td style="color:var(--text-muted);font-weight:600">${i + 1}</td>
+              <td><span class="badge badge-arbitragem_br">${escapeHtml(r.name || '—')}</span></td>
+              <td>${r.currency === 'USD' ? 'US$' : 'R$'}</td>
+              <td style="text-align:right">${formatBRL(Number(r.volume) || 0)}</td>
+              <td style="text-align:right">${Number(r.op_count) || 0}</td>
+              <td style="text-align:right" class="${profitClass(profit)}">${formatBRL(profit)}</td>
+              <td style="text-align:right" class="${profitClass(roi)}">${roi.toFixed(1)}%</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <p style="font-size:11px;color:var(--text-muted);padding:10px 4px 0">
+        O lucro de cada operação é somado a todas as casas que participaram dela — a mesma op pode contar para mais de uma casa.
+      </p>
+    `;
+  } catch (err) {
+    container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderBookmakerChart(rows) {
+  const ctx = document.getElementById('bookmaker-chart');
+  if (!ctx) return;
+  if (charts.bookmakers) { charts.bookmakers.destroy(); charts.bookmakers = null; }
+  const top = rows.slice(0, 12);
+  const palette = ['#6c5ce7','#00c853','#26c6da','#ffa726','#ef5350','#ec407a','#29b6f6','#ab47bc','#66bb6a','#ff7043','#8d6e63','#78909c'];
+  charts.bookmakers = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: top.map(r => r.name || '—'),
+      datasets: [{
+        label: 'Volume (R$)',
+        data: top.map(r => Number(r.volume) || 0),
+        backgroundColor: top.map((_, i) => palette[i % palette.length]),
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b8fa3' }, grid: { display: false } },
+        y: { ticks: { color: '#8b8fa3', callback: v => 'R$ ' + v }, grid: { color: 'rgba(139,143,163,0.1)' } },
+      },
+    },
+  });
+}
+
+// Operations-by-hour bar chart (0–23h, registration time in BRT).
+function renderBookmakerHourChart(byHour) {
+  const ctx = document.getElementById('bookmaker-hour-chart');
+  if (!ctx) return;
+  if (charts.bmHour) { charts.bmHour.destroy(); charts.bmHour = null; }
+  charts.bmHour = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: byHour.map(h => String(h.hour).padStart(2, '0') + 'h'),
+      datasets: [{ label: 'Operações', data: byHour.map(h => Number(h.count) || 0), backgroundColor: '#6c5ce7', borderRadius: 4 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b8fa3', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: '#8b8fa3', precision: 0 }, grid: { color: 'rgba(139,143,163,0.1)' } },
+      },
+    },
+  });
+}
+
+// Operations-by-weekday chart: count bars colored by net profit sign.
+function renderBookmakerWeekdayChart(byWeekday) {
+  const ctx = document.getElementById('bookmaker-weekday-chart');
+  if (!ctx) return;
+  if (charts.bmWeekday) { charts.bmWeekday.destroy(); charts.bmWeekday = null; }
+  charts.bmWeekday = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: byWeekday.map(d => WEEKDAY_SHORT[d.weekday]),
+      datasets: [{
+        label: 'Operações',
+        data: byWeekday.map(d => Number(d.count) || 0),
+        backgroundColor: byWeekday.map(d => (Number(d.profit) || 0) >= 0 ? '#00c853' : '#ef5350'),
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { afterLabel: c => `Lucro: ${formatBRL(Number(byWeekday[c.dataIndex]?.profit) || 0)}` } },
+      },
+      scales: {
+        x: { ticks: { color: '#8b8fa3' }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: '#8b8fa3', precision: 0 }, grid: { color: 'rgba(139,143,163,0.1)' } },
+      },
+    },
+  });
+}
+
+// Most frequent house combinations (multi-house ops).
+function renderBookmakerCombos(combos) {
+  const el = document.getElementById('bookmaker-combos');
+  if (!el) return;
+  if (!combos.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:30px"><div class="empty-state-icon">&#128279;</div><div class="empty-state-text">Sem combinações no período</div><div class="empty-state-sub">Operações com 2+ casas aparecem aqui</div></div>`;
+    return;
+  }
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>#</th><th>Combinação</th><th style="text-align:right">Nº ops</th><th style="text-align:right">Lucro</th></tr></thead>
+      <tbody>
+        ${combos.map((c, i) => {
+          const profit = Number(c.profit) || 0;
+          return `<tr>
+            <td style="color:var(--text-muted);font-weight:600">${i + 1}</td>
+            <td>${escapeHtml(c.combo || '—')}</td>
+            <td style="text-align:right">${Number(c.count) || 0}</td>
+            <td style="text-align:right" class="${profitClass(profit)}">${formatBRL(profit)}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
 }
 
 // ===== FREEBETS =====
