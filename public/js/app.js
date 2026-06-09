@@ -118,9 +118,9 @@ function profitClass(val) {
 function typeLabel(type) {
   const labels = {
     aquecimento: 'Aquecimento',
-    arbitragem: 'Arbitragem',
+    arbitragem: 'Arbitragem Bet365 + Poly',
     aumentada25: 'Aumentada 25%',
-    arbitragem_br: 'Arbitragem BR',
+    arbitragem_br: 'Arbitragem',
     punter: 'Punter',
     tentativa_duplo: 'Tentativa de Duplo',
   };
@@ -931,8 +931,8 @@ async function renderNewOperation() {
         </div>
         <div class="type-option" data-type="arbitragem" onclick="selectType(this)">
           <div class="type-option-icon">&#128176;</div>
-          <div class="type-option-name">Arbitragem</div>
-          <div class="type-option-desc">Operação visando lucro</div>
+          <div class="type-option-name">Arbitragem Bet365 + Poly</div>
+          <div class="type-option-desc">Bet365 (R$) + Polymarket (USD)</div>
         </div>
         <div class="type-option" data-type="aumentada25" onclick="selectType(this)">
           <div class="type-option-icon">&#128640;</div>
@@ -940,9 +940,9 @@ async function renderNewOperation() {
           <div class="type-option-desc">Promoção de odds aumentadas</div>
         </div>
         <div class="type-option" data-type="arbitragem_br" onclick="selectType(this)">
-          <div class="type-option-icon">&#127463;&#127479;</div>
-          <div class="type-option-name">Arbitragem BR</div>
-          <div class="type-option-desc">Casas brasileiras variadas (só R$)</div>
+          <div class="type-option-icon">&#9878;</div>
+          <div class="type-option-name">Arbitragem</div>
+          <div class="type-option-desc">Várias casas (R$ ou US$)</div>
         </div>
         <div class="type-option" data-type="punter" onclick="selectType(this)">
           <div class="type-option-icon">&#127919;</div>
@@ -1620,6 +1620,9 @@ function brLegRowHtml(data = {}) {
   const stakeVal = data.stake_orig != null ? Number(data.stake_orig)
                  : (data.stake != null ? Number(data.stake) : null);
   const rateVal = data.rate != null && Number(data.rate) !== 1 ? Number(data.rate) : null;
+  // Early-payout checkbox only matters for "tentativa de duplo" — mark which leg
+  // has the bookmaker's early-payout (pagamento antecipado) feature in play.
+  const isDuplo = document.getElementById('new-type')?.value === 'tentativa_duplo';
   return `
     <div class="form-grid br-leg-row" style="align-items:end;padding:8px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">
       <div class="form-group">
@@ -1637,6 +1640,13 @@ function brLegRowHtml(data = {}) {
       <div class="form-group">
         <label class="form-label">Odd</label>
         <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input br-leg-odd" value="${data.odd != null ? formatOperationNumber(data.odd) : ''}" placeholder="0,00">
+      </div>
+      <div class="form-group br-leg-early-wrap" style="${isDuplo ? '' : 'display:none'}">
+        <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 8px" title="Esta ponta tem pagamento antecipado">
+          <input type="checkbox" class="br-leg-early" ${data.early_payout ? 'checked' : ''}>
+          <div class="account-check-dot"></div>
+          <div style="font-size:12px">Pag. antecipado</div>
+        </label>
       </div>
       <div class="form-group" style="text-align:right">
         <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.br-leg-row').remove()">Remover</button>
@@ -1661,7 +1671,8 @@ function readBrLegRow(row) {
   if (stakeOrig <= 0 && odd <= 0) return null;
   const rate = isUsd ? (parseFloat(row.querySelector('.br-leg-rate')?.value) || 0) : 1;
   const stakeBRL = stakeOrig * (rate || 1);
-  return {
+  const earlyBox = row.querySelector('.br-leg-early');
+  const leg = {
     bookmaker_id: bmId,
     bookmaker: bm ? bm.name : '',
     currency: bm ? bm.currency : 'BRL',
@@ -1670,6 +1681,8 @@ function readBrLegRow(row) {
     rate: isUsd ? rate : 1,
     odd,
   };
+  if (earlyBox && earlyBox.checked) leg.early_payout = true;
+  return leg;
 }
 function collectBrLegs() {
   const rows = document.querySelectorAll('#new-br-legs-list .br-leg-row');
@@ -1861,9 +1874,9 @@ async function renderHistory() {
       <select class="form-select" id="filter-type" onchange="loadHistory()">
         <option value="">Todos os tipos</option>
         <option value="aquecimento">Aquecimento</option>
-        <option value="arbitragem">Arbitragem</option>
+        <option value="arbitragem">Arbitragem Bet365 + Poly</option>
         <option value="aumentada25">Aumentada 25%</option>
-        <option value="arbitragem_br">Arbitragem BR</option>
+        <option value="arbitragem_br">Arbitragem</option>
         <option value="punter">Punter</option>
         <option value="tentativa_duplo">Tentativa de Duplo</option>
       </select>
@@ -2266,6 +2279,76 @@ async function duplicateOperation(id) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+// ===== EDIT MODAL — settlement (tentativa de duplo early payout) =====
+// Suggested duplo value = Σ stake×odd of the legs flagged with early payout.
+let _editDuploSuggestion = 0;
+
+function setupEditSettlement(op) {
+  const section = document.getElementById('edit-settlement-section');
+  const label = document.getElementById('edit-profit-label');
+  const isDuplo = op.type === 'tentativa_duplo';
+  if (section) section.style.display = isDuplo ? '' : 'none';
+  if (label) label.textContent = isDuplo ? 'Lucro base da arbitragem (R$)' : 'Lucro (R$)';
+  if (!isDuplo) return;
+
+  // Suggested green value from flagged legs (stake is BRL, odd is decimal).
+  _editDuploSuggestion = parseExtraBets(op)
+    .filter(l => l && l.early_payout)
+    .reduce((s, l) => s + (Number(l.stake) || 0) * (Number(l.odd) || 0), 0);
+
+  let outcome = 'none', adjustment = 0;
+  if (op.settlement) {
+    try {
+      const s = typeof op.settlement === 'string' ? JSON.parse(op.settlement) : op.settlement;
+      if (s && ['none', 'duplo', 'cashout'].includes(s.outcome)) outcome = s.outcome;
+      adjustment = Number(s && s.adjustment) || 0;
+    } catch {}
+  }
+  // profit stored = base + adjustment ⇒ base = profit − adjustment.
+  const base = (Number(op.profit) || 0) - (outcome === 'none' ? 0 : adjustment);
+  document.getElementById('edit-profit').value = formatOperationNumber(base);
+  document.getElementById('edit-settlement-outcome').value = outcome;
+  document.getElementById('edit-settlement-value').value = adjustment ? formatOperationNumber(adjustment) : '';
+  onSettlementOutcomeChange();
+}
+
+// Show/hide the value + "calcular" controls per outcome, and auto-suggest the
+// duplo value the first time the user picks "Duplo green".
+function onSettlementOutcomeChange() {
+  const outcome = document.getElementById('edit-settlement-outcome')?.value || 'none';
+  const valWrap = document.getElementById('edit-settlement-value-wrap');
+  const calcWrap = document.getElementById('edit-settlement-calc-wrap');
+  const valInput = document.getElementById('edit-settlement-value');
+  const show = outcome !== 'none';
+  if (valWrap) valWrap.style.display = show ? '' : 'none';
+  if (calcWrap) calcWrap.style.display = outcome === 'duplo' ? '' : 'none';
+  if (outcome === 'duplo' && valInput && !parseFloat(valInput.value) && _editDuploSuggestion > 0) {
+    valInput.value = formatOperationNumber(_editDuploSuggestion);
+  }
+  updateSettlementCalc();
+}
+
+function fillSettlementFromLegs() {
+  const valInput = document.getElementById('edit-settlement-value');
+  if (valInput) { valInput.value = formatOperationNumber(_editDuploSuggestion); updateSettlementCalc(); }
+}
+
+// Live "lucro final = base + ajuste" readout under the settlement controls.
+function updateSettlementCalc() {
+  const section = document.getElementById('edit-settlement-section');
+  if (!section || section.style.display === 'none') return;
+  const outcome = document.getElementById('edit-settlement-outcome')?.value || 'none';
+  const base = parseFloat(document.getElementById('edit-profit')?.value) || 0;
+  const adj = outcome === 'none' ? 0 : (parseFloat(document.getElementById('edit-settlement-value')?.value) || 0);
+  const final = base + adj;
+  const out = document.getElementById('edit-settlement-final');
+  if (out) {
+    out.innerHTML = outcome === 'none'
+      ? `Lucro final: <strong>${formatBRL(final)}</strong>`
+      : `Lucro final: base ${formatBRL(base)} + antecipado ${formatBRL(adj)} = <strong class="${profitClass(final)}">${formatBRL(final)}</strong>`;
+  }
+}
+
 // ===== EDIT MODAL =====
 async function openEditModal(id) {
   try {
@@ -2361,6 +2444,10 @@ function fillEditModal(op) {
       if (opt.dataset.for === 'br' || opt.dataset.for === 'single') opt.hidden = !isSingleLegStyle;
     }
   }
+
+  // Settlement (early payout) — tentativa_duplo only. The profit field becomes the
+  // arb's BASE result; the final profit = base + adjustment is computed on save.
+  setupEditSettlement(op);
 
   // Reset auto-profit info
   const autoProfitInfo = document.getElementById('edit-auto-profit-info');
@@ -2490,7 +2577,7 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   }
 
   const editType = document.getElementById('edit-type')?.value;
-  const isEditBR = editType === 'arbitragem_br';
+  const isEditBR = isBrLegsType(editType);
   const isEditPunter = editType === 'punter';
   const isEditStandard = !isEditBR && !isEditPunter;
   const body = {
@@ -2514,7 +2601,15 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   if (editType === 'aumentada25') {
     body.extra_bets = collectExtraBets('edit-extra-bets-list');
   }
-  if (isEditPunter) body.account_ids = [];
+  // Tentativa de duplo: final profit = arb base + early-payout adjustment.
+  if (editType === 'tentativa_duplo') {
+    const outcome = document.getElementById('edit-settlement-outcome')?.value || 'none';
+    const base = parseFloat(document.getElementById('edit-profit').value) || 0;
+    const adj = outcome === 'none' ? 0 : (parseFloat(document.getElementById('edit-settlement-value')?.value) || 0);
+    body.profit = base + adj;
+    body.settlement = { outcome, adjustment: adj };
+  }
+  if (isEditPunter || isEditBR) body.account_ids = [];
   else if (account_stakes) body.account_stakes = account_stakes;
   else body.account_ids = account_ids;
 

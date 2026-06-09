@@ -214,9 +214,33 @@ async function renderAdminAudit() {
   }
 }
 
+// Background poll cadence. Raised from 30s to 2min and paused while the tab is
+// hidden — friends leaving tabs open in the background was the dominant source
+// of Vercel function invocations / edge requests.
+const BG_POLL_INTERVAL_MS = 120000;
+let _bgVisibilityHooked = false;
+
 function startBgPolling() {
   if (bgWatcherTimer) clearInterval(bgWatcherTimer);
-  bgWatcherTimer = setInterval(bgPoll, 30000);
+  // Only run the timer when the tab is actually visible.
+  if (document.visibilityState === 'visible') {
+    bgWatcherTimer = setInterval(bgPoll, BG_POLL_INTERVAL_MS);
+  }
+  // Wire the visibility listener once: pause when hidden, and on return do an
+  // immediate catch-up poll then resume the timer.
+  if (!_bgVisibilityHooked) {
+    _bgVisibilityHooked = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        if (typeof currentUser !== 'undefined' && currentUser) {
+          bgPoll();
+          startBgPolling();
+        }
+      } else {
+        stopBgPolling();
+      }
+    });
+  }
 }
 
 function stopBgPolling() {

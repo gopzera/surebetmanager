@@ -164,9 +164,9 @@
             <label class="form-label">Tipo</label>
             <select class="form-select" id="edit-type">
               <option value="aquecimento">Aquecimento/Clube</option>
-              <option value="arbitragem">Arbitragem</option>
+              <option value="arbitragem">Arbitragem Bet365 + Poly</option>
               <option value="aumentada25">Aumentada 25%</option>
-              <option value="arbitragem_br">Arbitragem BR</option>
+              <option value="arbitragem_br">Arbitragem</option>
               <option value="punter">Punter</option>
               <option value="tentativa_duplo">Tentativa de Duplo</option>
             </select>
@@ -230,11 +230,32 @@
             <input type="number" step="0.0000000001" class="form-input" id="edit-exchange-rate">
           </div>
           <div class="form-group">
-            <label class="form-label">Lucro (R$)</label>
-            <input type="number" step="0.0000000001" class="form-input" id="edit-profit">
+            <label class="form-label" id="edit-profit-label">Lucro (R$)</label>
+            <input type="number" step="0.0000000001" class="form-input" id="edit-profit" oninput="updateSettlementCalc()">
           </div>
           <div class="form-group full">
             <div id="edit-auto-profit-info" style="display:none;font-size:12px;margin-bottom:4px"></div>
+          </div>
+          <div class="form-group full" id="edit-settlement-section" style="display:none">
+            <label class="form-label">Pagamento antecipado</label>
+            <div class="form-grid" style="align-items:end">
+              <div class="form-group">
+                <label class="form-label" style="font-size:12px">Desfecho do jogo</label>
+                <select class="form-select" id="edit-settlement-outcome" onchange="onSettlementOutcomeChange()">
+                  <option value="none">Não houve antecipado</option>
+                  <option value="duplo">Duplo green</option>
+                  <option value="cashout">Cashout antecipado</option>
+                </select>
+              </div>
+              <div class="form-group" id="edit-settlement-value-wrap" style="display:none">
+                <label class="form-label" style="font-size:12px">Valor do antecipado (R$)</label>
+                <input type="number" step="0.0000000001" class="form-input" id="edit-settlement-value" oninput="updateSettlementCalc()">
+              </div>
+              <div class="form-group" id="edit-settlement-calc-wrap" style="display:none">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="fillSettlementFromLegs()" style="margin-top:22px" title="Soma stake × odd das pontas marcadas com pagamento antecipado">Calcular dos greens</button>
+              </div>
+            </div>
+            <div id="edit-settlement-final" style="font-size:13px;margin-top:6px;color:var(--text-muted)"></div>
           </div>
           <div class="form-group full edit-br-field" id="edit-br-legs-wrap" style="display:none">
             <label class="form-label">Apostas registradas</label>
