@@ -31,7 +31,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS operations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('aquecimento', 'arbitragem', 'aumentada25', 'arbitragem_br', 'punter')),
+    type TEXT NOT NULL CHECK(type IN ('aquecimento', 'arbitragem', 'aumentada25', 'arbitragem_br', 'punter', 'tentativa_duplo')),
     game TEXT NOT NULL,
     event_date DATE,
     stake_bet365 REAL NOT NULL DEFAULT 0,
@@ -120,6 +120,19 @@ const SCHEMA = `
     UNIQUE(operation_id, tag)
   );
 
+  CREATE TABLE IF NOT EXISTS bookmakers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'BRL' CHECK(currency IN ('BRL','USD')),
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(user_id, name)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_operations_user ON operations(user_id);
   CREATE INDEX IF NOT EXISTS idx_operations_date ON operations(created_at);
   CREATE INDEX IF NOT EXISTS idx_operations_type ON operations(type);
@@ -128,6 +141,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_op_accounts_op ON operation_accounts(operation_id);
   CREATE INDEX IF NOT EXISTS idx_op_accounts_acc ON operation_accounts(account_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
+  CREATE INDEX IF NOT EXISTS idx_bookmakers_user ON bookmakers(user_id);
   CREATE INDEX IF NOT EXISTS idx_freebets_user ON freebets(user_id);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_id);
   CREATE INDEX IF NOT EXISTS idx_wallet_positions_wallet ON wallet_positions(wallet_id);

@@ -5,6 +5,7 @@ let charts = {};
 let userAccounts = []; // cached accounts
 let googleSheetsImportPayload = null;
 let googleSheetsImportPreview = null;
+let userBookmakers = []; // cached bookmakers (houses)
 
 // ===== API HELPERS =====
 function readCookie(name) {
@@ -121,8 +122,20 @@ function typeLabel(type) {
     aumentada25: 'Aumentada 25%',
     arbitragem_br: 'Arbitragem BR',
     punter: 'Punter',
+    tentativa_duplo: 'Tentativa de Duplo',
   };
   return labels[type] || type;
+}
+
+// Types whose legs all live in extra_bets (free-text bookmaker + R$ stake + odd),
+// with the bet365/poly columns and account tracking unused. Tentativa de duplo
+// reuses the BR shape: a 0-profit double bet that pays big on an early payout.
+function isBrLegsType(type) {
+  return type === 'arbitragem_br' || type === 'tentativa_duplo';
+}
+// BR-legs types plus punter all render single-leg-style (extra_bets + won/lost).
+function isSingleLegStyleType(type) {
+  return isBrLegsType(type) || type === 'punter';
 }
 
 function resultLabel(result) {
@@ -150,6 +163,15 @@ function brLegsSummary(op) {
   const totalStake = legs.reduce((s, l) => s + (Number(l.stake) || 0), 0);
   const bookmakers = legs.map(l => (l.bookmaker || '').trim()).filter(Boolean);
   return { legs, totalStake, bookmakers };
+}
+
+// Display a leg's stake: USD houses show the entered US$ amount and its BRL
+// equivalent; everything else is plain BRL. stake is always stored in BRL.
+function legStakeDisplay(l) {
+  if (l && l.currency === 'USD' && l.stake_orig != null) {
+    return `US$ ${Number(l.stake_orig).toFixed(2)} → ${formatBRL(Number(l.stake) || 0)}`;
+  }
+  return formatBRL(Number(l && l.stake) || 0);
 }
 
 function formatDate(d) {
@@ -251,6 +273,17 @@ async function loadAccounts() {
   try {
     userAccounts = await api('/api/accounts');
   } catch { userAccounts = []; }
+}
+
+async function loadBookmakers() {
+  try {
+    userBookmakers = await api('/api/bookmakers');
+  } catch { userBookmakers = []; }
+}
+
+// Lookup a cached bookmaker by id (number or string).
+function findBookmaker(id) {
+  return userBookmakers.find(b => b.id === Number(id)) || null;
 }
 
 // ===== LIVE EXCHANGE RATE =====
@@ -802,7 +835,7 @@ function renderProfitChart(dailyProfits) {
 function renderTypeChart(profitByType) {
   const ctx = document.getElementById('type-chart');
   if (!ctx) return;
-  const typeColors = { aquecimento: '#ffa726', arbitragem: '#00c853', aumentada25: '#6c5ce7', arbitragem_br: '#26c6da' };
+  const typeColors = { aquecimento: '#ffa726', arbitragem: '#00c853', aumentada25: '#6c5ce7', arbitragem_br: '#26c6da', punter: '#ef5350', tentativa_duplo: '#ec407a' };
   if (!profitByType.length) {
     charts.type = new Chart(ctx, {
       type: 'doughnut',
@@ -841,9 +874,9 @@ function renderRecentTable(ops) {
       </tr></thead>
       <tbody>
         ${ops.map(op => {
-          // Both arbitragem_br and punter store legs in extra_bets and zero out
-          // the bet365/poly columns. brLegsSummary works generically for both.
-          const isSingleLegStyle = op.type === 'arbitragem_br' || op.type === 'punter';
+          // BR / tentativa_duplo / punter store legs in extra_bets and zero out
+          // the bet365/poly columns. brLegsSummary works generically for them.
+          const isSingleLegStyle = isSingleLegStyleType(op.type);
           const br = isSingleLegStyle ? brLegsSummary(op) : null;
           return `<tr>
           <td>${formatDate(op.created_at)}</td>
@@ -870,7 +903,7 @@ function localDateStr(d) {
 }
 
 async function renderNewOperation() {
-  await loadAccounts();
+  await Promise.all([loadAccounts(), loadBookmakers()]);
   const today = localDateStr();
   const activeAccounts = userAccounts.filter(a => a.active);
 
@@ -914,6 +947,11 @@ async function renderNewOperation() {
           <div class="type-option-icon">&#127919;</div>
           <div class="type-option-name">Punter</div>
           <div class="type-option-desc">Aposta single-leg (sem proteção)</div>
+        </div>
+        <div class="type-option" data-type="tentativa_duplo" onclick="selectType(this)">
+          <div class="type-option-icon">&#127922;</div>
+          <div class="type-option-name">Tentativa de Duplo</div>
+          <div class="type-option-desc">0 lucro, paga em dobro com pagamento antecipado</div>
         </div>
       </div>
       <input type="hidden" id="new-type">
@@ -1032,7 +1070,7 @@ async function renderNewOperation() {
       </div>
 
       <div id="new-br-legs-section" style="display:none">
-        <h3 class="chart-title" style="margin:24px 0 12px">Apostas (R$)
+        <h3 class="chart-title" style="margin:24px 0 12px">Apostas
           <span style="font-size:12px;font-weight:400;color:var(--text-muted)">uma linha por casa de aposta</span>
         </h3>
         <div id="new-br-legs-list"></div>
@@ -1046,18 +1084,22 @@ async function renderNewOperation() {
         <div class="form-grid">
           <div class="form-group">
             <label class="form-label">Casa de aposta</label>
-            <input type="text" class="form-input" id="new-punter-bookmaker" placeholder="Ex: Bet365, Pinnacle, Polymarket...">
+            <select class="form-input punter-bookmaker-id" id="new-punter-bookmaker" onchange="onPunterBookmakerChange(this)"></select>
           </div>
           <div class="form-group">
-            <label class="form-label">Stake (R$)</label>
+            <label class="form-label" id="new-punter-stake-label">Stake (R$)</label>
             <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input" id="new-punter-stake" placeholder="0,00">
+          </div>
+          <div class="form-group" id="new-punter-rate-wrap" style="display:none">
+            <label class="form-label">Cotação USD/BRL</label>
+            <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input" id="new-punter-rate" placeholder="0,0000">
           </div>
           <div class="form-group">
             <label class="form-label">Odd</label>
             <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input" id="new-punter-odd" placeholder="0,00">
           </div>
           <div class="form-group">
-            <label class="form-label">Retorno potencial (R$)</label>
+            <label class="form-label" id="new-punter-return-label">Retorno potencial (R$)</label>
             <input type="text" class="form-input" id="new-punter-return" readonly style="opacity:0.7">
           </div>
         </div>
@@ -1145,18 +1187,25 @@ async function renderNewOperation() {
     cb.addEventListener('change', updateStakePerAccount);
   });
 
-  // Punter: live "potential return" preview as the user types stake/odd.
+  // Populate the punter house picker from the cached bookmakers.
+  const punterBmSel = document.getElementById('new-punter-bookmaker');
+  if (punterBmSel) punterBmSel.innerHTML = bookmakerOptions('');
+
+  // Punter: live "potential return" preview as the user types stake/odd. Stake is
+  // in the house currency; the return is always shown in BRL (converted for USD).
   const punterStake = document.getElementById('new-punter-stake');
   const punterOdd   = document.getElementById('new-punter-odd');
   const punterRet   = document.getElementById('new-punter-return');
+  const punterRate  = document.getElementById('new-punter-rate');
   function updatePunterReturn() {
     if (!punterRet) return;
-    const s = parseFloat(punterStake?.value) || 0;
-    const o = parseFloat(punterOdd?.value)   || 0;
-    punterRet.value = (s > 0 && o > 1) ? formatBRL(s * o) : '';
+    const sBRL = punterStakeBRL();
+    const o = parseFloat(punterOdd?.value) || 0;
+    punterRet.value = (sBRL > 0 && o > 1) ? formatBRL(sBRL * o) : '';
   }
   punterStake?.addEventListener('input', updatePunterReturn);
   punterOdd?.addEventListener('input', updatePunterReturn);
+  punterRate?.addEventListener('input', updatePunterReturn);
 
   // Auto-profit calculation when result changes
   const resultSelect = document.getElementById('new-result');
@@ -1175,7 +1224,7 @@ async function renderNewOperation() {
     // Punter (single-leg): profit is purely stake/odd-driven. won = stake×(odd-1),
     // lost = -stake, void = 0. Auto-fill so the user doesn't have to do mental math.
     if (type === 'punter') {
-      const stake = parseFloat(punterStake?.value) || 0;
+      const stake = punterStakeBRL();
       const odd   = parseFloat(punterOdd?.value)   || 0;
       let p = null;
       if (result === 'won' && stake > 0 && odd > 1) p = stake * (odd - 1);
@@ -1192,8 +1241,8 @@ async function renderNewOperation() {
       }
       return;
     }
-    // BR arbitrage uses arbitrary leg combinations — leave profit to manual entry.
-    if (type === 'arbitragem_br') {
+    // BR / tentativa_duplo use arbitrary leg combinations — leave profit manual.
+    if (isBrLegsType(type)) {
       autoProfitInfo.style.display = 'none';
       return;
     }
@@ -1215,7 +1264,7 @@ async function renderNewOperation() {
   resultSelect?.addEventListener('change', updateAutoProfit);
   // Recalculate when stakes/odds change if result is not pending
   [stakeBet365Input, oddBet365Input, polyUsdInput, oddPolyInput, rateInput,
-   punterStake, punterOdd].forEach(el => {
+   punterStake, punterOdd, punterRate].forEach(el => {
     el?.addEventListener('input', () => {
       if (resultSelect?.value !== 'pending') updateAutoProfit();
       updatePolyBRL();
@@ -1257,7 +1306,7 @@ async function renderNewOperation() {
       if (box && ids.length) box.innerHTML = freebetAccountCheckboxes(ids);
     }
     if (imp.extraBets && imp.extraBets.length) {
-      if (imp.type === 'arbitragem_br') {
+      if (isBrLegsType(imp.type)) {
         const list = document.getElementById('new-br-legs-list');
         if (list) {
           list.innerHTML = '';
@@ -1328,7 +1377,7 @@ function selectType(el) {
   el.classList.add('selected');
   const t = el.dataset.type;
   document.getElementById('new-type').value = t;
-  const isBR = t === 'arbitragem_br';
+  const isBR = isBrLegsType(t);
   const isPunter = t === 'punter';
   const isStandard = !isBR && !isPunter; // bet365 + poly two-leg shape
 
@@ -1464,18 +1513,125 @@ function toggleMainFreebetAccount(prefix) {
   if (wrap) wrap.style.display = cb?.checked ? '' : 'none';
 }
 
-// BR arbitrage legs: free-text bookmaker name, BRL stake, odd. All legs live in
-// extra_bets for this type; stake_bet365/odd_bet365/poly columns stay at 0.
+// ===== BOOKMAKER (house) PICKER =====
+// <option> list for a house <select>, plus the inline "+ Nova casa…" sentinel.
+function bookmakerOptions(selectedId) {
+  const sel = Number(selectedId);
+  const opts = userBookmakers.map(b =>
+    `<option value="${b.id}" data-currency="${b.currency}" ${b.id === sel ? 'selected' : ''}>${escapeHtml(b.name)}${b.currency === 'USD' ? ' (US$)' : ''}</option>`
+  ).join('');
+  return `<option value="">— casa —</option>${opts}<option value="__new__">+ Nova casa…</option>`;
+}
+
+// Resolve a leg's stored house to a select value: prefer bookmaker_id, fall back
+// to matching a legacy free-text name against the current registry.
+function resolveBookmakerId(data) {
+  if (data.bookmaker_id) return data.bookmaker_id;
+  if (data.bookmaker) { const m = userBookmakers.find(b => b.name === data.bookmaker); if (m) return m.id; }
+  return '';
+}
+
+// Rebuild every house <select> on the page, preserving each current selection
+// (so a house created mid-registration appears everywhere immediately).
+function refreshBookmakerSelects() {
+  document.querySelectorAll('select.br-leg-bookmaker-id, select.punter-bookmaker-id').forEach(s => {
+    const cur = s.value && s.value !== '__new__' ? s.value : '';
+    s.innerHTML = bookmakerOptions(cur);
+  });
+}
+
+// Prompt-create a house without leaving the registration flow.
+async function createBookmakerInline(sel) {
+  const name = prompt('Nome da nova casa:');
+  if (name === null || !name.trim()) return;
+  const cur = confirm('Essa casa opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)') ? 'USD' : 'BRL';
+  try {
+    const r = await api('/api/bookmakers', { method: 'POST', body: { name: name.trim(), currency: cur } });
+    await loadBookmakers();
+    refreshBookmakerSelects();
+    if (sel) { sel.value = String(r.id); await onBrLegBookmakerChange(sel); }
+    toast('Casa criada!');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// React to a BR leg's house change: USD houses reveal a rate field (prefilled
+// live) and relabel the stake as US$.
+async function onBrLegBookmakerChange(sel) {
+  if (sel.value === '__new__') { sel.value = ''; await createBookmakerInline(sel); return; }
+  const row = sel.closest('.br-leg-row'); if (!row) return;
+  const isUsd = sel.selectedOptions[0]?.dataset.currency === 'USD';
+  const rateWrap = row.querySelector('.br-leg-rate-wrap');
+  const rateInput = row.querySelector('.br-leg-rate');
+  const stakeLabel = row.querySelector('.br-leg-stake-label');
+  if (rateWrap) rateWrap.style.display = isUsd ? '' : 'none';
+  if (stakeLabel) stakeLabel.textContent = isUsd ? 'Stake (US$)' : 'Stake (R$)';
+  if (isUsd && rateInput && !rateInput.value) {
+    const r = liveRate || await fetchLiveRate();
+    if (r) rateInput.value = Number(r).toFixed(4);
+  }
+}
+
+// Punter house change — same currency handling against the single punter row.
+async function onPunterBookmakerChange(sel) {
+  if (sel.value === '__new__') {
+    sel.value = '';
+    const name = prompt('Nome da nova casa:');
+    if (name === null || !name.trim()) return;
+    const cur = confirm('Essa casa opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)') ? 'USD' : 'BRL';
+    try {
+      const r = await api('/api/bookmakers', { method: 'POST', body: { name: name.trim(), currency: cur } });
+      await loadBookmakers();
+      refreshBookmakerSelects();
+      sel.value = String(r.id);
+      toast('Casa criada!');
+    } catch (err) { toast(err.message, 'error'); return; }
+  }
+  const isUsd = sel.selectedOptions[0]?.dataset.currency === 'USD';
+  const rateWrap = document.getElementById('new-punter-rate-wrap');
+  const rateInput = document.getElementById('new-punter-rate');
+  const stakeLabel = document.getElementById('new-punter-stake-label');
+  if (rateWrap) rateWrap.style.display = isUsd ? '' : 'none';
+  if (stakeLabel) stakeLabel.textContent = isUsd ? 'Stake (US$)' : 'Stake (R$)';
+  if (isUsd && rateInput && !rateInput.value) {
+    const r = liveRate || await fetchLiveRate();
+    if (r) rateInput.value = Number(r).toFixed(4);
+  }
+  const ret = document.getElementById('new-punter-return');
+  if (ret) { const o = parseFloat(document.getElementById('new-punter-odd')?.value) || 0; const sBRL = punterStakeBRL(); ret.value = (sBRL > 0 && o > 1) ? formatBRL(sBRL * o) : ''; }
+}
+
+// Punter stake converted to BRL (×rate for USD houses, ×1 otherwise).
+function punterStakeBRL() {
+  const sel = document.getElementById('new-punter-bookmaker');
+  const isUsd = sel?.selectedOptions[0]?.dataset.currency === 'USD';
+  const s = parseFloat(document.getElementById('new-punter-stake')?.value) || 0;
+  const rate = isUsd ? (parseFloat(document.getElementById('new-punter-rate')?.value) || 0) : 1;
+  return s * rate;
+}
+
+// BR arbitrage / tentativa_duplo legs: a house (from the registry), stake, odd.
+// All legs live in extra_bets; stake is stored in BRL (stake_orig keeps the
+// entered value and rate the USD→BRL conversion). bet365/poly columns stay 0.
 function brLegRowHtml(data = {}) {
+  const selId = resolveBookmakerId(data);
+  const bm = findBookmaker(selId);
+  const isUsd = (bm ? bm.currency : data.currency) === 'USD';
+  const stakeVal = data.stake_orig != null ? Number(data.stake_orig)
+                 : (data.stake != null ? Number(data.stake) : null);
+  const rateVal = data.rate != null && Number(data.rate) !== 1 ? Number(data.rate) : null;
   return `
     <div class="form-grid br-leg-row" style="align-items:end;padding:8px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">
       <div class="form-group">
         <label class="form-label">Casa</label>
-        <input type="text" class="form-input br-leg-bookmaker" value="${data.bookmaker ? escapeHtml(data.bookmaker) : ''}" placeholder="Ex: Superbet, KTO...">
+        <select class="form-input br-leg-bookmaker-id" onchange="onBrLegBookmakerChange(this)">${bookmakerOptions(selId)}</select>
       </div>
       <div class="form-group">
-        <label class="form-label">Stake (R$)</label>
-        <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input br-leg-stake" value="${data.stake != null ? formatOperationNumber(data.stake) : ''}" placeholder="0,00">
+        <label class="form-label br-leg-stake-label">Stake (${isUsd ? 'US$' : 'R$'})</label>
+        <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input br-leg-stake" value="${stakeVal != null ? formatOperationNumber(stakeVal) : ''}" placeholder="0,00">
+      </div>
+      <div class="form-group br-leg-rate-wrap" style="${isUsd ? '' : 'display:none'}">
+        <label class="form-label">Cotação</label>
+        <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input br-leg-rate" value="${rateVal != null ? formatOperationNumber(rateVal) : ''}" placeholder="0,0000">
       </div>
       <div class="form-group">
         <label class="form-label">Odd</label>
@@ -1492,15 +1648,32 @@ function addBrLeg(data) {
   if (!list) return;
   list.insertAdjacentHTML('beforeend', brLegRowHtml(data));
 }
+// Build a structured leg from a row: resolve the house (id + name snapshot +
+// currency), convert the entered stake to BRL. Returns null for empty rows.
+function readBrLegRow(row) {
+  const sel = row.querySelector('.br-leg-bookmaker-id');
+  const bmId = sel && sel.value && sel.value !== '__new__' ? Number(sel.value) : null;
+  const bm = bmId ? findBookmaker(bmId) : null;
+  const isUsd = bm?.currency === 'USD';
+  const stakeOrig = parseFloat(row.querySelector('.br-leg-stake')?.value) || 0;
+  const odd = parseFloat(row.querySelector('.br-leg-odd')?.value) || 0;
+  if (stakeOrig <= 0 && odd <= 0) return null;
+  const rate = isUsd ? (parseFloat(row.querySelector('.br-leg-rate')?.value) || 0) : 1;
+  const stakeBRL = stakeOrig * (rate || 1);
+  return {
+    bookmaker_id: bmId,
+    bookmaker: bm ? bm.name : '',
+    currency: bm ? bm.currency : 'BRL',
+    stake: stakeBRL,
+    stake_orig: stakeOrig,
+    rate: isUsd ? rate : 1,
+    odd,
+  };
+}
 function collectBrLegs() {
   const rows = document.querySelectorAll('#new-br-legs-list .br-leg-row');
   const out = [];
-  for (const row of rows) {
-    const bookmaker = (row.querySelector('.br-leg-bookmaker')?.value || '').trim();
-    const stake = parseFloat(row.querySelector('.br-leg-stake')?.value) || 0;
-    const odd = parseFloat(row.querySelector('.br-leg-odd')?.value) || 0;
-    if (stake > 0 || odd > 0) out.push({ bookmaker, stake, odd });
-  }
+  for (const row of rows) { const leg = readBrLegRow(row); if (leg) out.push(leg); }
   return out;
 }
 
@@ -1528,7 +1701,7 @@ async function submitNewOperation(e) {
     totalStakeBet365 = sum;
   }
 
-  const isBR = type === 'arbitragem_br';
+  const isBR = isBrLegsType(type);
   const isPunter = type === 'punter';
   const isStandard = !isBR && !isPunter;
   const body = {
@@ -1555,15 +1728,24 @@ async function submitNewOperation(e) {
     if (legs.length < 2) { toast('Registre pelo menos 2 apostas', 'error'); return; }
     body.extra_bets = legs;
   } else if (isPunter) {
-    // Punter is a single-leg bet. Reuse the BR shape (extra_bets with one entry)
-    // so the rest of the system (history display, profit calc) can treat it
-    // generically — bookmaker as free-text, no account tracking, no FX.
-    const stake = parseFloat(document.getElementById('new-punter-stake').value) || 0;
+    // Punter is a single-leg bet. Reuse the BR leg shape (extra_bets with one
+    // entry) so the rest of the system treats it generically. House comes from
+    // the registry; stake is stored in BRL (converted for USD houses).
+    const bmSel = document.getElementById('new-punter-bookmaker');
+    const bmId = bmSel && bmSel.value && bmSel.value !== '__new__' ? Number(bmSel.value) : null;
+    const bm = bmId ? findBookmaker(bmId) : null;
+    const isUsd = bm?.currency === 'USD';
+    const stakeOrig = parseFloat(document.getElementById('new-punter-stake').value) || 0;
     const odd   = parseFloat(document.getElementById('new-punter-odd').value)   || 0;
-    const bookmaker = document.getElementById('new-punter-bookmaker').value.trim();
-    if (!(stake > 0)) { toast('Informe o stake', 'error'); return; }
+    if (!bm) { toast('Selecione a casa de aposta', 'error'); return; }
+    if (!(stakeOrig > 0)) { toast('Informe o stake', 'error'); return; }
     if (!(odd > 1)) { toast('Odd inválida', 'error'); return; }
-    body.extra_bets = [{ stake, odd, bookmaker }];
+    const rate = isUsd ? (parseFloat(document.getElementById('new-punter-rate').value) || 0) : 1;
+    if (isUsd && !(rate > 0)) { toast('Informe a cotação USD/BRL', 'error'); return; }
+    body.extra_bets = [{
+      bookmaker_id: bmId, bookmaker: bm.name, currency: bm.currency,
+      stake: stakeOrig * rate, stake_orig: stakeOrig, rate, odd,
+    }];
   }
   if (isPunter) {
     body.account_ids = [];
@@ -1681,6 +1863,8 @@ async function renderHistory() {
         <option value="arbitragem">Arbitragem</option>
         <option value="aumentada25">Aumentada 25%</option>
         <option value="arbitragem_br">Arbitragem BR</option>
+        <option value="punter">Punter</option>
+        <option value="tentativa_duplo">Tentativa de Duplo</option>
       </select>
       <select class="form-select" id="filter-tag" onchange="loadHistory()">
         <option value="">Todas tags</option>
@@ -1835,7 +2019,7 @@ function renderHistoryTable(ops) {
       </tr></thead>
       <tbody>
         ${ops.map(op => {
-          const isSingleLegStyle = op.type === 'arbitragem_br' || op.type === 'punter';
+          const isSingleLegStyle = isSingleLegStyleType(op.type);
           const br = isSingleLegStyle ? brLegsSummary(op) : null;
           return `<tr>
           <td>${formatDate(op.created_at)}</td>
@@ -2095,7 +2279,7 @@ async function openEditModal(id) {
 }
 
 function fillEditModal(op) {
-  const isBR = op.type === 'arbitragem_br';
+  const isBR = isBrLegsType(op.type);
   const isPunter = op.type === 'punter';
   const isSingleLegStyle = isBR || isPunter;
   document.getElementById('edit-id').value = op.id;
@@ -2161,7 +2345,7 @@ function fillEditModal(op) {
         ? legs.map(l => `
           <div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--border)">
             <span>${escapeHtml(l.bookmaker || '—')}</span>
-            <span>${formatBRL(l.stake)} @ ${Number(l.odd || 0).toFixed(2)}</span>
+            <span>${legStakeDisplay(l)} @ ${Number(l.odd || 0).toFixed(2)}</span>
           </div>
         `).join('') + `<div style="display:flex;justify-content:space-between;padding-top:6px;font-weight:600"><span>Total</span><span>${formatBRL(totalStake)}</span></div>`
         : '<span>Sem apostas registradas.</span>';
@@ -2575,11 +2759,56 @@ async function renderSettings() {
         </form>
       </div>
     </div>
+
+    <!-- Casas (bookmakers) -->
+    <div class="chart-container" style="margin-top:20px">
+      <h3 class="chart-title" style="margin-bottom:4px">Casas de aposta</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px">
+        Cadastre as casas usadas nas operações (Betano, Superbet, Duel…). Aparecem no seletor ao registrar e permitem analisar volume/lucro por casa. Casas em US$ pedem a cotação na hora.
+      </p>
+
+      <div id="bookmakers-list-settings"></div>
+
+      <div style="border-top:1px solid var(--border);padding-top:20px;margin-top:12px">
+        <h4 style="font-size:14px;font-weight:600;margin-bottom:16px">Adicionar Nova Casa</h4>
+        <form id="add-bookmaker-form" class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Nome da Casa</label>
+            <input type="text" class="form-input" id="bm-name" placeholder="Ex: Betano, Superbet, Duel" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Moeda</label>
+            <select class="form-input" id="bm-currency">
+              <option value="BRL">Real (R$)</option>
+              <option value="USD">Dólar (US$)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <button type="submit" class="btn btn-primary" style="margin-top:22px">Adicionar Casa</button>
+          </div>
+        </form>
+      </div>
+    </div>
   `;
 
   renderAccountsList();
+  loadBookmakers().then(renderBookmakersList);
   loadTagRules();
   loadAlertConfigs();
+
+  document.getElementById('add-bookmaker-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('bm-name').value.trim();
+    const currency = document.getElementById('bm-currency').value;
+    try {
+      await api('/api/bookmakers', { method: 'POST', body: { name, currency } });
+      toast('Casa adicionada!');
+      document.getElementById('bm-name').value = '';
+      document.getElementById('bm-currency').value = 'BRL';
+      await loadBookmakers();
+      renderBookmakersList();
+    } catch (err) { toast(err.message, 'error'); }
+  });
 
   document.getElementById('add-account-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -2977,6 +3206,80 @@ async function deleteAccount(id) {
     toast('Conta removida');
     await loadAccounts();
     renderAccountsList();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ===== BOOKMAKERS (houses) management =====
+function renderBookmakersList() {
+  const container = document.getElementById('bookmakers-list-settings');
+  if (!container) return;
+  if (!userBookmakers.length) {
+    container.innerHTML = `<div class="empty-state" style="padding:30px">
+      <div class="empty-state-icon">&#127914;</div>
+      <div class="empty-state-text">Nenhuma casa cadastrada</div>
+      <div class="empty-state-sub">Adicione sua primeira casa abaixo</div>
+    </div>`;
+    return;
+  }
+  container.innerHTML = userBookmakers.map(bm => `
+    <div class="account-card ${bm.active ? '' : 'inactive'}" id="bm-card-${bm.id}">
+      <div class="account-card-left">
+        <div class="account-card-icon">${escapeHtml(bm.name.charAt(0).toUpperCase())}</div>
+        <div>
+          <div class="account-card-name">
+            ${escapeHtml(bm.name)}
+            ${bm.is_builtin ? '<span style="color:var(--text-muted);font-size:11px;margin-left:6px">(PADRÃO)</span>' : ''}
+            ${!bm.active ? '<span style="color:var(--danger);font-size:11px;margin-left:6px">(INATIVA)</span>' : ''}
+          </div>
+          <div class="account-card-meta">Moeda: <strong>${bm.currency === 'USD' ? 'Dólar (US$)' : 'Real (R$)'}</strong></div>
+        </div>
+      </div>
+      <div class="account-card-actions">
+        ${bm.is_builtin ? '' : `<button class="btn btn-ghost btn-sm" onclick="editBookmaker(${bm.id})">Editar</button>`}
+        ${bm.is_builtin ? '' : (bm.active
+          ? `<button class="btn btn-ghost btn-sm" style="color:var(--warning, #ffa726)" onclick="toggleBookmakerActive(${bm.id}, false)">Desativar</button>`
+          : `<button class="btn btn-ghost btn-sm" onclick="toggleBookmakerActive(${bm.id}, true)">Reativar</button>`)}
+        ${bm.is_builtin ? '' : `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteBookmaker(${bm.id})">Remover</button>`}
+      </div>
+    </div>
+  `).join('');
+}
+
+async function editBookmaker(id) {
+  const bm = userBookmakers.find(b => b.id === id);
+  if (!bm) return;
+  const newName = prompt('Nome da casa:', bm.name);
+  if (newName === null) return;
+  const usd = confirm('Essa casa opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)');
+  try {
+    await api(`/api/bookmakers/${id}`, {
+      method: 'PUT',
+      body: { name: newName.trim() || bm.name, currency: usd ? 'USD' : 'BRL' },
+    });
+    toast('Casa atualizada!');
+    await loadBookmakers();
+    renderBookmakersList();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function toggleBookmakerActive(id, active) {
+  try {
+    await api(`/api/bookmakers/${id}`, { method: 'PUT', body: { active } });
+    toast(active ? 'Casa reativada!' : 'Casa desativada');
+    await loadBookmakers();
+    renderBookmakersList();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deleteBookmaker(id) {
+  const bm = userBookmakers.find(b => b.id === id);
+  if (!bm) return;
+  if (!confirm(`Remover a casa "${bm.name}"?\n\nO histórico de operações que a usaram será mantido, mas ela deixará de aparecer no seletor.`)) return;
+  try {
+    await api(`/api/bookmakers/${id}`, { method: 'DELETE' });
+    toast('Casa removida');
+    await loadBookmakers();
+    renderBookmakersList();
   } catch (err) { toast(err.message, 'error'); }
 }
 

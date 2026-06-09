@@ -42,7 +42,10 @@ function normalizeFreebetAccounts(payload, validIds) {
 //                                                             account_id attributes
 //                                                             freebet spend when
 //                                                             uses_freebet=1)
-//   arbitragem_br: [{stake, odd, bookmaker}]                 (all legs; bet365/poly cols stay 0)
+//   arbitragem_br / tentativa_duplo / punter:
+//     [{stake /*BRL*/, odd, bookmaker, bookmaker_id?, currency?, stake_orig?, rate?}]
+//     (all legs in extra_bets; bet365/poly cols stay 0). stake is always BRL;
+//     for USD houses stake_orig holds the entered USD and rate the USD→BRL factor.
 function serializeExtraBets(val, validAccountIds) {
   if (val == null) return null;
   if (typeof val === 'string') {
@@ -60,6 +63,19 @@ function serializeExtraBets(val, validAccountIds) {
       if (b?.bookmaker != null) {
         const bk = String(b.bookmaker).trim().slice(0, 80);
         if (bk) entry.bookmaker = bk;
+      }
+      if (b?.bookmaker_id != null) {
+        const bmId = Number(b.bookmaker_id);
+        if (Number.isFinite(bmId) && bmId > 0) entry.bookmaker_id = bmId;
+      }
+      if (b?.currency === 'USD' || b?.currency === 'BRL') entry.currency = b.currency;
+      if (b?.stake_orig != null) {
+        const so = Number(b.stake_orig);
+        if (Number.isFinite(so) && so >= 0) entry.stake_orig = so;
+      }
+      if (b?.rate != null) {
+        const rt = Number(b.rate);
+        if (Number.isFinite(rt) && rt > 0) entry.rate = rt;
       }
       if (b?.account_id != null) {
         const accId = Number(b.account_id);

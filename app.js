@@ -38,6 +38,7 @@ app.use('/api/operations', require('./routes/operations'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/freebets', require('./routes/freebets'));
 app.use('/api/accounts', require('./routes/accounts'));
+app.use('/api/bookmakers', require('./routes/bookmakers'));
 app.use('/api/watcher', require('./routes/watcher'));
 app.use('/api/ranking', require('./routes/ranking'));
 app.use('/api/settings', require('./routes/settings'));
