@@ -1418,6 +1418,12 @@ function selectType(el) {
   if (isBR) {
     const list = document.getElementById('new-br-legs-list');
     if (list && !list.children.length) { addBrLeg(); addBrLeg(); }
+    // Early-payout checkbox is tentativa_duplo-only. Toggle it on every existing
+    // leg row so switching between BR types updates rows already on screen.
+    const showEarly = t === 'tentativa_duplo';
+    document.querySelectorAll('#new-br-legs-list .br-leg-early-wrap').forEach(w => {
+      w.style.display = showEarly ? '' : 'none';
+    });
   }
 }
 
