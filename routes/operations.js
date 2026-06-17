@@ -70,6 +70,7 @@ function serializeExtraBets(val, validAccountIds) {
       }
       if (b?.currency === 'USD' || b?.currency === 'BRL') entry.currency = b.currency;
       if (b?.early_payout) entry.early_payout = 1; // tentativa_duplo: leg has early payout
+      if (b?.won) entry.won = 1; // multi-leg arb: this leg/house was the winning side
       if (b?.stake_orig != null) {
         const so = Number(b.stake_orig);
         if (Number.isFinite(so) && so >= 0) entry.stake_orig = so;

@@ -1312,6 +1312,11 @@ async function renderNewOperation() {
         if (list) {
           list.innerHTML = '';
           imp.extraBets.forEach(b => addBrLeg(b));
+          // Stakes/odds are imported, but the calculator doesn't know the real
+          // houses — focus the first house picker and nudge the user to pick.
+          const firstHouse = list.querySelector('.br-leg-bookmaker-id');
+          if (firstHouse) { firstHouse.focus(); firstHouse.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+          toast('Stakes e odds importados — selecione as casas de cada ponta', 'info');
         }
       } else {
         const list = document.getElementById('new-extra-bets-list');
@@ -2288,6 +2293,41 @@ async function duplicateOperation(id) {
 // ===== EDIT MODAL — settlement (tentativa de duplo early payout) =====
 // Suggested duplo value = Σ stake×odd of the legs flagged with early payout.
 let _editDuploSuggestion = 0;
+// Legs of the op currently in the edit modal (for the winning-house picker).
+let _editOpLegs = [];
+let _editOpType = null;
+
+// Base arb result if `winIndex` is the winning leg: its gross return minus the
+// total staked across all legs. (stake is BRL, odd is decimal.)
+function computeArbBase(legs, winIndex) {
+  const total = legs.reduce((s, l) => s + (Number(l.stake) || 0), 0);
+  const win = legs[winIndex];
+  if (!win) return 0;
+  return (Number(win.stake) || 0) * (Number(win.odd) || 0) - total;
+}
+
+// Picking a winning house implies the op is concluded ("won"): set the result,
+// fill the base profit, and (for tentativa de duplo) re-run the settlement math.
+function onEditWinLegChange() {
+  const picked = document.querySelector('#edit-br-legs-view input[name="edit-win-leg"]:checked');
+  if (!picked) return;
+  const idx = Number(picked.value);
+  const resSel = document.getElementById('edit-result');
+  if (resSel && resSel.value !== 'won') { resSel.value = 'won'; }
+  const base = computeArbBase(_editOpLegs, idx);
+  const profitEl = document.getElementById('edit-profit');
+  if (profitEl) profitEl.value = formatOperationNumber(base);
+  updateSettlementCalc();
+}
+
+// Keep the winner picker relevant to the selected result: clearing to
+// pending/void/anulado drops the winning-house selection.
+function onEditResultChange() {
+  const result = document.getElementById('edit-result')?.value;
+  if (result !== 'won') {
+    document.querySelectorAll('#edit-br-legs-view input[name="edit-win-leg"]').forEach(r => { r.checked = false; });
+  }
+}
 
 function setupEditSettlement(op) {
   const section = document.getElementById('edit-settlement-section');
@@ -2429,17 +2469,31 @@ function fillEditModal(op) {
   if (brWrap) brWrap.style.display = isSingleLegStyle ? '' : 'none';
   if (isSingleLegStyle) {
     const { legs, totalStake } = brLegsSummary(op);
+    _editOpLegs = legs;
+    _editOpType = op.type;
+    // Multi-house arbs let you pick which house won (auto-computes profit); punter
+    // is single-leg, so it keeps the plain read-only view.
+    const pickWinner = isBrLegsType(op.type) && legs.length > 1;
     const view = document.getElementById('edit-br-legs-view');
     if (view) {
-      view.innerHTML = legs.length
-        ? legs.map(l => `
-          <div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--border)">
-            <span>${escapeHtml(l.bookmaker || '—')}</span>
+      if (!legs.length) {
+        view.innerHTML = '<span>Sem apostas registradas.</span>';
+      } else {
+        view.innerHTML = legs.map((l, i) => `
+          <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--border);${pickWinner ? 'cursor:pointer' : ''}">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${pickWinner ? `<input type="radio" name="edit-win-leg" value="${i}" ${l.won ? 'checked' : ''} onchange="onEditWinLegChange()">` : ''}
+              ${escapeHtml(l.bookmaker || '—')}
+            </span>
             <span>${legStakeDisplay(l)} @ ${Number(l.odd || 0).toFixed(2)}</span>
-          </div>
+          </label>
         `).join('') + `<div style="display:flex;justify-content:space-between;padding-top:6px;font-weight:600"><span>Total</span><span>${formatBRL(totalStake)}</span></div>`
-        : '<span>Sem apostas registradas.</span>';
+          + (pickWinner ? '<p style="font-size:11px;color:var(--text-muted);margin-top:6px">Selecione a casa vencedora — o lucro é calculado automaticamente.</p>' : '');
+      }
     }
+  } else {
+    _editOpLegs = [];
+    _editOpType = op.type;
   }
 
   // Result select: bet365_won/poly_won for two-leg types; won/lost for single-leg.
@@ -2606,6 +2660,16 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   // Send extra_bets for aumentada25 edits
   if (editType === 'aumentada25') {
     body.extra_bets = collectExtraBets('edit-extra-bets-list');
+  }
+  // BR-legs arbs: persist which house won (legs are otherwise read-only here).
+  if (isEditBR) {
+    const picked = document.querySelector('#edit-br-legs-view input[name="edit-win-leg"]:checked');
+    const winIdx = picked ? Number(picked.value) : -1;
+    body.extra_bets = _editOpLegs.map((l, i) => {
+      const leg = { ...l };
+      if (i === winIdx) leg.won = true; else delete leg.won;
+      return leg;
+    });
   }
   // Tentativa de duplo: final profit = arb base + early-payout adjustment.
   if (editType === 'tentativa_duplo') {
