@@ -3261,8 +3261,11 @@ async function applyCuration(btn) {
   if (!sel || !rawName) return;
   const body = { raw_bookmaker: rawName };
   if (sel.value === '__new__') {
-    const cur = confirm(`A casa "${rawName}" opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)`) ? 'USD' : 'BRL';
-    body.new_name = rawName; body.currency = cur;
+    // Let the user fix the casing/spelling of the new house (default = raw name).
+    const newName = prompt('Nome da nova casa:', rawName);
+    if (newName === null || !newName.trim()) return;
+    const cur = confirm(`A casa "${newName.trim()}" opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)`) ? 'USD' : 'BRL';
+    body.new_name = newName.trim(); body.currency = cur;
   } else {
     body.bookmaker_id = Number(sel.value);
   }
