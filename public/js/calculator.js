@@ -27,6 +27,10 @@ const CALC_CURR_SYMS = { USD:"$", BRL:"R$" };
 // -- Calculator state --
 let calcNumOut = 2;
 let calcShowComm = false;
+// Polymarket share prices are normally whole cents ($0.01). For extreme odds the
+// book allows tenth-of-a-cent prices (e.g. 97,6¢ = $0.976) — this toggle rounds
+// to 0,1¢ (3 decimals) instead of 1¢ (2 decimals).
+let calcBrokenCents = localStorage.getItem('calcBrokenCents') === '1';
 let calcRoundValue = 0;
 let calcRoundUseFx = false;
 let calcNextId = 3;
@@ -250,6 +254,14 @@ function calcToggleShowComm() {
   calcBuildTable();
 }
 
+function calcToggleBrokenCents() {
+  calcBrokenCents = !calcBrokenCents;
+  localStorage.setItem('calcBrokenCents', calcBrokenCents ? '1' : '0');
+  const btn = document.getElementById('calc-broken-cents-btn');
+  if (btn) { btn.textContent = calcBrokenCents ? 'Centavos quebrados: ON' : 'Centavos quebrados'; btn.classList.toggle('on', calcBrokenCents); }
+  calcCompute(); calcBuildTable();
+}
+
 // -- Core calculation --
 // Freebet rows: stake is the bookie's credit (not user's money). Row contribution
 // when won is S*(eff-1) rather than S*eff. Real outlay and invSum exclude them.
@@ -440,7 +452,8 @@ function calcPolyState(row) {
   const isPoly = !isLay && row.usePoly && rawOdd > 1;
   if (!isPoly) return { isPoly: false };
   const priceExact = 1 / rawOdd;
-  const priceRounded = Math.round(priceExact * 100) / 100;
+  const factor = calcBrokenCents ? 1000 : 100; // 0,1¢ vs 1¢ rounding
+  const priceRounded = Math.round(priceExact * factor) / factor;
   if (priceRounded <= 0 || priceRounded >= 1) return { isPoly: false };
   const realOdd = 1 / priceRounded;
   const oddDiffers = Math.abs(realOdd - rawOdd) > 1e-9;
@@ -450,10 +463,10 @@ function calcPolyState(row) {
 function calcBuildPolyPriceHint(row) {
   const s = calcPolyState(row);
   if (!s.isPoly) return "";
-  const priceStr = s.priceRounded.toFixed(2);
+  const priceStr = s.priceRounded.toFixed(calcBrokenCents ? 3 : 2);
   const realOddStr = s.realOdd.toFixed(10);
   return `
-    <div class="c-poly-price" title="Preço por share em limit order (arredondado para 2 casas)">$${priceStr}/share</div>
+    <div class="c-poly-price" title="Preço por share em limit order (arredondado para ${calcBrokenCents ? '0,1¢' : '1¢'})">$${priceStr}/share</div>
     ${s.oddDiffers ? `<div class="c-poly-real-odd" title="Odd real com preço arredondado">odd real: ${realOddStr}</div>
     <button type="button" class="c-poly-odd-btn" onclick="calcUseRealOdd(${row.id})" title="Substituir a odd pela odd real">transformar em odd real</button>` : ''}
   `;
@@ -1758,6 +1771,7 @@ function renderCalculator() {
       </div>
       <div class="c-ctrl-sep"></div>
       <button class="c-btn ${calcShowComm?'on':''}" id="calc-show-comm-btn" onclick="calcToggleShowComm()">${calcShowComm ? "Hide commissions" : "Show commissions"}</button>
+      <button class="c-btn ${calcBrokenCents?'on':''}" id="calc-broken-cents-btn" onclick="calcToggleBrokenCents()" title="Arredonda o pre\u00E7o da share da Polymarket para 0,1\u00A2 (ex.: 97,6\u00A2) em vez de 1\u00A2">${calcBrokenCents ? "Centavos quebrados: ON" : "Centavos quebrados"}</button>
 
       <div id="calc-brl-warn" style="display:none" class="c-warn-bar">\u26A0 Linhas em BRL precisam da cota\u00E7\u00E3o ao vivo</div>
     </div>
