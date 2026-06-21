@@ -2899,11 +2899,11 @@ async function renderSettings() {
       <div id="tag-rules-list"><div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">Carregando...</div></div>
     </div>
 
-    <!-- Bet365 accounts -->
+    <!-- Accounts (per house) -->
     <div class="chart-container">
-      <h3 class="chart-title" style="margin-bottom:4px">Contas Bet365</h3>
+      <h3 class="chart-title" style="margin-bottom:4px">Contas</h3>
       <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px">
-        Cada conta tem seu pr\u00F3prio volume semanal de R$ 1.500 para a freebet e um stake m\u00E1ximo para aumentadas.
+        Cada conta pertence a uma casa. As contas Bet365 t\u00EAm volume semanal de R$ 1.500 para a freebet e um stake m\u00E1ximo para aumentadas.
       </p>
 
       <div id="accounts-list-settings"></div>
@@ -2916,6 +2916,10 @@ async function renderSettings() {
             <input type="text" class="form-input" id="acc-name" placeholder="Ex: Conta Principal" required>
           </div>
           <div class="form-group">
+            <label class="form-label">Casa</label>
+            <select class="form-input" id="acc-house"></select>
+          </div>
+          <div class="form-group">
             <label class="form-label">Stake M\u00E1ximo Aumentada (R$)</label>
             <input type="number" step="0.01" min="0" class="form-input" id="acc-max-stake" placeholder="250" value="250">
           </div>
@@ -2924,6 +2928,15 @@ async function renderSettings() {
           </div>
         </form>
       </div>
+    </div>
+
+    <!-- Curadoria de casas legadas -->
+    <div class="chart-container" id="curation-card" style="margin-top:20px;display:none">
+      <h3 class="chart-title" style="margin-bottom:4px">Curadoria de casas</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Opera\u00E7\u00F5es antigas tinham o nome da casa em texto livre. Mapeie cada nome para uma casa cadastrada (ou crie uma) para consolidar os dados das An\u00E1lises.
+      </p>
+      <div id="curation-list"></div>
     </div>
 
     <!-- Casas (bookmakers) -->
@@ -2957,8 +2970,11 @@ async function renderSettings() {
     </div>
   `;
 
+  await loadBookmakers();
+  populateAccountHouseSelect();
   renderAccountsList();
-  loadBookmakers().then(renderBookmakersList);
+  renderBookmakersList();
+  loadCuration();
   loadTagRules();
   loadAlertConfigs();
 
@@ -2973,6 +2989,8 @@ async function renderSettings() {
       document.getElementById('bm-currency').value = 'BRL';
       await loadBookmakers();
       renderBookmakersList();
+      populateAccountHouseSelect();
+      renderAccountsList();
     } catch (err) { toast(err.message, 'error'); }
   });
 
@@ -2980,8 +2998,9 @@ async function renderSettings() {
     e.preventDefault();
     const name = document.getElementById('acc-name').value.trim();
     const max_stake_aumentada = parseFloat(document.getElementById('acc-max-stake').value) || 250;
+    const bookmaker_id = Number(document.getElementById('acc-house')?.value) || undefined;
     try {
-      await api('/api/accounts', { method: 'POST', body: { name, max_stake_aumentada } });
+      await api('/api/accounts', { method: 'POST', body: { name, max_stake_aumentada, bookmaker_id } });
       toast('Conta adicionada!');
       document.getElementById('acc-name').value = '';
       document.getElementById('acc-max-stake').value = '250';
@@ -2989,6 +3008,84 @@ async function renderSettings() {
       renderAccountsList();
     } catch (err) { toast(err.message, 'error'); }
   });
+}
+
+// Fill the "add account" house dropdown from the cached houses (Bet365 default).
+function populateAccountHouseSelect() {
+  const sel = document.getElementById('acc-house');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = userBookmakers.map(b =>
+    `<option value="${b.id}">${escapeHtml(b.name)}${b.currency === 'USD' ? ' (US$)' : ''}</option>`
+  ).join('');
+  if (cur) sel.value = cur;
+}
+
+// Inline house picker per account card — reassign on change.
+async function setAccountHouse(accountId, bookmakerId) {
+  try {
+    await api(`/api/accounts/${accountId}`, { method: 'PUT', body: { bookmaker_id: Number(bookmakerId) } });
+    await loadAccounts();
+    renderAccountsList();
+    toast('Casa da conta atualizada!');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ===== CURATION (legacy free-text house names) =====
+let _curationPending = [];
+async function loadCuration() {
+  try { _curationPending = await api('/api/bookmakers/curation'); }
+  catch { _curationPending = []; }
+  renderCurationList();
+}
+
+function renderCurationList() {
+  const card = document.getElementById('curation-card');
+  const list = document.getElementById('curation-list');
+  if (!card || !list) return;
+  if (!_curationPending.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const houseOpts = userBookmakers.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  list.innerHTML = _curationPending.map(c => `
+    <div class="account-card" data-raw="${escapeHtml(c.name)}">
+      <div class="account-card-left">
+        <div class="account-card-icon">?</div>
+        <div>
+          <div class="account-card-name">${escapeHtml(c.name)}</div>
+          <div class="account-card-meta">${c.legs} perna(s) em operações</div>
+        </div>
+      </div>
+      <div class="account-card-actions" style="gap:6px">
+        <select class="form-input curation-house" style="min-width:140px">
+          <option value="__new__">+ Criar "${escapeHtml(c.name)}"</option>
+          ${houseOpts}
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="applyCuration(this)">Aplicar</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function applyCuration(btn) {
+  const card = btn.closest('.account-card');
+  const sel = card?.querySelector('.curation-house');
+  const rawName = card?.dataset.raw;
+  if (!sel || !rawName) return;
+  const body = { raw_bookmaker: rawName };
+  if (sel.value === '__new__') {
+    const cur = confirm(`A casa "${rawName}" opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)`) ? 'USD' : 'BRL';
+    body.new_name = rawName; body.currency = cur;
+  } else {
+    body.bookmaker_id = Number(sel.value);
+  }
+  try {
+    const r = await api('/api/bookmakers/curation', { method: 'POST', body });
+    toast(`Mapeado (${r.updated} perna(s))`, 'success');
+    await loadBookmakers();
+    populateAccountHouseSelect();
+    renderBookmakersList();
+    await loadCuration();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function toggleRankingVisibility(field, checked) {
@@ -3310,6 +3407,9 @@ function renderAccountsList() {
     return;
   }
 
+  const houseOpts = (selId) => userBookmakers.map(b =>
+    `<option value="${b.id}" ${b.id === Number(selId) ? 'selected' : ''}>${escapeHtml(b.name)}${b.currency === 'USD' ? ' (US$)' : ''}</option>`
+  ).join('');
   container.innerHTML = userAccounts.map(acc => `
     <div class="account-card ${acc.active ? '' : 'inactive'}" id="acc-card-${acc.id}">
       <div class="account-card-left">
@@ -3324,7 +3424,8 @@ function renderAccountsList() {
           </div>
         </div>
       </div>
-      <div class="account-card-actions">
+      <div class="account-card-actions" style="gap:6px;flex-wrap:wrap">
+        <select class="form-input" style="min-width:130px" title="Casa da conta" onchange="setAccountHouse(${acc.id}, this.value)">${houseOpts(acc.bookmaker_id)}</select>
         <button class="btn btn-ghost btn-sm" onclick="editAccount(${acc.id})">Editar</button>
         ${acc.active
           ? `<button class="btn btn-ghost btn-sm" style="color:var(--warning, #ffa726)" onclick="toggleAccountActive(${acc.id}, false)">Desativar</button>`

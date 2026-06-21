@@ -187,6 +187,68 @@ router.get('/performance', async (req, res) => {
   }
 });
 
+// ===== CURATION: map legacy free-text house names to house objects =====
+// Legs backfilled from legacy free-text names have bookmaker_id NULL and
+// raw_bookmaker set. List the distinct pending names so the user can map them
+// (fixes miss-spelling inconsistencies in analytics).
+router.get('/curation', async (req, res) => {
+  try {
+    const rows = await db.all(
+      `SELECT l.raw_bookmaker AS name, COUNT(*) AS legs
+       FROM operation_legs l
+       JOIN operations o ON o.id = l.operation_id
+       WHERE o.user_id = ? AND l.bookmaker_id IS NULL AND l.raw_bookmaker IS NOT NULL
+       GROUP BY l.raw_bookmaker
+       ORDER BY legs DESC, name`,
+      req.user.id
+    );
+    res.json(rows.map(r => ({ name: r.name, legs: Number(r.legs) || 0 })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Map a pending name to a house: an existing bookmaker_id, or create one from
+// { new_name, currency }. Updates every leg of the user that has that raw name.
+router.post('/curation', async (req, res) => {
+  try {
+    const raw = String(req.body.raw_bookmaker || '').trim();
+    if (!raw) return res.status(400).json({ error: 'Nome pendente obrigatório' });
+
+    let bmId = null;
+    if (req.body.bookmaker_id != null) {
+      const bm = await db.get('SELECT id FROM bookmakers WHERE id = ? AND user_id = ?', req.body.bookmaker_id, req.user.id);
+      if (!bm) return res.status(400).json({ error: 'Casa inválida' });
+      bmId = bm.id;
+    } else {
+      const newName = String(req.body.new_name || raw).trim();
+      const currency = CURRENCIES.includes(req.body.currency) ? req.body.currency : 'BRL';
+      try {
+        const r = await db.run('INSERT INTO bookmakers (user_id, name, currency) VALUES (?, ?, ?)', req.user.id, newName, currency);
+        bmId = Number(r.lastInsertRowid);
+      } catch (err) {
+        if (isUniqueErr(err)) {
+          const existing = await db.get('SELECT id FROM bookmakers WHERE user_id = ? AND name = ?', req.user.id, newName);
+          bmId = existing ? existing.id : null;
+        } else throw err;
+      }
+    }
+    if (!bmId) return res.status(400).json({ error: 'Não foi possível resolver a casa' });
+
+    const r = await db.run(
+      `UPDATE operation_legs SET bookmaker_id = ?, raw_bookmaker = NULL
+       WHERE raw_bookmaker = ? AND operation_id IN (SELECT id FROM operations WHERE user_id = ?)`,
+      bmId, raw, req.user.id
+    );
+    await audit(req, 'bookmaker_curation', bmId, 'mapped', { raw, legs: r.changes });
+    res.json({ ok: true, bookmaker_id: bmId, updated: r.changes });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
 // List user's houses (excludes hidden/soft-deleted). Built-ins first, then A→Z.
 router.get('/', async (req, res) => {
   try {
