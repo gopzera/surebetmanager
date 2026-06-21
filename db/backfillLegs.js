@@ -13,9 +13,9 @@
 //     names go to curation (bookmaker_id NULL + raw_bookmaker set). aumentada
 //     secondary bets (no bookmaker) → Bet365.
 
+const { buildOpLegs } = require('./legModel');
+
 const MARKER = 'backfill_legs_v1';
-const STANDARD_LIKE = new Set(['aquecimento', 'arbitragem', 'aumentada25']);
-const BR_LIKE = new Set(['arbitragem_br', 'punter', 'tentativa_duplo']);
 
 module.exports = async function backfillLegs(client) {
   const done = await client.execute({
@@ -36,75 +36,27 @@ module.exports = async function backfillLegs(client) {
       // Built-in houses (lazy elsewhere; ensure here since backfill runs at init).
       await tx.execute({ sql: 'INSERT OR IGNORE INTO bookmakers (user_id,name,currency,is_builtin) VALUES (?,?,?,1)', args: [userId, 'Bet365', 'BRL'] });
       await tx.execute({ sql: 'INSERT OR IGNORE INTO bookmakers (user_id,name,currency,is_builtin) VALUES (?,?,?,1)', args: [userId, 'Polymarket', 'USD'] });
-      const bms = await q('SELECT id,name,currency FROM bookmakers WHERE user_id=?', [userId]);
+      const bms = await q('SELECT id,name FROM bookmakers WHERE user_id=?', [userId]);
       const byId = new Set(bms.map(b => b.id));
-      const byNameLower = new Map(bms.map(b => [String(b.name).toLowerCase(), b]));
+      const byNameLower = new Map(bms.map(b => [String(b.name).toLowerCase(), b.id]));
       const bet365 = bms.find(b => b.name === 'Bet365') || null;
       const poly = bms.find(b => b.name === 'Polymarket') || null;
       const bet365Id = bet365 ? bet365.id : null;
+      const ctx = {
+        bet365Id, polyId: poly ? poly.id : null,
+        hasBookmaker: (id) => byId.has(id),
+        matchName: (name) => byNameLower.get(String(name).toLowerCase()) || null,
+      };
 
       // Existing accounts belong to Bet365 until the user reassigns them.
       await tx.execute({ sql: 'UPDATE accounts SET bookmaker_id=? WHERE user_id=? AND bookmaker_id IS NULL', args: [bet365Id, userId] });
 
       const ops = await q('SELECT * FROM operations WHERE user_id=?', [userId]);
       for (const op of ops) {
-        const legs = []; // each: {bookmaker_id, role, stake, stake_orig, currency, rate, odd, won, early_payout, uses_freebet, raw_bookmaker, accounts}
-        const standardLike = STANDARD_LIKE.has(op.type);
-
-        if (standardLike && (Number(op.stake_bet365) > 0 || Number(op.odd_bet365) > 0)) {
-          const accs = await q('SELECT account_id, stake_bet365 FROM operation_accounts WHERE operation_id=?', [op.id]);
-          legs.push({
-            bookmaker_id: bet365Id, role: 'main',
-            stake: Number(op.stake_bet365) || 0, stake_orig: Number(op.stake_bet365) || 0,
-            currency: 'BRL', rate: 1, odd: Number(op.odd_bet365) || 0,
-            won: op.result === 'bet365_won' ? 1 : 0, early_payout: 0,
-            uses_freebet: op.uses_freebet ? 1 : 0, raw_bookmaker: null,
-            accounts: accs.map(a => ({ account_id: a.account_id, stake: a.stake_bet365 })),
-          });
-        }
-        if (standardLike && Number(op.stake_poly_usd) > 0) {
-          const fx = Number(op.exchange_rate) || 1;
-          legs.push({
-            bookmaker_id: poly ? poly.id : null, role: 'protection',
-            stake: (Number(op.stake_poly_usd) || 0) * fx, stake_orig: Number(op.stake_poly_usd) || 0,
-            currency: 'USD', rate: fx, odd: Number(op.odd_poly) || 0,
-            won: op.result === 'poly_won' ? 1 : 0, early_payout: 0,
-            uses_freebet: 0, raw_bookmaker: null, accounts: [],
-          });
-        }
-
         let extras = [];
         if (op.extra_bets) { try { extras = JSON.parse(op.extra_bets) || []; } catch { extras = []; } }
-        let brIdx = 0;
-        for (const leg of extras) {
-          if (!leg) continue;
-          let bookmaker_id = null, raw_bookmaker = null;
-          const currency = leg.currency === 'USD' ? 'USD' : 'BRL';
-          if (leg.bookmaker_id != null && byId.has(Number(leg.bookmaker_id))) {
-            bookmaker_id = Number(leg.bookmaker_id);
-          } else if (leg.bookmaker) {
-            const m = byNameLower.get(String(leg.bookmaker).trim().toLowerCase());
-            if (m) bookmaker_id = m.id; else raw_bookmaker = String(leg.bookmaker);
-          } else if (op.type === 'aumentada25') {
-            bookmaker_id = bet365Id; // secondary Bet365 bet
-          }
-          // Role: aumentada secondaries are part of the Bet365 (main) side; for BR
-          // arbs the first leg is 'main', the rest 'protection' (2-column display).
-          let role;
-          if (op.type === 'aumentada25') role = 'main';
-          else role = (brIdx === 0 ? 'main' : 'protection');
-          if (BR_LIKE.has(op.type)) brIdx++;
-
-          const stakeBRL = Number(leg.stake) || 0;
-          legs.push({
-            bookmaker_id, role,
-            stake: stakeBRL, stake_orig: leg.stake_orig != null ? Number(leg.stake_orig) : stakeBRL,
-            currency, rate: leg.rate != null ? Number(leg.rate) : 1, odd: Number(leg.odd) || 0,
-            won: leg.won ? 1 : 0, early_payout: leg.early_payout ? 1 : 0,
-            uses_freebet: leg.uses_freebet ? 1 : 0, raw_bookmaker,
-            accounts: (leg.account_id != null) ? [{ account_id: leg.account_id, stake: null }] : [],
-          });
-        }
+        const accs = await q('SELECT account_id, stake_bet365 AS stake FROM operation_accounts WHERE operation_id=?', [op.id]);
+        const legs = buildOpLegs(op, extras, accs, ctx);
 
         let position = 0;
         for (const L of legs) {

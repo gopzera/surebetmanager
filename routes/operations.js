@@ -5,9 +5,60 @@ const { attachMany, attachScalars } = require('../utils/batch');
 const { audit, diff } = require('../utils/audit');
 const { evaluateRules } = require('../utils/tagRules');
 const { buildPreview } = require('../utils/googleSheetsImport');
+const { buildOpLegs } = require('../db/legModel');
 
 const router = express.Router();
 router.use(auth);
+
+// v2 transition: keep operation_legs in sync as a projection of each legacy write.
+// Built houses + name-match context for mapping legacy free-text legs to houses.
+async function getLegCtx(userId) {
+  await db.run("INSERT OR IGNORE INTO bookmakers (user_id,name,currency,is_builtin) VALUES (?,?,?,1)", userId, 'Bet365', 'BRL');
+  await db.run("INSERT OR IGNORE INTO bookmakers (user_id,name,currency,is_builtin) VALUES (?,?,?,1)", userId, 'Polymarket', 'USD');
+  const bms = await db.all('SELECT id,name FROM bookmakers WHERE user_id=?', userId);
+  const byId = new Set(bms.map(b => b.id));
+  const byNameLower = new Map(bms.map(b => [String(b.name).toLowerCase(), b.id]));
+  const bet365 = bms.find(b => b.name === 'Bet365');
+  const poly = bms.find(b => b.name === 'Polymarket');
+  return {
+    bet365Id: bet365 ? bet365.id : null, polyId: poly ? poly.id : null,
+    hasBookmaker: (id) => byId.has(id),
+    matchName: (n) => byNameLower.get(String(n).toLowerCase()) || null,
+  };
+}
+
+// Rebuild operation_legs (+ leg_accounts) for one operation from its persisted
+// legacy shape. Best-effort: never throws into the request path.
+async function syncLegs(opId) {
+  try {
+    const op = await db.get('SELECT * FROM operations WHERE id = ?', opId);
+    if (!op) return;
+    const ctx = await getLegCtx(op.user_id);
+    let extras = [];
+    if (op.extra_bets) { try { extras = JSON.parse(op.extra_bets) || []; } catch { extras = []; } }
+    const accs = await db.all('SELECT account_id, stake_bet365 AS stake FROM operation_accounts WHERE operation_id = ?', opId);
+    const legs = buildOpLegs(op, extras, accs, ctx);
+    await db.transaction(async (tx) => {
+      await tx.run('DELETE FROM operation_leg_accounts WHERE leg_id IN (SELECT id FROM operation_legs WHERE operation_id = ?)', opId);
+      await tx.run('DELETE FROM operation_legs WHERE operation_id = ?', opId);
+      let pos = 0;
+      for (const L of legs) {
+        const r = await tx.run(
+          `INSERT INTO operation_legs
+             (operation_id,bookmaker_id,role,stake,stake_orig,currency,rate,odd,won,early_payout,uses_freebet,position,raw_bookmaker)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          opId, L.bookmaker_id, L.role, L.stake, L.stake_orig, L.currency, L.rate, L.odd, L.won, L.early_payout, L.uses_freebet, pos++, L.raw_bookmaker
+        );
+        for (const a of (L.accounts || [])) {
+          if (a.account_id == null) continue;
+          await tx.run('INSERT INTO operation_leg_accounts (leg_id,account_id,stake) VALUES (?,?,?)', r.lastInsertRowid, a.account_id, a.stake);
+        }
+      }
+    });
+  } catch (e) {
+    console.error('[syncLegs] failed for op', opId, e?.message);
+  }
+}
 
 // Normalize freebet account payload from the client. Accepts either the legacy
 // `freebet_account_id` (single int) or the new `freebet_account_ids` array; dedupes
@@ -178,6 +229,24 @@ router.get('/', async (req, res) => {
       valueKey: 'tag',
       attachAs: 'tags',
     });
+    // v2: attach the relational legs (house-resolved) for the new UI/analytics.
+    await attachMany(operations, {
+      sql: `SELECT l.operation_id, l.id, l.bookmaker_id, b.name AS bookmaker,
+                   COALESCE(b.currency, l.currency) AS currency, l.role, l.stake, l.stake_orig,
+                   l.rate, l.odd, l.won, l.early_payout, l.uses_freebet, l.raw_bookmaker, l.position
+            FROM operation_legs l
+            LEFT JOIN bookmakers b ON b.id = l.bookmaker_id
+            WHERE l.operation_id IN ({{IN}})
+            ORDER BY l.position`,
+      foreignKey: 'operation_id',
+      attachAs: 'legs',
+      map: r => ({
+        id: r.id, bookmaker_id: r.bookmaker_id, bookmaker: r.bookmaker || r.raw_bookmaker,
+        currency: r.currency, role: r.role, stake: r.stake, stake_orig: r.stake_orig,
+        rate: r.rate, odd: r.odd, won: r.won, early_payout: r.early_payout,
+        uses_freebet: r.uses_freebet, raw_bookmaker: r.raw_bookmaker,
+      }),
+    });
 
     // Get all tags for this user (for filter dropdown)
     const allTags = await db.all(
@@ -267,6 +336,7 @@ router.post('/import/commit', async (req, res) => {
       count: ids.length,
       operation_ids: ids.slice(0, 25),
     });
+    for (const opId of ids) await syncLegs(opId);
     res.json({ ok: true, imported: ids.length, ids });
   } catch (err) {
     console.error(err);
@@ -354,6 +424,7 @@ router.post('/', async (req, res) => {
       accounts: accountEntries.map(e => e.accId),
       tags: id.tagList.slice(0, 10),
     });
+    await syncLegs(id.id);
     res.json({ id: id.id });
   } catch (err) {
     console.error(err);
@@ -484,6 +555,7 @@ router.put('/:id', async (req, res) => {
     });
 
     if (auditPayload) await audit(req, 'operation', op.id, 'updated', auditPayload);
+    await syncLegs(op.id);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
