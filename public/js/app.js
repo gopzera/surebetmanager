@@ -962,6 +962,25 @@ async function renderNewOperation() {
         <input type="text" class="form-input" id="new-game" placeholder="Ex: Real Madrid vs Barcelona - Vencedor" required>
       </div>
 
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Data do Evento</label>
+          <input type="date" class="form-input" id="new-event-date" value="${today}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Resultado</label>
+          <select class="form-select" id="new-result">
+            <option value="pending">Pendente</option>
+            <option value="bet365_won" data-for="bet365-poly">Bet365 Ganhou</option>
+            <option value="poly_won" data-for="bet365-poly">Polymarket Ganhou</option>
+            <option value="won" data-for="br" hidden>Concluída</option>
+            <option value="won" data-for="single" hidden>Ganhou</option>
+            <option value="lost" data-for="single" hidden>Perdeu</option>
+            <option value="void">Anulado</option>
+          </select>
+        </div>
+      </div>
+
       <div id="new-accounts-section">
         <h3 class="chart-title" style="margin:24px 0 12px">Contas Utilizadas</h3>
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Selecione quais contas Bet365 foram usadas nesta operação</p>
@@ -989,24 +1008,6 @@ async function renderNewOperation() {
                 oninput="onPerAccountStakeInput(event, 'new')">
             </label>
           `).join('') : '<span style="color:var(--text-muted);font-size:13px">Nenhuma conta Bet365 ativa. Ative ou adicione uma conta nas configuracoes.</span>'}
-        </div>
-      </div>
-      <div class="form-grid" style="margin-top:20px">
-        <div class="form-group">
-          <label class="form-label">Data do Evento</label>
-          <input type="date" class="form-input" id="new-event-date" value="${today}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Resultado</label>
-          <select class="form-select" id="new-result">
-            <option value="pending">Pendente</option>
-            <option value="bet365_won" data-for="bet365-poly">Bet365 Ganhou</option>
-            <option value="poly_won" data-for="bet365-poly">Polymarket Ganhou</option>
-            <option value="won" data-for="br" hidden>Concluída</option>
-            <option value="won" data-for="single" hidden>Ganhou</option>
-            <option value="lost" data-for="single" hidden>Perdeu</option>
-            <option value="void">Anulado</option>
-          </select>
         </div>
       </div>
 
