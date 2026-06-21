@@ -445,6 +445,14 @@ function calcCompute() {
 }
 
 // -- Build table --
+// Round a Polymarket share price to the active granularity: 0,1¢ (broken cents)
+// or 1¢. Single source of truth so the price hint, shares, "real odd" and the
+// split preview all agree.
+function calcRoundSharePrice(priceExact) {
+  const factor = calcBrokenCents ? 1000 : 100;
+  return Math.round(priceExact * factor) / factor;
+}
+
 // -- Polymarket price/shares helpers (reused in build and update) --
 function calcPolyState(row) {
   const isLay = row.betType === "lay";
@@ -452,8 +460,7 @@ function calcPolyState(row) {
   const isPoly = !isLay && row.usePoly && rawOdd > 1;
   if (!isPoly) return { isPoly: false };
   const priceExact = 1 / rawOdd;
-  const factor = calcBrokenCents ? 1000 : 100; // 0,1¢ vs 1¢ rounding
-  const priceRounded = Math.round(priceExact * factor) / factor;
+  const priceRounded = calcRoundSharePrice(priceExact);
   if (priceRounded <= 0 || priceRounded >= 1) return { isPoly: false };
   const realOdd = 1 / priceRounded;
   const oddDiffers = Math.abs(realOdd - rawOdd) > 1e-9;
@@ -488,18 +495,18 @@ function calcBuildPolySharesHint(row, idx) {
       const tierOdd = j === 0 ? s.rawOdd : parseFloat(t.odd);
       if (!(tierOdd > 1)) return '';
       const price = 1 / tierOdd;
-      const priceRounded = Math.round(price * 100) / 100;
+      const priceRounded = calcRoundSharePrice(price);
       if (!(priceRounded > 0)) return '';
       const shares = stakeUsd / priceRounded;
       const feeLabel = t.fee ? 'c/fee' : 's/fee';
-      return `<div>T${j + 1} (${feeLabel}): ${shares.toFixed(2)} sh × $${priceRounded.toFixed(2)} = $${stakeUsd.toFixed(2)}</div>`;
+      return `<div>T${j + 1} (${feeLabel}): ${shares.toFixed(2)} sh × $${priceRounded.toFixed(calcBrokenCents ? 3 : 2)} = $${stakeUsd.toFixed(2)}</div>`;
     }).filter(Boolean).join('');
     if (!lines) return '';
     return `<div class="c-shares-badge c-shares-split" title="Split de liquidez ativo — breakdown por tier">${lines}</div>`;
   }
 
   const shares = p.total / s.priceRounded;
-  return `<div class="c-shares-badge" title="Shares em limit order a $${s.priceRounded.toFixed(2)} cada">Shares: ${shares.toFixed(2)}</div>`;
+  return `<div class="c-shares-badge" title="Shares em limit order a $${s.priceRounded.toFixed(calcBrokenCents ? 3 : 2)} cada">Shares: ${shares.toFixed(2)}</div>`;
 }
 
 function calcBuildTable() {
@@ -798,7 +805,7 @@ function calcUseRealOdd(id) {
   const raw = parseFloat(row.odds) || 0;
   if (raw <= 1) return;
   const priceExact = 1 / raw;
-  const priceRounded = Math.round(priceExact * 100) / 100;
+  const priceRounded = calcRoundSharePrice(priceExact);
   if (priceRounded <= 0 || priceRounded >= 1) return;
   const realOdd = 1 / priceRounded;
   row.odds = realOdd.toFixed(10);
@@ -1053,7 +1060,7 @@ function calcUpdateSplitPreview() {
     const isLast = j === tiers.length - 1;
     const oddForTier = isFirst ? parseFloat(row.odds) : parseFloat(String(t.odd).replace(',', '.'));
     const sharesNum = parseFloat(String(t.shares).replace(',', '.'));
-    const price = (oddForTier > 1) ? Math.round((1 / oddForTier) * 100) / 100 : null;
+    const price = (oddForTier > 1) ? calcRoundSharePrice(1 / oddForTier) : null;
     const capUsed = getTierStake(j);
     const sharesUsed = (price > 0 && capUsed > 0) ? capUsed / price : 0;
     if (!(price > 0)) { el.textContent = ''; continue; }
@@ -1087,7 +1094,7 @@ function calcUpdateSplitPreview() {
       const oddForTier = isFirst ? parseFloat(row.odds) : parseFloat(String(t.odd).replace(',', '.'));
       if (!(oddForTier > 1)) continue;
       const price = 1 / oddForTier;
-      const priceRounded = Math.round(price * 100) / 100;
+      const priceRounded = calcRoundSharePrice(price);
       if (!(priceRounded > 0)) continue;
       const shares = stake / priceRounded;
       totalShares          += shares;
