@@ -225,6 +225,17 @@ router.get('/stats', async (req, res) => {
       valueKey: 'tag',
       attachAs: 'tags',
     });
+    // v2: attach relational legs for the "Stake"/"Proteção" recent-ops columns.
+    await attachMany(recentOps, {
+      sql: `SELECT l.operation_id, b.name AS bookmaker, l.role, l.stake, l.raw_bookmaker, l.position
+            FROM operation_legs l
+            LEFT JOIN bookmakers b ON b.id = l.bookmaker_id
+            WHERE l.operation_id IN ({{IN}})
+            ORDER BY l.position`,
+      foreignKey: 'operation_id',
+      attachAs: 'legs',
+      map: r => ({ bookmaker: r.bookmaker || r.raw_bookmaker, role: r.role, stake: r.stake, raw_bookmaker: r.raw_bookmaker }),
+    });
 
     // Operator cost card — only when user enabled it in settings.
     let operators = null;
