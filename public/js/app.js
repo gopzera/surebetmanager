@@ -137,6 +137,11 @@ function isBrLegsType(type) {
 function isSingleLegStyleType(type) {
   return isBrLegsType(type) || type === 'punter';
 }
+// v2: types whose registration/edit uses the generic per-line house pickers
+// (BR shapes + the standard "arbitragem", which maps to legacy columns on save).
+function usesGenericLegs(type) {
+  return isBrLegsType(type) || type === 'arbitragem';
+}
 
 function resultLabel(result) {
   const labels = {
@@ -1259,8 +1264,9 @@ async function renderNewOperation() {
       }
       return;
     }
-    // BR / tentativa_duplo use arbitrary leg combinations — leave profit manual.
-    if (isBrLegsType(type)) {
+    // Generic-leg arbs (BR + arbitragem) use arbitrary leg combinations — leave
+    // profit manual (set at settlement via the winning-house picker).
+    if (isBrLegsType(type) || type === 'arbitragem') {
       autoProfitInfo.style.display = 'none';
       return;
     }
@@ -1324,16 +1330,15 @@ async function renderNewOperation() {
       if (box && ids.length) box.innerHTML = freebetAccountCheckboxes(ids);
     }
     if (imp.extraBets && imp.extraBets.length) {
-      if (isBrLegsType(imp.type)) {
+      if (isBrLegsType(imp.type) || imp.type === 'arbitragem') {
         const list = document.getElementById('new-br-legs-list');
         if (list) {
           list.innerHTML = '';
           imp.extraBets.forEach(b => addBrLeg(b));
-          // Stakes/odds are imported, but the calculator doesn't know the real
-          // houses — focus the first house picker and nudge the user to pick.
+          // Re-run currency handling so USD legs reveal the live rate.
+          list.querySelectorAll('.br-leg-bookmaker-id').forEach(sel => { if (sel.value) onBrLegBookmakerChange(sel); });
           const firstHouse = list.querySelector('.br-leg-bookmaker-id');
-          if (firstHouse) { firstHouse.focus(); firstHouse.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
-          toast('Stakes e odds importados — selecione as casas de cada ponta', 'info');
+          if (firstHouse && !firstHouse.value) { firstHouse.focus(); firstHouse.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
         }
       } else {
         const list = document.getElementById('new-extra-bets-list');
@@ -1402,14 +1407,18 @@ function selectType(el) {
   document.getElementById('new-type').value = t;
   const isBR = isBrLegsType(t);
   const isPunter = t === 'punter';
-  const isStandard = !isBR && !isPunter; // bet365 + poly two-leg shape
+  // v2: "Arbitragem" (padrão) também usa as linhas genéricas — escolhe a casa em
+  // cada linha (Bet365/Poly viram padrões), não mais seções fixas. Aquecimento e
+  // Aumentada seguem na seção Bet365 (volume/promo são específicos da Bet365).
+  const usesBet365Section = (t === 'aquecimento' || t === 'aumentada25');
+  const usesGenericLegs = isBR || t === 'arbitragem';
 
   // Section visibility per type.
   const setDisplay = (id, show) => { const n = document.getElementById(id); if (n) n.style.display = show ? '' : 'none'; };
-  setDisplay('new-bet365-section', isStandard);
-  setDisplay('new-poly-section', isStandard);
+  setDisplay('new-bet365-section', usesBet365Section);
+  setDisplay('new-poly-section', usesBet365Section);
   setDisplay('new-accounts-section', !isPunter);
-  setDisplay('new-br-legs-section', isBR);
+  setDisplay('new-br-legs-section', usesGenericLegs);
   setDisplay('new-punter-section', isPunter);
 
   const extraSection = document.getElementById('new-extra-bets-section');
@@ -1422,7 +1431,7 @@ function selectType(el) {
   //   BR / punter (single bet) → won / lost
   const resultSel = document.getElementById('new-result');
   if (resultSel) {
-    const wantsSingle = isBR || isPunter;
+    const wantsSingle = isBR || isPunter || t === 'arbitragem';
     for (const opt of resultSel.options) {
       if (opt.dataset.for === 'bet365-poly') opt.hidden = wantsSingle;
       if (opt.dataset.for === 'br' || opt.dataset.for === 'single') opt.hidden = !wantsSingle;
@@ -1436,12 +1445,19 @@ function selectType(el) {
     const list = document.getElementById('new-extra-bets-list');
     if (list && !list.children.length) { addExtraBet(); addExtraBet(); }
   }
-  // BR arbitrage defaults to 2 legs.
-  if (isBR) {
+  // Generic leg types default to 2 legs. "Arbitragem" pré-seleciona Bet365 + Poly.
+  if (usesGenericLegs) {
     const list = document.getElementById('new-br-legs-list');
-    if (list && !list.children.length) { addBrLeg(); addBrLeg(); }
+    if (list && !list.children.length) {
+      if (t === 'arbitragem') {
+        const b365 = userBookmakers.find(b => b.name === 'Bet365');
+        const pm = userBookmakers.find(b => b.name === 'Polymarket');
+        addBrLeg({ bookmaker_id: b365 ? b365.id : undefined });
+        addBrLeg({ bookmaker_id: pm ? pm.id : undefined });
+      } else { addBrLeg(); addBrLeg(); }
+    }
     // Early-payout checkbox is tentativa_duplo-only. Toggle it on every existing
-    // leg row so switching between BR types updates rows already on screen.
+    // leg row so switching between leg types updates rows already on screen.
     const showEarly = t === 'tentativa_duplo';
     document.querySelectorAll('#new-br-legs-list .br-leg-early-wrap').forEach(w => {
       w.style.display = showEarly ? '' : 'none';
@@ -1719,6 +1735,28 @@ function collectBrLegs() {
   return out;
 }
 
+// Map generic arb legs to the legacy bet365/poly columns (+ extra_bets) so the
+// existing volume/freebet/analytics readers keep working during the transition.
+// The first Bet365 leg → bet365 columns; the first Polymarket leg → poly columns;
+// everything else → extra_bets (preserving house objects + per-leg fields).
+function arbLegsToLegacy(legs) {
+  const b365 = userBookmakers.find(b => b.name === 'Bet365');
+  const pm = userBookmakers.find(b => b.name === 'Polymarket');
+  const out = { stake_bet365: 0, odd_bet365: 0, stake_poly_usd: 0, odd_poly: 0, exchange_rate: 5.0, extra: [] };
+  let bet365Used = false, polyUsed = false;
+  for (const l of legs) {
+    if (!bet365Used && b365 && l.bookmaker_id === b365.id && !l.early_payout && !l.won) {
+      out.stake_bet365 = l.stake; out.odd_bet365 = l.odd; bet365Used = true;
+    } else if (!polyUsed && pm && l.bookmaker_id === pm.id) {
+      out.stake_poly_usd = l.stake_orig != null ? l.stake_orig : l.stake;
+      out.odd_poly = l.odd; out.exchange_rate = l.rate || 5.0; polyUsed = true;
+    } else {
+      out.extra.push(l);
+    }
+  }
+  return out;
+}
+
 async function submitNewOperation(e) {
   e.preventDefault();
   const type = document.getElementById('new-type').value;
@@ -1745,26 +1783,40 @@ async function submitNewOperation(e) {
 
   const isBR = isBrLegsType(type);
   const isPunter = type === 'punter';
-  const isStandard = !isBR && !isPunter;
+  const isArb = type === 'arbitragem'; // v2: generic legs, maps to legacy on submit
+  const usesBet365Cols = (type === 'aquecimento' || type === 'aumentada25');
   const body = {
     type,
     game: document.getElementById('new-game').value.trim(),
     event_date: document.getElementById('new-event-date').value,
-    stake_bet365: isStandard ? totalStakeBet365 : 0,
-    odd_bet365: isStandard ? (parseFloat(document.getElementById('new-odd-bet365').value) || 0) : 0,
-    stake_poly_usd: isStandard ? (parseFloat(document.getElementById('new-stake-poly-usd').value) || 0) : 0,
-    odd_poly: isStandard ? (parseFloat(document.getElementById('new-odd-poly').value) || 0) : 0,
-    exchange_rate: isStandard ? (parseFloat(document.getElementById('new-exchange-rate').value) || 5.0) : 1,
+    stake_bet365: usesBet365Cols ? totalStakeBet365 : 0,
+    odd_bet365: usesBet365Cols ? (parseFloat(document.getElementById('new-odd-bet365').value) || 0) : 0,
+    stake_poly_usd: usesBet365Cols ? (parseFloat(document.getElementById('new-stake-poly-usd').value) || 0) : 0,
+    odd_poly: usesBet365Cols ? (parseFloat(document.getElementById('new-odd-poly').value) || 0) : 0,
+    exchange_rate: usesBet365Cols ? (parseFloat(document.getElementById('new-exchange-rate').value) || 5.0) : 1,
     result: document.getElementById('new-result').value,
     profit: parseFloat(document.getElementById('new-profit').value) || 0,
     notes: document.getElementById('new-notes').value.trim(),
     tags: getTagsFromInput('new-tags'),
-    uses_freebet: isStandard ? (document.getElementById('new-uses-freebet')?.checked || false) : false,
-    freebet_account_ids: (isStandard && document.getElementById('new-uses-freebet')?.checked)
+    uses_freebet: usesBet365Cols ? (document.getElementById('new-uses-freebet')?.checked || false) : false,
+    freebet_account_ids: (usesBet365Cols && document.getElementById('new-uses-freebet')?.checked)
       ? collectFreebetAccountIds('new-freebet-accounts') : [],
   };
   if (type === 'aumentada25') {
     body.extra_bets = collectExtraBets();
+  } else if (isArb) {
+    // Generic legs → legacy shape: the Bet365 leg fills the bet365 columns (so
+    // volume/freebet readers keep working) and a Polymarket leg fills the poly
+    // columns; any other house goes to extra_bets. Houses are objects per line.
+    const legs = collectBrLegs();
+    if (legs.length < 2) { toast('Registre pelo menos 2 apostas', 'error'); return; }
+    const m = arbLegsToLegacy(legs);
+    body.stake_bet365 = m.stake_bet365;
+    body.odd_bet365 = m.odd_bet365;
+    body.stake_poly_usd = m.stake_poly_usd;
+    body.odd_poly = m.odd_poly;
+    body.exchange_rate = m.exchange_rate;
+    body.extra_bets = m.extra;
   } else if (isBR) {
     const legs = collectBrLegs();
     if (legs.length < 2) { toast('Registre pelo menos 2 apostas', 'error'); return; }
@@ -1791,6 +1843,10 @@ async function submitNewOperation(e) {
   }
   if (isPunter) {
     body.account_ids = [];
+  } else if (isArb) {
+    // Accounts attach to the Bet365 leg, split equally (custom per-account stakes
+    // would conflict with the leg's stake field).
+    body.account_ids = account_ids;
   } else if (account_stakes) {
     body.account_stakes = account_stakes;
   } else {
@@ -2274,8 +2330,18 @@ async function duplicateOperation(id) {
     if (!op) { toast('Opera\u00E7\u00E3o n\u00E3o encontrada', 'error'); return; }
 
     const accs = op.accounts || [];
+    // Generic-leg types (arbitragem + BR) duplicate from the canonical legs[] so
+    // the house objects come pre-selected; won is dropped (new op starts fresh).
+    const usesGenericLegs = isBrLegsType(op.type) || op.type === 'arbitragem';
     let extras = [];
-    if (op.extra_bets) {
+    if (usesGenericLegs && Array.isArray(op.legs) && op.legs.length) {
+      extras = op.legs.map(l => ({
+        bookmaker_id: l.bookmaker_id || undefined,
+        bookmaker: l.bookmaker || undefined,
+        currency: l.currency, stake: l.stake, stake_orig: l.stake_orig, rate: l.rate, odd: l.odd,
+        early_payout: l.early_payout ? true : undefined,
+      }));
+    } else if (op.extra_bets) {
       try { extras = JSON.parse(op.extra_bets) || []; } catch { extras = []; }
     }
     window._calcImport = {
@@ -2518,7 +2584,7 @@ async function openEditModal(id) {
 }
 
 function fillEditModal(op) {
-  const isBR = isBrLegsType(op.type);
+  const isBR = usesGenericLegs(op.type); // BR shapes + standard arbitragem
   const isPunter = op.type === 'punter';
   const isSingleLegStyle = isBR || isPunter;
   document.getElementById('edit-id').value = op.id;
@@ -2577,12 +2643,15 @@ function fillEditModal(op) {
   const brWrap = document.getElementById('edit-br-legs-wrap');
   if (brWrap) brWrap.style.display = isSingleLegStyle ? '' : 'none';
   if (isSingleLegStyle) {
-    const { legs, totalStake } = brLegsSummary(op);
+    // Prefer the canonical legs[] from the API (includes the Bet365/Poly legs for
+    // standard arbitragem); fall back to extra_bets for safety.
+    const legs = (Array.isArray(op.legs) && op.legs.length) ? op.legs : brLegsSummary(op).legs;
+    const totalStake = legs.reduce((s, l) => s + (Number(l.stake) || 0), 0);
     _editOpLegs = legs;
     _editOpType = op.type;
     const view = document.getElementById('edit-br-legs-view');
     const addBtn = document.getElementById('edit-add-leg-btn');
-    const editable = isBrLegsType(op.type); // arbs are editable; punter stays read-only
+    const editable = usesGenericLegs(op.type); // arbs editable; punter read-only
     if (addBtn) addBtn.style.display = editable ? '' : 'none';
     if (view) {
       if (editable) {
@@ -2748,7 +2817,7 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   }
 
   const editType = document.getElementById('edit-type')?.value;
-  const isEditBR = isBrLegsType(editType);
+  const isEditBR = usesGenericLegs(editType); // BR shapes + standard arbitragem
   const isEditPunter = editType === 'punter';
   const isEditStandard = !isEditBR && !isEditPunter;
   const body = {
@@ -2772,10 +2841,22 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   if (editType === 'aumentada25') {
     body.extra_bets = collectExtraBets('edit-extra-bets-list');
   }
-  // BR-legs arbs: legs are editable in the modal now — send the edited rows
-  // (house/stake/odd/won/early_payout) so the houses are objects, not text.
+  // Generic-leg arbs: legs are editable in the modal now. Standard "arbitragem"
+  // maps the Bet365/Poly legs back to the legacy columns; BR shapes keep all legs
+  // in extra_bets.
   if (isEditBR) {
-    body.extra_bets = collectEditLegs();
+    const legs = collectEditLegs();
+    if (editType === 'arbitragem') {
+      const m = arbLegsToLegacy(legs);
+      body.stake_bet365 = m.stake_bet365;
+      body.odd_bet365 = m.odd_bet365;
+      body.stake_poly_usd = m.stake_poly_usd;
+      body.odd_poly = m.odd_poly;
+      body.exchange_rate = m.exchange_rate;
+      body.extra_bets = m.extra;
+    } else {
+      body.extra_bets = legs;
+    }
   }
   // Tentativa de duplo: final profit = arb base + early-payout adjustment.
   if (editType === 'tentativa_duplo') {
@@ -2785,7 +2866,8 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     body.profit = base + adj;
     body.settlement = { outcome, adjustment: adj };
   }
-  if (isEditPunter || isEditBR) body.account_ids = [];
+  if (editType === 'arbitragem') body.account_ids = account_ids; // accounts attach to the Bet365 leg
+  else if (isEditPunter || isEditBR) body.account_ids = [];
   else if (account_stakes) body.account_stakes = account_stakes;
   else body.account_ids = account_ids;
 

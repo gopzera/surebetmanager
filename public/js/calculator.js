@@ -1290,25 +1290,39 @@ function calcImportToOperation() {
   }));
 
   const isAumentada = bet365Rows.length >= 3 && polyRows.length >= 1;
-  const type = isAumentada ? 'aumentada25' : 'arbitragem';
 
   // Per-outcome profit in BRL (from calculator, already fee-adjusted).
   const profitsBRL = calcResult.profitsUSD.map(p => p * fx);
 
-  window._calcImport = {
-    type,
-    stakeBet365: mainStakeBRL,
-    oddBet365: aumentadaRow.odds,
-    usesFreebet: aumentadaRow.usesFreebet,
-    extraBets: extras,
-    stakePolyUSD: polyStakeUSD,
-    oddPoly: polyOdd,
-    exchangeRate: fx,
-    notes: '',
-    // Pre-computed profit per outcome (fee-adjusted).
-    profitsBRL,
-    minProfitBRL: calcResult.minProfit * fx,
-  };
+  if (isAumentada) {
+    // Aumentada keeps the Bet365 section (volume/promo are Bet365-specific).
+    window._calcImport = {
+      type: 'aumentada25',
+      stakeBet365: mainStakeBRL,
+      oddBet365: aumentadaRow.odds,
+      usesFreebet: aumentadaRow.usesFreebet,
+      extraBets: extras,
+      stakePolyUSD: polyStakeUSD,
+      oddPoly: polyOdd,
+      exchangeRate: fx,
+      notes: '',
+      profitsBRL,
+      minProfitBRL: calcResult.minProfit * fx,
+    };
+  } else {
+    // v2: standard arb imports as generic legs (Bet365 + Polymarket by name, so
+    // the house pickers come pre-selected; user can switch any line).
+    const legs = bet365Rows.map(r => ({ bookmaker: 'Bet365', stake: r.stakeBRL, odd: r.odds }));
+    legs.push({ bookmaker: 'Polymarket', currency: 'USD', stake: poly.stakeBRL, stake_orig: polyStakeUSD, rate: fx, odd: polyOdd });
+    window._calcImport = {
+      type: 'arbitragem',
+      extraBets: legs,
+      exchangeRate: fx,
+      notes: '',
+      profitsBRL,
+      minProfitBRL: calcResult.minProfit * fx,
+    };
+  }
 
   navigate('new-operation');
   toast('Dados importados da calculadora!', 'success');
