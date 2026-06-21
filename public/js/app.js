@@ -137,6 +137,11 @@ function isBrLegsType(type) {
 function isSingleLegStyleType(type) {
   return isBrLegsType(type) || type === 'punter';
 }
+// v2: types whose registration/edit uses the generic per-line house pickers
+// (BR shapes + the standard "arbitragem", which maps to legacy columns on save).
+function usesGenericLegs(type) {
+  return isBrLegsType(type) || type === 'arbitragem';
+}
 
 function resultLabel(result) {
   const labels = {
@@ -858,6 +863,28 @@ function renderTypeChart(profitByType) {
   });
 }
 
+// House chip: small letter-avatar + name, next to a stake value.
+function houseChip(name) {
+  const n = String(name || '—');
+  return `<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px">
+    <span style="width:16px;height:16px;border-radius:4px;background:var(--border);color:var(--text);display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">${escapeHtml(n.charAt(0).toUpperCase())}</span>
+    ${escapeHtml(n)}
+  </span>`;
+}
+
+// "Stake" / "Proteção" table cell from an op's legs for a given role (v2). Shows
+// the total for that role plus the house(s) involved. Falls back to a dash.
+function legRoleCell(op, role) {
+  const legs = (op.legs || []).filter(l => l.role === role);
+  if (!legs.length) return '<span style="color:var(--text-muted)">—</span>';
+  const total = legs.reduce((s, l) => s + (Number(l.stake) || 0), 0);
+  const houses = [...new Set(legs.map(l => l.bookmaker || l.raw_bookmaker || '—'))];
+  const chip = houses.length === 1
+    ? houseChip(houses[0])
+    : `<span style="font-size:11px;color:var(--text-muted)">${houses.length} casas</span>`;
+  return `${formatBRL(total)} ${chip}`;
+}
+
 function renderRecentTable(ops) {
   const container = document.getElementById('recent-table');
   if (!ops.length) {
@@ -871,26 +898,20 @@ function renderRecentTable(ops) {
   container.innerHTML = `
     <table>
       <thead><tr>
-        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake B365</th><th>Stake Poly</th><th>Lucro</th><th>Contas</th><th>Status</th>
+        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake</th><th>Proteção</th><th>Lucro</th><th>Contas</th><th>Status</th>
       </tr></thead>
       <tbody>
-        ${ops.map(op => {
-          // BR / tentativa_duplo / punter store legs in extra_bets and zero out
-          // the bet365/poly columns. brLegsSummary works generically for them.
-          const isSingleLegStyle = isSingleLegStyleType(op.type);
-          const br = isSingleLegStyle ? brLegsSummary(op) : null;
-          return `<tr>
+        ${ops.map(op => `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
           <td>${renderTagsDisplay(op.tags)}</td>
-          <td>${isSingleLegStyle ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
-          <td>${isSingleLegStyle ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
+          <td>${legRoleCell(op, 'main')}</td>
+          <td>${legRoleCell(op, 'protection')}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
           <td>${(op.accounts || []).map(a => escapeHtml(a.name)).join(', ') || '-'}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
-        </tr>`;
-        }).join('')}
+        </tr>`).join('')}
       </tbody>
     </table>
   `;
@@ -962,6 +983,25 @@ async function renderNewOperation() {
         <input type="text" class="form-input" id="new-game" placeholder="Ex: Real Madrid vs Barcelona - Vencedor" required>
       </div>
 
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Data do Evento</label>
+          <input type="date" class="form-input" id="new-event-date" value="${today}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Resultado</label>
+          <select class="form-select" id="new-result">
+            <option value="pending">Pendente</option>
+            <option value="bet365_won" data-for="bet365-poly">Bet365 Ganhou</option>
+            <option value="poly_won" data-for="bet365-poly">Polymarket Ganhou</option>
+            <option value="won" data-for="br" hidden>Concluída</option>
+            <option value="won" data-for="single" hidden>Ganhou</option>
+            <option value="lost" data-for="single" hidden>Perdeu</option>
+            <option value="void">Anulado</option>
+          </select>
+        </div>
+      </div>
+
       <div id="new-accounts-section">
         <h3 class="chart-title" style="margin:24px 0 12px">Contas Utilizadas</h3>
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Selecione quais contas Bet365 foram usadas nesta operação</p>
@@ -989,24 +1029,6 @@ async function renderNewOperation() {
                 oninput="onPerAccountStakeInput(event, 'new')">
             </label>
           `).join('') : '<span style="color:var(--text-muted);font-size:13px">Nenhuma conta Bet365 ativa. Ative ou adicione uma conta nas configuracoes.</span>'}
-        </div>
-      </div>
-      <div class="form-grid" style="margin-top:20px">
-        <div class="form-group">
-          <label class="form-label">Data do Evento</label>
-          <input type="date" class="form-input" id="new-event-date" value="${today}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Resultado</label>
-          <select class="form-select" id="new-result">
-            <option value="pending">Pendente</option>
-            <option value="bet365_won" data-for="bet365-poly">Bet365 Ganhou</option>
-            <option value="poly_won" data-for="bet365-poly">Polymarket Ganhou</option>
-            <option value="won" data-for="br" hidden>Concluída</option>
-            <option value="won" data-for="single" hidden>Ganhou</option>
-            <option value="lost" data-for="single" hidden>Perdeu</option>
-            <option value="void">Anulado</option>
-          </select>
         </div>
       </div>
 
@@ -1242,8 +1264,9 @@ async function renderNewOperation() {
       }
       return;
     }
-    // BR / tentativa_duplo use arbitrary leg combinations — leave profit manual.
-    if (isBrLegsType(type)) {
+    // Generic-leg arbs (BR + arbitragem) use arbitrary leg combinations — leave
+    // profit manual (set at settlement via the winning-house picker).
+    if (isBrLegsType(type) || type === 'arbitragem') {
       autoProfitInfo.style.display = 'none';
       return;
     }
@@ -1307,16 +1330,15 @@ async function renderNewOperation() {
       if (box && ids.length) box.innerHTML = freebetAccountCheckboxes(ids);
     }
     if (imp.extraBets && imp.extraBets.length) {
-      if (isBrLegsType(imp.type)) {
+      if (isBrLegsType(imp.type) || imp.type === 'arbitragem') {
         const list = document.getElementById('new-br-legs-list');
         if (list) {
           list.innerHTML = '';
           imp.extraBets.forEach(b => addBrLeg(b));
-          // Stakes/odds are imported, but the calculator doesn't know the real
-          // houses — focus the first house picker and nudge the user to pick.
+          // Re-run currency handling so USD legs reveal the live rate.
+          list.querySelectorAll('.br-leg-bookmaker-id').forEach(sel => { if (sel.value) onBrLegBookmakerChange(sel); });
           const firstHouse = list.querySelector('.br-leg-bookmaker-id');
-          if (firstHouse) { firstHouse.focus(); firstHouse.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
-          toast('Stakes e odds importados — selecione as casas de cada ponta', 'info');
+          if (firstHouse && !firstHouse.value) { firstHouse.focus(); firstHouse.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
         }
       } else {
         const list = document.getElementById('new-extra-bets-list');
@@ -1385,14 +1407,18 @@ function selectType(el) {
   document.getElementById('new-type').value = t;
   const isBR = isBrLegsType(t);
   const isPunter = t === 'punter';
-  const isStandard = !isBR && !isPunter; // bet365 + poly two-leg shape
+  // v2: "Arbitragem" (padrão) também usa as linhas genéricas — escolhe a casa em
+  // cada linha (Bet365/Poly viram padrões), não mais seções fixas. Aquecimento e
+  // Aumentada seguem na seção Bet365 (volume/promo são específicos da Bet365).
+  const usesBet365Section = (t === 'aquecimento' || t === 'aumentada25');
+  const usesGenericLegs = isBR || t === 'arbitragem';
 
   // Section visibility per type.
   const setDisplay = (id, show) => { const n = document.getElementById(id); if (n) n.style.display = show ? '' : 'none'; };
-  setDisplay('new-bet365-section', isStandard);
-  setDisplay('new-poly-section', isStandard);
+  setDisplay('new-bet365-section', usesBet365Section);
+  setDisplay('new-poly-section', usesBet365Section);
   setDisplay('new-accounts-section', !isPunter);
-  setDisplay('new-br-legs-section', isBR);
+  setDisplay('new-br-legs-section', usesGenericLegs);
   setDisplay('new-punter-section', isPunter);
 
   const extraSection = document.getElementById('new-extra-bets-section');
@@ -1405,7 +1431,7 @@ function selectType(el) {
   //   BR / punter (single bet) → won / lost
   const resultSel = document.getElementById('new-result');
   if (resultSel) {
-    const wantsSingle = isBR || isPunter;
+    const wantsSingle = isBR || isPunter || t === 'arbitragem';
     for (const opt of resultSel.options) {
       if (opt.dataset.for === 'bet365-poly') opt.hidden = wantsSingle;
       if (opt.dataset.for === 'br' || opt.dataset.for === 'single') opt.hidden = !wantsSingle;
@@ -1419,12 +1445,19 @@ function selectType(el) {
     const list = document.getElementById('new-extra-bets-list');
     if (list && !list.children.length) { addExtraBet(); addExtraBet(); }
   }
-  // BR arbitrage defaults to 2 legs.
-  if (isBR) {
+  // Generic leg types default to 2 legs. "Arbitragem" pré-seleciona Bet365 + Poly.
+  if (usesGenericLegs) {
     const list = document.getElementById('new-br-legs-list');
-    if (list && !list.children.length) { addBrLeg(); addBrLeg(); }
+    if (list && !list.children.length) {
+      if (t === 'arbitragem') {
+        const b365 = userBookmakers.find(b => b.name === 'Bet365');
+        const pm = userBookmakers.find(b => b.name === 'Polymarket');
+        addBrLeg({ bookmaker_id: b365 ? b365.id : undefined });
+        addBrLeg({ bookmaker_id: pm ? pm.id : undefined });
+      } else { addBrLeg(); addBrLeg(); }
+    }
     // Early-payout checkbox is tentativa_duplo-only. Toggle it on every existing
-    // leg row so switching between BR types updates rows already on screen.
+    // leg row so switching between leg types updates rows already on screen.
     const showEarly = t === 'tentativa_duplo';
     document.querySelectorAll('#new-br-legs-list .br-leg-early-wrap').forEach(w => {
       w.style.display = showEarly ? '' : 'none';
@@ -1702,6 +1735,28 @@ function collectBrLegs() {
   return out;
 }
 
+// Map generic arb legs to the legacy bet365/poly columns (+ extra_bets) so the
+// existing volume/freebet/analytics readers keep working during the transition.
+// The first Bet365 leg → bet365 columns; the first Polymarket leg → poly columns;
+// everything else → extra_bets (preserving house objects + per-leg fields).
+function arbLegsToLegacy(legs) {
+  const b365 = userBookmakers.find(b => b.name === 'Bet365');
+  const pm = userBookmakers.find(b => b.name === 'Polymarket');
+  const out = { stake_bet365: 0, odd_bet365: 0, stake_poly_usd: 0, odd_poly: 0, exchange_rate: 5.0, extra: [] };
+  let bet365Used = false, polyUsed = false;
+  for (const l of legs) {
+    if (!bet365Used && b365 && l.bookmaker_id === b365.id && !l.early_payout && !l.won) {
+      out.stake_bet365 = l.stake; out.odd_bet365 = l.odd; bet365Used = true;
+    } else if (!polyUsed && pm && l.bookmaker_id === pm.id) {
+      out.stake_poly_usd = l.stake_orig != null ? l.stake_orig : l.stake;
+      out.odd_poly = l.odd; out.exchange_rate = l.rate || 5.0; polyUsed = true;
+    } else {
+      out.extra.push(l);
+    }
+  }
+  return out;
+}
+
 async function submitNewOperation(e) {
   e.preventDefault();
   const type = document.getElementById('new-type').value;
@@ -1728,26 +1783,40 @@ async function submitNewOperation(e) {
 
   const isBR = isBrLegsType(type);
   const isPunter = type === 'punter';
-  const isStandard = !isBR && !isPunter;
+  const isArb = type === 'arbitragem'; // v2: generic legs, maps to legacy on submit
+  const usesBet365Cols = (type === 'aquecimento' || type === 'aumentada25');
   const body = {
     type,
     game: document.getElementById('new-game').value.trim(),
     event_date: document.getElementById('new-event-date').value,
-    stake_bet365: isStandard ? totalStakeBet365 : 0,
-    odd_bet365: isStandard ? (parseFloat(document.getElementById('new-odd-bet365').value) || 0) : 0,
-    stake_poly_usd: isStandard ? (parseFloat(document.getElementById('new-stake-poly-usd').value) || 0) : 0,
-    odd_poly: isStandard ? (parseFloat(document.getElementById('new-odd-poly').value) || 0) : 0,
-    exchange_rate: isStandard ? (parseFloat(document.getElementById('new-exchange-rate').value) || 5.0) : 1,
+    stake_bet365: usesBet365Cols ? totalStakeBet365 : 0,
+    odd_bet365: usesBet365Cols ? (parseFloat(document.getElementById('new-odd-bet365').value) || 0) : 0,
+    stake_poly_usd: usesBet365Cols ? (parseFloat(document.getElementById('new-stake-poly-usd').value) || 0) : 0,
+    odd_poly: usesBet365Cols ? (parseFloat(document.getElementById('new-odd-poly').value) || 0) : 0,
+    exchange_rate: usesBet365Cols ? (parseFloat(document.getElementById('new-exchange-rate').value) || 5.0) : 1,
     result: document.getElementById('new-result').value,
     profit: parseFloat(document.getElementById('new-profit').value) || 0,
     notes: document.getElementById('new-notes').value.trim(),
     tags: getTagsFromInput('new-tags'),
-    uses_freebet: isStandard ? (document.getElementById('new-uses-freebet')?.checked || false) : false,
-    freebet_account_ids: (isStandard && document.getElementById('new-uses-freebet')?.checked)
+    uses_freebet: usesBet365Cols ? (document.getElementById('new-uses-freebet')?.checked || false) : false,
+    freebet_account_ids: (usesBet365Cols && document.getElementById('new-uses-freebet')?.checked)
       ? collectFreebetAccountIds('new-freebet-accounts') : [],
   };
   if (type === 'aumentada25') {
     body.extra_bets = collectExtraBets();
+  } else if (isArb) {
+    // Generic legs → legacy shape: the Bet365 leg fills the bet365 columns (so
+    // volume/freebet readers keep working) and a Polymarket leg fills the poly
+    // columns; any other house goes to extra_bets. Houses are objects per line.
+    const legs = collectBrLegs();
+    if (legs.length < 2) { toast('Registre pelo menos 2 apostas', 'error'); return; }
+    const m = arbLegsToLegacy(legs);
+    body.stake_bet365 = m.stake_bet365;
+    body.odd_bet365 = m.odd_bet365;
+    body.stake_poly_usd = m.stake_poly_usd;
+    body.odd_poly = m.odd_poly;
+    body.exchange_rate = m.exchange_rate;
+    body.extra_bets = m.extra;
   } else if (isBR) {
     const legs = collectBrLegs();
     if (legs.length < 2) { toast('Registre pelo menos 2 apostas', 'error'); return; }
@@ -1774,6 +1843,10 @@ async function submitNewOperation(e) {
   }
   if (isPunter) {
     body.account_ids = [];
+  } else if (isArb) {
+    // Accounts attach to the Bet365 leg, split equally (custom per-account stakes
+    // would conflict with the leg's stake field).
+    body.account_ids = account_ids;
   } else if (account_stakes) {
     body.account_stakes = account_stakes;
   } else {
@@ -2040,32 +2113,27 @@ function renderHistoryTable(ops) {
   container.innerHTML = `
     <table>
       <thead><tr>
-        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake B365</th><th>Stake Poly</th><th>Contas</th><th>Lucro</th><th>Status</th><th></th>
+        <th>Data</th><th>Jogo</th><th>Tipo</th><th>Tags</th><th>Stake</th><th>Proteção</th><th>Contas</th><th>Lucro</th><th>Status</th><th></th>
       </tr></thead>
       <tbody>
-        ${ops.map(op => {
-          const isSingleLegStyle = isSingleLegStyleType(op.type);
-          const br = isSingleLegStyle ? brLegsSummary(op) : null;
-          return `<tr>
+        ${ops.map(op => `<tr>
           <td>${formatDate(op.created_at)}</td>
           <td>${escapeHtml(op.game)}</td>
           <td><span class="badge badge-${op.type}">${typeLabel(op.type)}</span></td>
           <td>${renderTagsDisplay(op.tags)}</td>
-          <td>${isSingleLegStyle ? formatBRL(br.totalStake) : formatBRL(op.stake_bet365)}</td>
-          <td>${isSingleLegStyle ? '<span style="color:var(--text-muted)">—</span>' : `${formatUSD(op.stake_poly_usd)} <span class="currency-tag">USD</span>`}</td>
+          <td>${legRoleCell(op, 'main')}</td>
+          <td>${legRoleCell(op, 'protection')}</td>
           <td>${renderAccountChips(op.accounts)}</td>
           <td class="${profitClass(op.profit)}">${formatBRL(op.profit)}</td>
           <td><span class="badge badge-${op.result === 'pending' ? 'pending' : 'won'}">${resultLabel(op.result)}</span></td>
           <td>
             <div class="action-btns">
               <button onclick="duplicateOperation(${op.id})" title="Duplicar">&#128203;</button>
-              <button onclick="openWhatIf(${op.id})" title="Simular what-if">&#128302;</button>
               <button onclick="openEditModal(${op.id})" title="Editar">&#9998;</button>
               <button class="delete" onclick="deleteOperation(${op.id})" title="Excluir">&#128465;</button>
             </div>
           </td>
-        </tr>`;
-        }).join('')}
+        </tr>`).join('')}
       </tbody>
     </table>
   `;
@@ -2262,8 +2330,18 @@ async function duplicateOperation(id) {
     if (!op) { toast('Opera\u00E7\u00E3o n\u00E3o encontrada', 'error'); return; }
 
     const accs = op.accounts || [];
+    // Generic-leg types (arbitragem + BR) duplicate from the canonical legs[] so
+    // the house objects come pre-selected; won is dropped (new op starts fresh).
+    const usesGenericLegs = isBrLegsType(op.type) || op.type === 'arbitragem';
     let extras = [];
-    if (op.extra_bets) {
+    if (usesGenericLegs && Array.isArray(op.legs) && op.legs.length) {
+      extras = op.legs.map(l => ({
+        bookmaker_id: l.bookmaker_id || undefined,
+        bookmaker: l.bookmaker || undefined,
+        currency: l.currency, stake: l.stake, stake_orig: l.stake_orig, rate: l.rate, odd: l.odd,
+        early_payout: l.early_payout ? true : undefined,
+      }));
+    } else if (op.extra_bets) {
       try { extras = JSON.parse(op.extra_bets) || []; } catch { extras = []; }
     }
     window._calcImport = {
@@ -2307,17 +2385,114 @@ function computeArbBase(legs, winIndex) {
 }
 
 // Picking a winning house implies the op is concluded ("won"): set the result,
-// fill the base profit, and (for tentativa de duplo) re-run the settlement math.
+// fill the base profit (from the CURRENT edited leg values), and re-run settlement.
 function onEditWinLegChange() {
-  const picked = document.querySelector('#edit-br-legs-view input[name="edit-win-leg"]:checked');
-  if (!picked) return;
-  const idx = Number(picked.value);
+  const legs = collectEditLegs();
+  const winIdx = legs.findIndex(l => l.won);
+  if (winIdx < 0) return;
   const resSel = document.getElementById('edit-result');
   if (resSel && resSel.value !== 'won') { resSel.value = 'won'; }
-  const base = computeArbBase(_editOpLegs, idx);
+  const base = computeArbBase(legs, winIdx);
   const profitEl = document.getElementById('edit-profit');
   if (profitEl) profitEl.value = formatOperationNumber(base);
   updateSettlementCalc();
+}
+
+// ===== EDIT MODAL — editable leg rows (change house/stake/odd per line) =====
+function editLegRowHtml(l = {}, i = 0, opType) {
+  const selId = resolveBookmakerId(l);
+  const bm = findBookmaker(selId);
+  const isUsd = (bm ? bm.currency : l.currency) === 'USD';
+  const stakeVal = l.stake_orig != null ? Number(l.stake_orig) : (l.stake != null ? Number(l.stake) : null);
+  const rateVal = l.rate != null && Number(l.rate) !== 1 ? Number(l.rate) : null;
+  const isDuplo = opType === 'tentativa_duplo';
+  return `
+    <div class="form-grid edit-leg-row" style="align-items:end;padding:8px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">
+      <div class="form-group" style="flex:0 0 auto;text-align:center">
+        <label class="form-label" style="font-size:11px" title="Casa vencedora">Venceu</label>
+        <input type="radio" name="edit-win-leg" value="${i}" ${l.won ? 'checked' : ''} onchange="onEditWinLegChange()">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Casa</label>
+        <select class="form-input edit-leg-bm" onchange="onEditLegHouseChange(this)">${bookmakerOptions(selId)}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label edit-leg-stake-label">Stake (${isUsd ? 'US$' : 'R$'})</label>
+        <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input edit-leg-stake" value="${stakeVal != null ? formatOperationNumber(stakeVal) : ''}" placeholder="0,00">
+      </div>
+      <div class="form-group edit-leg-rate-wrap" style="${isUsd ? '' : 'display:none'}">
+        <label class="form-label">Cotação</label>
+        <input type="number" step="${OP_DECIMAL_STEP}" min="0" class="form-input edit-leg-rate" value="${rateVal != null ? formatOperationNumber(rateVal) : ''}" placeholder="0,0000">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Odd</label>
+        <input type="number" step="${OP_DECIMAL_STEP}" min="1" class="form-input edit-leg-odd" value="${l.odd != null ? formatOperationNumber(l.odd) : ''}" placeholder="0,00">
+      </div>
+      ${isDuplo ? `<div class="form-group">
+        <label class="account-check" style="cursor:pointer;display:inline-flex;padding:6px 8px" title="Esta ponta tem pagamento antecipado">
+          <input type="checkbox" class="edit-leg-early" ${l.early_payout ? 'checked' : ''}>
+          <div class="account-check-dot"></div>
+          <div style="font-size:12px">Pag. antec.</div>
+        </label>
+      </div>` : ''}
+      <div class="form-group" style="text-align:right">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.edit-leg-row').remove()">Remover</button>
+      </div>
+    </div>
+  `;
+}
+
+function addEditLeg() {
+  const view = document.getElementById('edit-br-legs-view');
+  if (!view) return;
+  view.insertAdjacentHTML('beforeend', editLegRowHtml({}, document.querySelectorAll('#edit-br-legs-view .edit-leg-row').length, _editOpType));
+}
+
+async function onEditLegHouseChange(sel) {
+  if (sel.value === '__new__') {
+    sel.value = '';
+    const name = prompt('Nome da nova casa:');
+    if (name === null || !name.trim()) return;
+    const cur = confirm('Essa casa opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)') ? 'USD' : 'BRL';
+    try {
+      const r = await api('/api/bookmakers', { method: 'POST', body: { name: name.trim(), currency: cur } });
+      await loadBookmakers();
+      document.querySelectorAll('select.edit-leg-bm').forEach(s => { const c = s.value && s.value !== '__new__' ? s.value : ''; s.innerHTML = bookmakerOptions(c); });
+      sel.value = String(r.id);
+      toast('Casa criada!');
+    } catch (err) { toast(err.message, 'error'); return; }
+  }
+  const row = sel.closest('.edit-leg-row'); if (!row) return;
+  const isUsd = sel.selectedOptions[0]?.dataset.currency === 'USD';
+  const rateWrap = row.querySelector('.edit-leg-rate-wrap');
+  const rateInput = row.querySelector('.edit-leg-rate');
+  const stakeLabel = row.querySelector('.edit-leg-stake-label');
+  if (rateWrap) rateWrap.style.display = isUsd ? '' : 'none';
+  if (stakeLabel) stakeLabel.textContent = isUsd ? 'Stake (US$)' : 'Stake (R$)';
+  if (isUsd && rateInput && !rateInput.value) { const r = liveRate || await fetchLiveRate(); if (r) rateInput.value = Number(r).toFixed(4); }
+}
+
+// Read the editable leg rows back into leg objects (BRL stake computed for USD).
+function collectEditLegs() {
+  const out = [];
+  document.querySelectorAll('#edit-br-legs-view .edit-leg-row').forEach(row => {
+    const sel = row.querySelector('.edit-leg-bm');
+    const bmId = sel && sel.value && sel.value !== '__new__' ? Number(sel.value) : null;
+    const bm = bmId ? findBookmaker(bmId) : null;
+    const isUsd = bm?.currency === 'USD';
+    const stakeOrig = parseFloat(row.querySelector('.edit-leg-stake')?.value) || 0;
+    const odd = parseFloat(row.querySelector('.edit-leg-odd')?.value) || 0;
+    if (stakeOrig <= 0 && odd <= 0) return;
+    const rate = isUsd ? (parseFloat(row.querySelector('.edit-leg-rate')?.value) || 0) : 1;
+    const leg = {
+      bookmaker_id: bmId, bookmaker: bm ? bm.name : '', currency: bm ? bm.currency : 'BRL',
+      stake: stakeOrig * (rate || 1), stake_orig: stakeOrig, rate: isUsd ? rate : 1, odd,
+    };
+    if (row.querySelector('input[name="edit-win-leg"]')?.checked) leg.won = true;
+    if (row.querySelector('.edit-leg-early')?.checked) leg.early_payout = true;
+    out.push(leg);
+  });
+  return out;
 }
 
 // Keep the winner picker relevant to the selected result: clearing to
@@ -2398,7 +2573,7 @@ function updateSettlementCalc() {
 // ===== EDIT MODAL =====
 async function openEditModal(id) {
   try {
-    await loadAccounts();
+    await Promise.all([loadAccounts(), loadBookmakers()]);
     const { operations, allTags } = await api(`/api/operations?limit=999`);
     if (allTags) allKnownTags = allTags;
     const op = operations.find(o => o.id === id);
@@ -2409,7 +2584,7 @@ async function openEditModal(id) {
 }
 
 function fillEditModal(op) {
-  const isBR = isBrLegsType(op.type);
+  const isBR = usesGenericLegs(op.type); // BR shapes + standard arbitragem
   const isPunter = op.type === 'punter';
   const isSingleLegStyle = isBR || isPunter;
   document.getElementById('edit-id').value = op.id;
@@ -2468,27 +2643,32 @@ function fillEditModal(op) {
   const brWrap = document.getElementById('edit-br-legs-wrap');
   if (brWrap) brWrap.style.display = isSingleLegStyle ? '' : 'none';
   if (isSingleLegStyle) {
-    const { legs, totalStake } = brLegsSummary(op);
+    // Prefer the canonical legs[] from the API (includes the Bet365/Poly legs for
+    // standard arbitragem); fall back to extra_bets for safety.
+    const legs = (Array.isArray(op.legs) && op.legs.length) ? op.legs : brLegsSummary(op).legs;
+    const totalStake = legs.reduce((s, l) => s + (Number(l.stake) || 0), 0);
     _editOpLegs = legs;
     _editOpType = op.type;
-    // Multi-house arbs let you pick which house won (auto-computes profit); punter
-    // is single-leg, so it keeps the plain read-only view.
-    const pickWinner = isBrLegsType(op.type) && legs.length > 1;
     const view = document.getElementById('edit-br-legs-view');
+    const addBtn = document.getElementById('edit-add-leg-btn');
+    const editable = usesGenericLegs(op.type); // arbs editable; punter read-only
+    if (addBtn) addBtn.style.display = editable ? '' : 'none';
     if (view) {
-      if (!legs.length) {
-        view.innerHTML = '<span>Sem apostas registradas.</span>';
+      if (editable) {
+        // Editable leg rows: change house/stake/odd per line (no need to duplicate).
+        view.style.border = 'none';
+        view.style.padding = '0';
+        view.innerHTML = (legs.length ? legs : [{}]).map((l, i) => editLegRowHtml(l, i, op.type)).join('')
+          + (legs.length > 1 ? '<p style="font-size:11px;color:var(--text-muted)">Marque a casa vencedora — o lucro é calculado automaticamente.</p>' : '');
       } else {
-        view.innerHTML = legs.map((l, i) => `
-          <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--border);${pickWinner ? 'cursor:pointer' : ''}">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${pickWinner ? `<input type="radio" name="edit-win-leg" value="${i}" ${l.won ? 'checked' : ''} onchange="onEditWinLegChange()">` : ''}
-              ${escapeHtml(l.bookmaker || '—')}
-            </span>
-            <span>${legStakeDisplay(l)} @ ${Number(l.odd || 0).toFixed(2)}</span>
-          </label>
-        `).join('') + `<div style="display:flex;justify-content:space-between;padding-top:6px;font-weight:600"><span>Total</span><span>${formatBRL(totalStake)}</span></div>`
-          + (pickWinner ? '<p style="font-size:11px;color:var(--text-muted);margin-top:6px">Selecione a casa vencedora — o lucro é calculado automaticamente.</p>' : '');
+        view.style.border = '';
+        view.innerHTML = legs.length
+          ? legs.map(l => `
+            <div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+              <span>${escapeHtml(l.bookmaker || '—')}</span>
+              <span>${legStakeDisplay(l)} @ ${Number(l.odd || 0).toFixed(2)}</span>
+            </div>`).join('') + `<div style="display:flex;justify-content:space-between;padding-top:6px;font-weight:600"><span>Total</span><span>${formatBRL(totalStake)}</span></div>`
+          : '<span>Sem apostas registradas.</span>';
       }
     }
   } else {
@@ -2637,7 +2817,7 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   }
 
   const editType = document.getElementById('edit-type')?.value;
-  const isEditBR = isBrLegsType(editType);
+  const isEditBR = usesGenericLegs(editType); // BR shapes + standard arbitragem
   const isEditPunter = editType === 'punter';
   const isEditStandard = !isEditBR && !isEditPunter;
   const body = {
@@ -2661,15 +2841,22 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   if (editType === 'aumentada25') {
     body.extra_bets = collectExtraBets('edit-extra-bets-list');
   }
-  // BR-legs arbs: persist which house won (legs are otherwise read-only here).
+  // Generic-leg arbs: legs are editable in the modal now. Standard "arbitragem"
+  // maps the Bet365/Poly legs back to the legacy columns; BR shapes keep all legs
+  // in extra_bets.
   if (isEditBR) {
-    const picked = document.querySelector('#edit-br-legs-view input[name="edit-win-leg"]:checked');
-    const winIdx = picked ? Number(picked.value) : -1;
-    body.extra_bets = _editOpLegs.map((l, i) => {
-      const leg = { ...l };
-      if (i === winIdx) leg.won = true; else delete leg.won;
-      return leg;
-    });
+    const legs = collectEditLegs();
+    if (editType === 'arbitragem') {
+      const m = arbLegsToLegacy(legs);
+      body.stake_bet365 = m.stake_bet365;
+      body.odd_bet365 = m.odd_bet365;
+      body.stake_poly_usd = m.stake_poly_usd;
+      body.odd_poly = m.odd_poly;
+      body.exchange_rate = m.exchange_rate;
+      body.extra_bets = m.extra;
+    } else {
+      body.extra_bets = legs;
+    }
   }
   // Tentativa de duplo: final profit = arb base + early-payout adjustment.
   if (editType === 'tentativa_duplo') {
@@ -2679,7 +2866,8 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     body.profit = base + adj;
     body.settlement = { outcome, adjustment: adj };
   }
-  if (isEditPunter || isEditBR) body.account_ids = [];
+  if (editType === 'arbitragem') body.account_ids = account_ids; // accounts attach to the Bet365 leg
+  else if (isEditPunter || isEditBR) body.account_ids = [];
   else if (account_stakes) body.account_stakes = account_stakes;
   else body.account_ids = account_ids;
 
@@ -2899,11 +3087,11 @@ async function renderSettings() {
       <div id="tag-rules-list"><div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">Carregando...</div></div>
     </div>
 
-    <!-- Bet365 accounts -->
+    <!-- Accounts (per house) -->
     <div class="chart-container">
-      <h3 class="chart-title" style="margin-bottom:4px">Contas Bet365</h3>
+      <h3 class="chart-title" style="margin-bottom:4px">Contas</h3>
       <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px">
-        Cada conta tem seu pr\u00F3prio volume semanal de R$ 1.500 para a freebet e um stake m\u00E1ximo para aumentadas.
+        Cada conta pertence a uma casa. As contas Bet365 t\u00EAm volume semanal de R$ 1.500 para a freebet e um stake m\u00E1ximo para aumentadas.
       </p>
 
       <div id="accounts-list-settings"></div>
@@ -2916,6 +3104,10 @@ async function renderSettings() {
             <input type="text" class="form-input" id="acc-name" placeholder="Ex: Conta Principal" required>
           </div>
           <div class="form-group">
+            <label class="form-label">Casa</label>
+            <select class="form-input" id="acc-house"></select>
+          </div>
+          <div class="form-group">
             <label class="form-label">Stake M\u00E1ximo Aumentada (R$)</label>
             <input type="number" step="0.01" min="0" class="form-input" id="acc-max-stake" placeholder="250" value="250">
           </div>
@@ -2924,6 +3116,15 @@ async function renderSettings() {
           </div>
         </form>
       </div>
+    </div>
+
+    <!-- Curadoria de casas legadas -->
+    <div class="chart-container" id="curation-card" style="margin-top:20px;display:none">
+      <h3 class="chart-title" style="margin-bottom:4px">Curadoria de casas</h3>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">
+        Opera\u00E7\u00F5es antigas tinham o nome da casa em texto livre. Mapeie cada nome para uma casa cadastrada (ou crie uma) para consolidar os dados das An\u00E1lises.
+      </p>
+      <div id="curation-list"></div>
     </div>
 
     <!-- Casas (bookmakers) -->
@@ -2957,8 +3158,11 @@ async function renderSettings() {
     </div>
   `;
 
+  await loadBookmakers();
+  populateAccountHouseSelect();
   renderAccountsList();
-  loadBookmakers().then(renderBookmakersList);
+  renderBookmakersList();
+  loadCuration();
   loadTagRules();
   loadAlertConfigs();
 
@@ -2973,6 +3177,8 @@ async function renderSettings() {
       document.getElementById('bm-currency').value = 'BRL';
       await loadBookmakers();
       renderBookmakersList();
+      populateAccountHouseSelect();
+      renderAccountsList();
     } catch (err) { toast(err.message, 'error'); }
   });
 
@@ -2980,8 +3186,9 @@ async function renderSettings() {
     e.preventDefault();
     const name = document.getElementById('acc-name').value.trim();
     const max_stake_aumentada = parseFloat(document.getElementById('acc-max-stake').value) || 250;
+    const bookmaker_id = Number(document.getElementById('acc-house')?.value) || undefined;
     try {
-      await api('/api/accounts', { method: 'POST', body: { name, max_stake_aumentada } });
+      await api('/api/accounts', { method: 'POST', body: { name, max_stake_aumentada, bookmaker_id } });
       toast('Conta adicionada!');
       document.getElementById('acc-name').value = '';
       document.getElementById('acc-max-stake').value = '250';
@@ -2989,6 +3196,87 @@ async function renderSettings() {
       renderAccountsList();
     } catch (err) { toast(err.message, 'error'); }
   });
+}
+
+// Fill the "add account" house dropdown from the cached houses (Bet365 default).
+function populateAccountHouseSelect() {
+  const sel = document.getElementById('acc-house');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = userBookmakers.map(b =>
+    `<option value="${b.id}">${escapeHtml(b.name)}${b.currency === 'USD' ? ' (US$)' : ''}</option>`
+  ).join('');
+  if (cur) sel.value = cur;
+}
+
+// Inline house picker per account card — reassign on change.
+async function setAccountHouse(accountId, bookmakerId) {
+  try {
+    await api(`/api/accounts/${accountId}`, { method: 'PUT', body: { bookmaker_id: Number(bookmakerId) } });
+    await loadAccounts();
+    renderAccountsList();
+    toast('Casa da conta atualizada!');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ===== CURATION (legacy free-text house names) =====
+let _curationPending = [];
+async function loadCuration() {
+  try { _curationPending = await api('/api/bookmakers/curation'); }
+  catch { _curationPending = []; }
+  renderCurationList();
+}
+
+function renderCurationList() {
+  const card = document.getElementById('curation-card');
+  const list = document.getElementById('curation-list');
+  if (!card || !list) return;
+  if (!_curationPending.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const houseOpts = userBookmakers.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  list.innerHTML = _curationPending.map(c => `
+    <div class="account-card" data-raw="${escapeHtml(c.name)}">
+      <div class="account-card-left">
+        <div class="account-card-icon">?</div>
+        <div>
+          <div class="account-card-name">${escapeHtml(c.name)}</div>
+          <div class="account-card-meta">${c.legs} perna(s) em operações</div>
+        </div>
+      </div>
+      <div class="account-card-actions" style="gap:6px">
+        <select class="form-input curation-house" style="min-width:140px">
+          <option value="__new__">+ Criar "${escapeHtml(c.name)}"</option>
+          ${houseOpts}
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="applyCuration(this)">Aplicar</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function applyCuration(btn) {
+  const card = btn.closest('.account-card');
+  const sel = card?.querySelector('.curation-house');
+  const rawName = card?.dataset.raw;
+  if (!sel || !rawName) return;
+  const body = { raw_bookmaker: rawName };
+  if (sel.value === '__new__') {
+    // Let the user fix the casing/spelling of the new house (default = raw name).
+    const newName = prompt('Nome da nova casa:', rawName);
+    if (newName === null || !newName.trim()) return;
+    const cur = confirm(`A casa "${newName.trim()}" opera em DÓLAR (US$)?\n\nOK = USD  ·  Cancelar = Real (R$)`) ? 'USD' : 'BRL';
+    body.new_name = newName.trim(); body.currency = cur;
+  } else {
+    body.bookmaker_id = Number(sel.value);
+  }
+  try {
+    const r = await api('/api/bookmakers/curation', { method: 'POST', body });
+    toast(`Mapeado (${r.updated} perna(s))`, 'success');
+    await loadBookmakers();
+    populateAccountHouseSelect();
+    renderBookmakersList();
+    await loadCuration();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function toggleRankingVisibility(field, checked) {
@@ -3310,6 +3598,9 @@ function renderAccountsList() {
     return;
   }
 
+  const houseOpts = (selId) => userBookmakers.map(b =>
+    `<option value="${b.id}" ${b.id === Number(selId) ? 'selected' : ''}>${escapeHtml(b.name)}${b.currency === 'USD' ? ' (US$)' : ''}</option>`
+  ).join('');
   container.innerHTML = userAccounts.map(acc => `
     <div class="account-card ${acc.active ? '' : 'inactive'}" id="acc-card-${acc.id}">
       <div class="account-card-left">
@@ -3324,7 +3615,8 @@ function renderAccountsList() {
           </div>
         </div>
       </div>
-      <div class="account-card-actions">
+      <div class="account-card-actions" style="gap:6px;flex-wrap:wrap">
+        <select class="form-input" style="min-width:130px" title="Casa da conta" onchange="setAccountHouse(${acc.id}, this.value)">${houseOpts(acc.bookmaker_id)}</select>
         <button class="btn btn-ghost btn-sm" onclick="editAccount(${acc.id})">Editar</button>
         ${acc.active
           ? `<button class="btn btn-ghost btn-sm" style="color:var(--warning, #ffa726)" onclick="toggleAccountActive(${acc.id}, false)">Desativar</button>`

@@ -20,16 +20,28 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Resolve a bookmaker_id the account may belong to. Accepts a client-provided id
+// (must belong to the user); otherwise falls back to the built-in Bet365 house.
+async function resolveAccountHouse(userId, requested) {
+  if (requested != null) {
+    const bm = await db.get('SELECT id FROM bookmakers WHERE id = ? AND user_id = ?', requested, userId);
+    if (bm) return bm.id;
+  }
+  const bet365 = await db.get("SELECT id FROM bookmakers WHERE user_id = ? AND name = 'Bet365'", userId);
+  return bet365 ? bet365.id : null;
+}
+
 // Create account
 router.post('/', async (req, res) => {
   try {
-    const { name, max_stake_aumentada } = req.body;
+    const { name, max_stake_aumentada, bookmaker_id } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Nome da conta é obrigatório' });
     }
+    const houseId = await resolveAccountHouse(req.user.id, bookmaker_id);
     const r = await db.run(
-      'INSERT INTO accounts (user_id, name, max_stake_aumentada) VALUES (?, ?, ?)',
-      req.user.id, name.trim(), max_stake_aumentada || 250
+      'INSERT INTO accounts (user_id, name, max_stake_aumentada, bookmaker_id) VALUES (?, ?, ?, ?)',
+      req.user.id, name.trim(), max_stake_aumentada || 250, houseId
     );
     res.json({ id: r.lastInsertRowid });
   } catch (err) {
@@ -44,12 +56,16 @@ router.put('/:id', async (req, res) => {
     const acc = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', req.params.id, req.user.id);
     if (!acc) return res.status(404).json({ error: 'Conta não encontrada' });
 
-    const { name, max_stake_aumentada, active } = req.body;
+    const { name, max_stake_aumentada, active, bookmaker_id } = req.body;
+    const houseId = bookmaker_id !== undefined
+      ? await resolveAccountHouse(req.user.id, bookmaker_id)
+      : acc.bookmaker_id;
     await db.run(
-      'UPDATE accounts SET name=?, max_stake_aumentada=?, active=? WHERE id = ?',
+      'UPDATE accounts SET name=?, max_stake_aumentada=?, active=?, bookmaker_id=? WHERE id = ?',
       name ?? acc.name,
       max_stake_aumentada ?? acc.max_stake_aumentada,
       active !== undefined ? (active ? 1 : 0) : acc.active,
+      houseId,
       req.params.id
     );
     res.json({ ok: true });

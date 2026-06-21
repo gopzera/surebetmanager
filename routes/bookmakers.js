@@ -73,71 +73,48 @@ router.get('/performance', async (req, res) => {
     const period = periodWhere(String(req.query.period || 'monthly'));
 
     await ensureBuiltins(userId);
-    const bms = await db.all(
-      'SELECT id, name, currency, is_builtin FROM bookmakers WHERE user_id = ? AND hidden = 0',
-      userId
-    );
-    const byId = new Map(bms.map(b => [b.id, b]));
-    const byNameLower = new Map(bms.map(b => [b.name.toLowerCase(), b]));
-    const bet365 = bms.find(b => b.is_builtin && b.name === 'Bet365') || null;
-    const poly = bms.find(b => b.is_builtin && b.name === 'Polymarket') || null;
-
-    const ops = await db.all(
-      `SELECT o.id, o.type, o.stake_bet365, o.stake_poly_usd, o.exchange_rate, o.profit, o.extra_bets
-       FROM operations o
-       WHERE o.user_id = ? AND o.result != 'pending' AND ${period.clause}`,
+    // v2: read the canonical relational legs (house-object based) — no more
+    // bet365/poly column + extra_bets parsing. Include pending ops so freshly
+    // registered bets still show in volume/count (profit is 0 for pending/void).
+    const legRows = await db.all(
+      `SELECT l.operation_id, l.bookmaker_id, b.name AS bm_name,
+              COALESCE(b.currency, l.currency) AS currency, l.stake, l.raw_bookmaker, o.profit
+       FROM operation_legs l
+       JOIN operations o ON o.id = l.operation_id
+       LEFT JOIN bookmakers b ON b.id = l.bookmaker_id
+       WHERE o.user_id = ? AND ${period.clause}`,
       userId, ...period.params
     );
 
-    // key → aggregate. key prefers bookmaker id; legacy free-text names fall back
-    // to their lowercased name so unmapped houses still surface as their own row.
+    // Group legs per operation so each distinct house is counted once per op for
+    // op_count/profit (volume sums all of that house's legs).
+    const byOp = new Map();
+    for (const r of legRows) {
+      const key = r.bookmaker_id ? `id:${r.bookmaker_id}` : `name:${String(r.raw_bookmaker || '—').toLowerCase()}`;
+      let entry = byOp.get(r.operation_id);
+      if (!entry) { entry = { profit: Number(r.profit) || 0, houses: new Map() }; byOp.set(r.operation_id, entry); }
+      const h = entry.houses.get(key)
+        || { bookmaker_id: r.bookmaker_id || null, name: r.bm_name || r.raw_bookmaker || '—', currency: r.currency || 'BRL', volume: 0 };
+      h.volume += Number(r.stake) || 0;
+      entry.houses.set(key, h);
+    }
+
     const agg = new Map();
     const combos = new Map(); // sorted house-name set → { combo, count, profit }
-    const keyFor = (bm, name) => bm ? `id:${bm.id}` : `name:${(name || '—').toLowerCase()}`;
-
-    for (const op of ops) {
-      const profit = Number(op.profit) || 0;
-      // Accumulate per-house volume within this op, so each distinct house is
-      // counted once for op_count/profit even with multiple legs at it.
-      const housesInOp = new Map();
-      const addVol = (bm, name, currency, vol) => {
-        const key = keyFor(bm, name);
-        const cur = housesInOp.get(key)
-          || { bookmaker_id: bm ? bm.id : null, name: bm ? bm.name : (name || '—'), currency: bm ? bm.currency : (currency || 'BRL'), volume: 0 };
-        cur.volume += Number(vol) || 0;
-        housesInOp.set(key, cur);
-      };
-
-      if (Number(op.stake_bet365) > 0) addVol(bet365, 'Bet365', 'BRL', Number(op.stake_bet365));
-      if (Number(op.stake_poly_usd) > 0) {
-        addVol(poly, 'Polymarket', 'USD', Number(op.stake_poly_usd) * (Number(op.exchange_rate) || 1));
-      }
-      for (const leg of parseLegs(op.extra_bets)) {
-        if (leg && (leg.bookmaker_id || leg.bookmaker)) {
-          const bm = leg.bookmaker_id ? byId.get(Number(leg.bookmaker_id))
-                   : byNameLower.get(String(leg.bookmaker || '').toLowerCase());
-          addVol(bm || null, leg.bookmaker, leg.currency, Number(leg.stake) || 0);
-        } else if (leg) {
-          // aumentada secondary legs carry no bookmaker — they're extra Bet365 bets.
-          addVol(bet365, 'Bet365', 'BRL', Number(leg.stake) || 0);
-        }
-      }
-
-      for (const [key, h] of housesInOp) {
+    for (const entry of byOp.values()) {
+      for (const [key, h] of entry.houses) {
         const g = agg.get(key) || { bookmaker_id: h.bookmaker_id, name: h.name, currency: h.currency, volume: 0, op_count: 0, profit: 0 };
         g.volume += h.volume;
         g.op_count += 1;
-        g.profit += profit;
+        g.profit += entry.profit;
         agg.set(key, g);
       }
-
-      // House combination for this op (only multi-house ops have a "combo").
-      const names = [...housesInOp.values()].map(h => h.name).sort((a, b) => a.localeCompare(b));
+      const names = [...entry.houses.values()].map(h => h.name).sort((a, b) => a.localeCompare(b));
       if (names.length >= 2) {
         const ck = names.join(' + ');
         const c = combos.get(ck) || { combo: ck, count: 0, profit: 0 };
         c.count += 1;
-        c.profit += profit;
+        c.profit += entry.profit;
         combos.set(ck, c);
       }
     }
@@ -156,7 +133,7 @@ router.get('/performance', async (req, res) => {
       `SELECT CAST(strftime('%H', o.created_at, '-3 hours') AS INTEGER) AS h,
               COUNT(*) AS c, COALESCE(SUM(o.profit), 0) AS p
        FROM operations o
-       WHERE o.user_id = ? AND o.result != 'pending' AND ${period.clause}
+       WHERE o.user_id = ? AND ${period.clause}
        GROUP BY h`,
       userId, ...period.params
     );
@@ -170,7 +147,7 @@ router.get('/performance', async (req, res) => {
       `SELECT CAST(strftime('%w', ${OP_DATE_EXPR}) AS INTEGER) AS w,
               COUNT(*) AS c, COALESCE(SUM(o.profit), 0) AS p
        FROM operations o
-       WHERE o.user_id = ? AND o.result != 'pending' AND ${period.clause}
+       WHERE o.user_id = ? AND ${period.clause}
        GROUP BY w`,
       userId, ...period.params
     );
@@ -181,6 +158,68 @@ router.get('/performance', async (req, res) => {
     }
 
     res.json({ period: period.period, bookmakers, combos: comboList, byHour, byWeekday });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ===== CURATION: map legacy free-text house names to house objects =====
+// Legs backfilled from legacy free-text names have bookmaker_id NULL and
+// raw_bookmaker set. List the distinct pending names so the user can map them
+// (fixes miss-spelling inconsistencies in analytics).
+router.get('/curation', async (req, res) => {
+  try {
+    const rows = await db.all(
+      `SELECT l.raw_bookmaker AS name, COUNT(*) AS legs
+       FROM operation_legs l
+       JOIN operations o ON o.id = l.operation_id
+       WHERE o.user_id = ? AND l.bookmaker_id IS NULL AND l.raw_bookmaker IS NOT NULL
+       GROUP BY l.raw_bookmaker
+       ORDER BY legs DESC, name`,
+      req.user.id
+    );
+    res.json(rows.map(r => ({ name: r.name, legs: Number(r.legs) || 0 })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Map a pending name to a house: an existing bookmaker_id, or create one from
+// { new_name, currency }. Updates every leg of the user that has that raw name.
+router.post('/curation', async (req, res) => {
+  try {
+    const raw = String(req.body.raw_bookmaker || '').trim();
+    if (!raw) return res.status(400).json({ error: 'Nome pendente obrigatório' });
+
+    let bmId = null;
+    if (req.body.bookmaker_id != null) {
+      const bm = await db.get('SELECT id FROM bookmakers WHERE id = ? AND user_id = ?', req.body.bookmaker_id, req.user.id);
+      if (!bm) return res.status(400).json({ error: 'Casa inválida' });
+      bmId = bm.id;
+    } else {
+      const newName = String(req.body.new_name || raw).trim();
+      const currency = CURRENCIES.includes(req.body.currency) ? req.body.currency : 'BRL';
+      try {
+        const r = await db.run('INSERT INTO bookmakers (user_id, name, currency) VALUES (?, ?, ?)', req.user.id, newName, currency);
+        bmId = Number(r.lastInsertRowid);
+      } catch (err) {
+        if (isUniqueErr(err)) {
+          const existing = await db.get('SELECT id FROM bookmakers WHERE user_id = ? AND name = ?', req.user.id, newName);
+          bmId = existing ? existing.id : null;
+        } else throw err;
+      }
+    }
+    if (!bmId) return res.status(400).json({ error: 'Não foi possível resolver a casa' });
+
+    const r = await db.run(
+      `UPDATE operation_legs SET bookmaker_id = ?, raw_bookmaker = NULL
+       WHERE raw_bookmaker = ? AND operation_id IN (SELECT id FROM operations WHERE user_id = ?)`,
+      bmId, raw, req.user.id
+    );
+    await audit(req, 'bookmaker_curation', bmId, 'mapped', { raw, legs: r.changes });
+    res.json({ ok: true, bookmaker_id: bmId, updated: r.changes });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });

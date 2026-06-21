@@ -133,6 +133,41 @@ const SCHEMA = `
     UNIQUE(user_id, name)
   );
 
+  -- v2: every operation is a set of legs that reference a house (bookmaker).
+  -- Replaces the bet365/poly fixed columns + the extra_bets JSON. stake is BRL;
+  -- stake_orig/rate keep the entered value + USD→BRL conversion. role marks the
+  -- main bet vs the protection (hedge). raw_bookmaker holds a legacy free-text
+  -- house name pending curation (bookmaker_id NULL until mapped).
+  CREATE TABLE IF NOT EXISTS operation_legs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id INTEGER NOT NULL,
+    bookmaker_id INTEGER,
+    role TEXT NOT NULL DEFAULT 'main',
+    stake REAL NOT NULL DEFAULT 0,
+    stake_orig REAL,
+    currency TEXT NOT NULL DEFAULT 'BRL',
+    rate REAL NOT NULL DEFAULT 1,
+    odd REAL NOT NULL DEFAULT 0,
+    won INTEGER NOT NULL DEFAULT 0,
+    early_payout INTEGER NOT NULL DEFAULT 0,
+    uses_freebet INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0,
+    raw_bookmaker TEXT,
+    FOREIGN KEY (operation_id) REFERENCES operations(id) ON DELETE CASCADE,
+    FOREIGN KEY (bookmaker_id) REFERENCES bookmakers(id)
+  );
+
+  -- v2: a single leg (e.g. a Bet365 side) can be split across N accounts for
+  -- volume/freebet tracking. Generalizes the old operation_accounts.
+  CREATE TABLE IF NOT EXISTS operation_leg_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    leg_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    stake REAL,
+    FOREIGN KEY (leg_id) REFERENCES operation_legs(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_operations_user ON operations(user_id);
   CREATE INDEX IF NOT EXISTS idx_operations_date ON operations(created_at);
   CREATE INDEX IF NOT EXISTS idx_operations_type ON operations(type);
@@ -142,6 +177,10 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_op_accounts_acc ON operation_accounts(account_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
   CREATE INDEX IF NOT EXISTS idx_bookmakers_user ON bookmakers(user_id);
+  CREATE INDEX IF NOT EXISTS idx_op_legs_op ON operation_legs(operation_id);
+  CREATE INDEX IF NOT EXISTS idx_op_legs_bm ON operation_legs(bookmaker_id);
+  CREATE INDEX IF NOT EXISTS idx_op_leg_accounts_leg ON operation_leg_accounts(leg_id);
+  CREATE INDEX IF NOT EXISTS idx_op_leg_accounts_acc ON operation_leg_accounts(account_id);
   CREATE INDEX IF NOT EXISTS idx_freebets_user ON freebets(user_id);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_id);
   CREATE INDEX IF NOT EXISTS idx_wallet_positions_wallet ON wallet_positions(wallet_id);
@@ -477,9 +516,20 @@ const db = {
             } catch (_) {}
           }
         }
+        // v2: accounts belong to a house; houses gain presentation + a reserved
+        // rules slot (generic per-house rules come later).
+        try { await client.execute(`ALTER TABLE accounts ADD COLUMN bookmaker_id INTEGER`); } catch (_) {}
+        for (const col of ['icon TEXT', 'color TEXT', 'rules TEXT']) {
+          try { await client.execute(`ALTER TABLE bookmakers ADD COLUMN ${col}`); } catch (_) {}
+        }
         // Apply versioned migrations (runs after SCHEMA + legacy ALTERs so new
         // migrations can rely on columns those added).
         await runMigrations();
+        // v2: backfill the relational leg model from legacy operations. Idempotent
+        // (guarded by a schema_migrations marker); preserves all data, sends
+        // unmatched free-text house names to curation.
+        try { await require('./backfillLegs')(client); }
+        catch (e) { console.error('[backfillLegs] failed', e?.message); }
       })();
     }
     return initPromise;
