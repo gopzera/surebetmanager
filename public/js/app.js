@@ -408,13 +408,61 @@ async function checkAuth() {
   handleDiscordUrlParams();
   try {
     currentUser = await api('/api/auth/me');
-    if (!currentUser.has_access) { showBlockedScreen(currentUser); return; }
+    if (!currentUser.has_access) {
+      // Returning from Mercado Pago? The webhook may still be confirming — poll a bit.
+      if (new URLSearchParams(location.search).get('paid') === '1') { await waitForAccessAfterPayment(); return; }
+      showBlockedScreen(currentUser); return;
+    }
     showApp();
   } catch {
     document.getElementById('auth-page').style.display = 'flex';
     document.getElementById('app').style.display = 'none';
     document.getElementById('blocked-page').style.display = 'none';
   }
+}
+
+// After a Checkout Pro redirect, poll /me until the webhook grants access.
+async function waitForAccessAfterPayment() {
+  showBlockedScreen(currentUser);
+  const inf = document.getElementById('blocked-info');
+  for (let i = 0; i < 8; i++) {
+    if (inf) inf.textContent = 'Confirmando seu pagamento… aguarde alguns segundos.';
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      currentUser = await api('/api/auth/me');
+      if (currentUser.has_access) { history.replaceState({}, '', location.pathname); showApp(); return; }
+    } catch (_) {}
+  }
+  history.replaceState({}, '', location.pathname);
+  showBlockedScreen(currentUser);
+}
+
+// Subscription options on the paywall — loads plans and starts Checkout Pro.
+async function renderPayOptions() {
+  const box = document.getElementById('blocked-pay');
+  if (!box) return;
+  box.innerHTML = '<div style="color:var(--text-muted);font-size:13px;text-align:center">Carregando opções…</div>';
+  try {
+    const cfg = await api('/api/payments/plans');
+    if (!cfg.enabled || !cfg.plans || !cfg.plans.length) {
+      box.innerHTML = '<div style="font-size:13px;color:var(--text-muted);text-align:center">Pagamento indisponível no momento — peça acesso ao administrador.</div>';
+      return;
+    }
+    box.innerHTML = cfg.plans
+      .sort((a, b) => a.days - b.days)
+      .map(p => `<button class="btn btn-primary" style="width:100%;justify-content:center" onclick="startCheckout('${p.id}')">Assinar ${p.id === 'annual' ? 'anual' : 'mensal'} — R$ ${Number(p.price).toFixed(2).replace('.', ',')}</button>`)
+      .join('');
+  } catch {
+    box.innerHTML = '<div style="font-size:13px;color:var(--text-muted);text-align:center">Não foi possível carregar as opções de pagamento.</div>';
+  }
+}
+
+async function startCheckout(plan) {
+  try {
+    const r = await api('/api/payments/checkout', { method: 'POST', body: { plan } });
+    if (r.init_point) window.location.href = r.init_point;
+    else toast('Não foi possível iniciar o pagamento', 'error');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // Paywall / blocked screen for users without an active license (non-admins).

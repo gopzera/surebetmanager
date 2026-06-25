@@ -44,6 +44,7 @@ app.use('/api/ranking', require('./routes/ranking'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/payments', require('./routes/payments'));
 app.use('/api/giros', require('./routes/giros'));
 app.use('/api/finances', require('./routes/finances'));
 app.use('/api/audit', require('./routes/audit'));
