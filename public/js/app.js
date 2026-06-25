@@ -27,6 +27,11 @@ async function api(url, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json();
+  // License gate: a feature route returned 402 → show the paywall/blocked screen.
+  if (res.status === 402 && data && data.code === 'no_access') {
+    showBlockedScreen(data);
+    throw new Error(data.error || 'Acesso bloqueado');
+  }
   if (!res.ok) throw new Error(data.error || 'Erro na requisição');
   return data;
 }
@@ -403,23 +408,50 @@ async function checkAuth() {
   handleDiscordUrlParams();
   try {
     currentUser = await api('/api/auth/me');
+    if (!currentUser.has_access) { showBlockedScreen(currentUser); return; }
     showApp();
   } catch {
     document.getElementById('auth-page').style.display = 'flex';
     document.getElementById('app').style.display = 'none';
+    document.getElementById('blocked-page').style.display = 'none';
   }
 }
 
+// Paywall / blocked screen for users without an active license (non-admins).
+function showBlockedScreen(info) {
+  document.getElementById('auth-page').style.display = 'none';
+  document.getElementById('app').style.display = 'none';
+  const page = document.getElementById('blocked-page');
+  if (page) page.style.display = 'flex';
+  try { stopBgPolling(); } catch (_) {}
+  const exp = info && info.license_expires_at;
+  const expired = exp && new Date(exp).getTime() <= Date.now();
+  const msg = document.getElementById('blocked-message');
+  const inf = document.getElementById('blocked-info');
+  if (msg) msg.textContent = expired ? 'Sua licença expirou.' : 'Seu acesso ainda não está liberado.';
+  if (inf) {
+    inf.textContent = expired
+      ? `Expirou em ${new Date(exp).toLocaleDateString('pt-BR')}. Renove para continuar usando.`
+      : 'Assine para usar o site, ou peça acesso ao administrador.';
+  }
+  // Fase 2 popula #blocked-pay com os botões de assinatura (Mercado Pago).
+  if (typeof renderPayOptions === 'function') renderPayOptions();
+}
+
 async function logout() {
-  await api('/api/auth/logout', { method: 'POST' });
+  try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) {}
   currentUser = null;
   stopBgPolling();
   document.getElementById('auth-page').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
+  const blocked = document.getElementById('blocked-page');
+  if (blocked) blocked.style.display = 'none';
 }
 
 async function showApp() {
   document.getElementById('auth-page').style.display = 'none';
+  const blocked = document.getElementById('blocked-page');
+  if (blocked) blocked.style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   const displayName = currentUser.discord_username || currentUser.display_name;
   document.getElementById('user-name').textContent = displayName;

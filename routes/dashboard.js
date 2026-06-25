@@ -5,6 +5,7 @@ const { attachMany, attachScalars } = require('../utils/batch');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 // Users are in BRT (UTC-3). Server (Vercel / local) stores created_at as UTC,
 // so shifting -3h before DATE() buckets by the user's calendar day.

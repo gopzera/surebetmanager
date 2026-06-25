@@ -5,6 +5,7 @@ const { audit } = require('../utils/audit');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 const CURRENCIES = ['BRL', 'USD'];
 

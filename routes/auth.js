@@ -133,11 +133,13 @@ router.post('/logout-all', auth, async (req, res) => {
 router.get('/me', auth, async (req, res) => {
   try {
     const user = await db.get(
-      'SELECT id, username, display_name, discord_id, discord_username, discord_avatar, is_admin FROM users WHERE id = ?',
+      'SELECT id, username, display_name, discord_id, discord_username, discord_avatar, is_admin, access_status, license_expires_at, license_plan FROM users WHERE id = ?',
       req.user.id
     );
     if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
-    res.json(user);
+    // Attach effective access state so the frontend can gate the UI / show paywall.
+    const { computeAccess } = require('../middleware/requireAccess');
+    res.json({ ...user, ...computeAccess(user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });

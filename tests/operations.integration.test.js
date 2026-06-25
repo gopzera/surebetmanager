@@ -82,6 +82,11 @@ beforeAll(async () => {
   });
   if (r.status !== 200) throw new Error('register failed: ' + JSON.stringify(r.data));
   currentUserId = r.data.id;
+
+  // New users are 'blocked' by the licensing gate — grant the test user access
+  // so the feature routes (operations/etc.) aren't 402'd.
+  const db = require('../db/database');
+  await db.run("UPDATE users SET access_status = 'active' WHERE id = ?", currentUserId);
 }, 30000);
 
 afterAll(async () => {

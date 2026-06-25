@@ -7,6 +7,7 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 const ALLOWED_VIEWS = new Set(['history']);
 
