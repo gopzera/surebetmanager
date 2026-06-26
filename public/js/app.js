@@ -409,8 +409,14 @@ async function checkAuth() {
   try {
     currentUser = await api('/api/auth/me');
     if (!currentUser.has_access) {
-      // Returning from Mercado Pago? The webhook may still be confirming — poll a bit.
+      // Returning from Mercado Pago? Reconcile against MP until access is granted.
       if (new URLSearchParams(location.search).get('paid') === '1') { await waitForAccessAfterPayment(); return; }
+      // Otherwise try a one-shot reconcile (covers a renewal that just cleared or a
+      // first charge that finished after the user left), then fall back to the paywall.
+      try {
+        const rec = await api('/api/payments/reconcile', { method: 'POST' });
+        if (rec && rec.has_access) { currentUser = await api('/api/auth/me'); showApp(); return; }
+      } catch (_) {}
       showBlockedScreen(currentUser); return;
     }
     showApp();

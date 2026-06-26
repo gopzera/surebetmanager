@@ -58,25 +58,47 @@ async function applyOneoff(row, mpPaymentId) {
   return true;
 }
 
-// Apply a processed recurring charge. Idempotent via the UNIQUE mp_payment_id —
-// INSERT OR IGNORE; if the charge was already recorded, the license isn't extended
-// again. Returns true if it credited a new period.
-async function applyAuthorized(sub, ap) {
+// Drive a subscription's license off the preapproval's authoritative paid-through
+// date (next_payment_date). This grants access the moment the subscription becomes
+// 'authorized' — without waiting for the first charge to finish processing (which
+// can lag past the return-to-site polling window) — and naturally advances on each
+// renewal. Idempotent: it only ever moves the expiry forward. A few days of grace
+// are added so renewal processing never momentarily locks the user out.
+const SUB_GRACE_DAYS = 3;
+async function syncSubscriptionAccess(sub, pre) {
+  if (!pre || !pre.status) return false;
+  if (pre.status !== 'authorized') {
+    await db.run("UPDATE subscriptions SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", pre.status, sub.id);
+    return false;
+  }
   const plan = PLANS[sub.plan];
   if (!plan) return false;
-  const payKey = String((ap.payment && ap.payment.id) || ap.id);
-  let credited = false;
+  const np = parseUtc(pre.next_payment_date);
+  const target = (np ? np.getTime() : Date.now() + plan.days * 86400000) + SUB_GRACE_DAYS * 86400000;
+  let changed = false;
   await db.transaction(async (tx) => {
-    const ins = await tx.run(
-      "INSERT OR IGNORE INTO payments (user_id, plan, amount, currency, status, mp_payment_id, external_reference, approved_at) VALUES (?, ?, ?, 'BRL', 'approved', ?, ?, CURRENT_TIMESTAMP)",
-      sub.user_id, sub.plan, plan.price, payKey, 'sub_' + sub.id
-    );
-    credited = Number(ins.changes || 0) > 0;
     await tx.run("UPDATE subscriptions SET status='authorized', updated_at=CURRENT_TIMESTAMP WHERE id=?", sub.id);
-    if (credited) await extendLicense(tx, sub.user_id, sub.plan, plan.days);
+    const u = await tx.get('SELECT access_status, license_expires_at FROM users WHERE id=?', sub.user_id);
+    const cur = parseUtc(u && u.license_expires_at);
+    const newExp = Math.max(cur ? cur.getTime() : 0, target);
+    if (!u || u.access_status !== 'active' || !cur || newExp > cur.getTime()) {
+      await tx.run("UPDATE users SET access_status='active', license_expires_at=?, license_plan=? WHERE id=?", new Date(newExp).toISOString(), sub.plan, sub.user_id);
+      changed = true;
+    }
   });
-  if (credited) console.log('[payments] subscription charge → license extended for user', sub.user_id, 'plan', sub.plan);
-  return credited;
+  if (changed) console.log('[payments] subscription authorized → access until', new Date(target).toISOString(), 'user', sub.user_id);
+  return changed;
+}
+
+// Record a processed recurring charge for history/audit (license itself is driven by
+// syncSubscriptionAccess). Idempotent via UNIQUE mp_payment_id.
+async function recordAuthorizedPayment(sub, ap) {
+  const plan = PLANS[sub.plan];
+  const payKey = String((ap.payment && ap.payment.id) || ap.id);
+  await db.run(
+    "INSERT OR IGNORE INTO payments (user_id, plan, amount, currency, status, mp_payment_id, external_reference, approved_at) VALUES (?, ?, ?, 'BRL', 'approved', ?, ?, CURRENT_TIMESTAMP)",
+    sub.user_id, sub.plan, plan ? plan.price : 0, payKey, 'sub_' + sub.id
+  );
 }
 
 // Plans + whether payments are enabled (reachable by blocked users — auth only).
@@ -191,13 +213,12 @@ router.post('/reconcile', auth, async (req, res) => {
     for (const sub of subs) {
       const pre = await mpGet(`/preapproval/${sub.mp_preapproval_id}`);
       if (!pre.ok || !pre.data || !pre.data.status) continue;
-      if (pre.data.status !== sub.status) await db.run("UPDATE subscriptions SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", pre.data.status, sub.id);
+      if (await syncSubscriptionAccess(sub, pre.data)) changed = true;
       if (pre.data.status === 'authorized') {
         const ap = await mpGet(`/authorized_payments/search?preapproval_id=${sub.mp_preapproval_id}`);
         const results = (ap.ok && ap.data && ap.data.results) || [];
         for (const r of results) {
-          const okPaid = r.status === 'processed' || (r.payment && r.payment.status === 'approved');
-          if (okPaid && await applyAuthorized(sub, r)) changed = true;
+          if (r.status === 'processed' || (r.payment && r.payment.status === 'approved')) await recordAuthorizedPayment(sub, r);
         }
       }
     }
@@ -254,21 +275,24 @@ async function creditOneoffPayment(paymentMpId) {
   if (row) await applyOneoff(row, paymentMpId);
 }
 
-// Recurring charge cleared → look up the subscription by preapproval, extend one period.
+// Recurring charge cleared → record it and re-sync the subscription's paid-through date.
 async function creditAuthorizedPayment(authorizedPaymentId) {
   const { ok, data: ap } = await mpGet(`/authorized_payments/${authorizedPaymentId}`);
-  if (!ok) return;
-  const approved = ap.status === 'processed' || (ap.payment && ap.payment.status === 'approved');
-  if (!approved) return;
+  if (!ok || !ap.preapproval_id) return;
   const sub = await db.get('SELECT * FROM subscriptions WHERE mp_preapproval_id = ?', String(ap.preapproval_id));
-  if (sub) await applyAuthorized(sub, ap);
+  if (!sub) return;
+  if (ap.status === 'processed' || (ap.payment && ap.payment.status === 'approved')) await recordAuthorizedPayment(sub, ap);
+  const pre = await mpGet(`/preapproval/${ap.preapproval_id}`);
+  if (pre.ok) await syncSubscriptionAccess(sub, pre.data);
 }
 
-// Subscription lifecycle (authorized/paused/cancelled) → mirror MP's status locally.
+// Subscription lifecycle (authorized/paused/cancelled) → sync status + access.
 async function syncPreapproval(preapprovalId) {
   const { ok, data: pre } = await mpGet(`/preapproval/${preapprovalId}`);
   if (!ok || !pre.status) return;
-  await db.run("UPDATE subscriptions SET status=?, updated_at=CURRENT_TIMESTAMP WHERE mp_preapproval_id=?", pre.status, String(preapprovalId));
+  const sub = await db.get('SELECT * FROM subscriptions WHERE mp_preapproval_id = ?', String(preapprovalId));
+  if (sub) await syncSubscriptionAccess(sub, pre);
+  else await db.run("UPDATE subscriptions SET status=?, updated_at=CURRENT_TIMESTAMP WHERE mp_preapproval_id=?", pre.status, String(preapprovalId));
   console.log('[payments] preapproval', preapprovalId, '→ status', pre.status);
 }
 
