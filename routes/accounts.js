@@ -5,6 +5,7 @@ const { audit } = require('../utils/audit');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 // List user's accounts (excludes hidden/soft-deleted)
 router.get('/', async (req, res) => {

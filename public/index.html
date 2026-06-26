@@ -51,6 +51,20 @@
     </div>
   </div>
 
+  <!-- Acesso bloqueado / paywall -->
+  <div id="blocked-page" class="auth-container" style="display:none">
+    <div class="auth-card">
+      <div style="text-align:center;margin-bottom:8px;font-size:36px;">&#128274;</div>
+      <h1 class="auth-title">Acesso bloqueado</h1>
+      <p class="auth-subtitle" id="blocked-message">Seu acesso ainda não está liberado.</p>
+      <div id="blocked-info" style="text-align:center;font-size:13px;color:var(--text-muted);margin-bottom:16px"></div>
+      <div id="blocked-pay" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div class="auth-switch" style="margin-top:16px">
+        <a onclick="logout()">Sair</a>
+      </div>
+    </div>
+  </div>
+
   <!-- Main App -->
   <div id="app" class="app" style="display:none">
 

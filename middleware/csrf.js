@@ -17,6 +17,7 @@ const EXEMPT_PATHS = [
   /^\/api\/auth\/discord\/callback$/, // browser redirect from Discord
   /^\/api\/watcher\/cron-poll$/,       // secured by CRON_SECRET
   /^\/api\/notifications\/cron-poly-poll$/,
+  /^\/api\/payments\/webhook$/,        // Mercado Pago server-to-server notification
 ];
 
 function isExempt(req) {

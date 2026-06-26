@@ -9,6 +9,7 @@ const { evaluateAll, getConfigs, getAlertKeys } = require('../utils/alerts');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 router.get('/', async (req, res) => {
   try {

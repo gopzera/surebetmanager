@@ -1,6 +1,6 @@
 // ===== ADMIN PANEL =====
 
-let adminTab = 'notify'; // 'notify' | 'operations' | 'audit'
+let adminTab = 'users'; // 'users' | 'notify' | 'operations' | 'audit'
 let adminUsers = [];
 
 async function renderAdmin() {
@@ -21,6 +21,7 @@ async function renderAdmin() {
     </div>
 
     <div class="watcher-tabs">
+      <button class="watcher-tab ${adminTab === 'users' ? 'active' : ''}" onclick="switchAdminTab('users')">Usuários</button>
       <button class="watcher-tab ${adminTab === 'notify' ? 'active' : ''}" onclick="switchAdminTab('notify')">Enviar notificação</button>
       <button class="watcher-tab ${adminTab === 'operations' ? 'active' : ''}" onclick="switchAdminTab('operations')">Operações</button>
       <button class="watcher-tab ${adminTab === 'audit' ? 'active' : ''}" onclick="switchAdminTab('audit')">Audit log</button>
@@ -36,14 +37,100 @@ function switchAdminTab(tab) {
   document.querySelectorAll('.watcher-tab').forEach(el => {
     const txt = el.textContent.trim().toLowerCase();
     el.classList.toggle('active',
+      (tab === 'users' && txt.startsWith('usuários')) ||
       (tab === 'notify' && txt.startsWith('enviar')) ||
       (tab === 'operations' && txt.startsWith('operações')) ||
       (tab === 'audit' && txt.startsWith('audit'))
     );
   });
-  if (tab === 'notify') renderAdminNotify();
+  if (tab === 'users') renderAdminUsers();
+  else if (tab === 'notify') renderAdminNotify();
   else if (tab === 'operations') renderAdminOperations();
   else renderAdminAudit();
+}
+
+function adminAccessBadge(u) {
+  if (u.is_admin) return '<span class="badge badge-won">admin</span>';
+  if (!u.has_access) return '<span class="badge" style="background:rgba(239,83,80,.15);color:var(--danger)">bloqueado</span>';
+  return '<span class="badge badge-won">ativo</span>';
+}
+function adminLicenseInfo(u) {
+  if (u.is_admin) return '—';
+  if (!u.license_expires_at) return u.has_access ? 'indefinido' : '—';
+  const d = u.days_remaining;
+  return `${new Date(u.license_expires_at).toLocaleDateString('pt-BR')} (${d} dia${d === 1 ? '' : 's'})`;
+}
+
+function renderAdminUsers() {
+  const container = document.getElementById('admin-content');
+  if (!container) return;
+  const userOpts = adminUsers.map(u =>
+    `<option value="${u.id}">${escapeHtml(u.display_name)} (${escapeHtml(u.username)})</option>`
+  ).join('');
+  container.innerHTML = `
+    <div class="chart-container" style="margin-bottom:20px;max-width:760px">
+      <h3 class="chart-title" style="margin-bottom:12px">Importar operações (JSON) para um usuário</h3>
+      <div class="form-group">
+        <label class="form-label">Usuário</label>
+        <select class="form-select" id="admin-import-user">${userOpts}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">JSON (mesmo formato do import do Google Sheets)</label>
+        <textarea class="form-input" id="admin-import-json" rows="5" placeholder='{"rows":[ ... ]}'></textarea>
+      </div>
+      <button class="btn btn-primary" onclick="adminImportOps()">Importar</button>
+      <span id="admin-import-result" style="margin-left:10px;font-size:13px"></span>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead><tr><th>Usuário</th><th>Acesso</th><th>Licença</th><th>Ações</th></tr></thead>
+        <tbody>
+          ${adminUsers.map(u => `<tr>
+            <td>${escapeHtml(u.display_name)}<div style="font-size:11px;color:var(--text-muted)">${escapeHtml(u.username)}</div></td>
+            <td>${adminAccessBadge(u)}</td>
+            <td style="font-size:12px">${adminLicenseInfo(u)}</td>
+            <td>
+              ${u.is_admin ? '<span style="font-size:11px;color:var(--text-muted)">—</span>' : `
+              <div class="action-btns" style="flex-wrap:wrap;gap:4px">
+                ${u.has_access
+                  ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="adminUserAccess(${u.id},'revoke')">Bloquear</button>`
+                  : `<button class="btn btn-ghost btn-sm" onclick="adminUserAccess(${u.id},'grant')">Liberar</button>`}
+                <button class="btn btn-ghost btn-sm" onclick="adminUserAccess(${u.id},'extend',30,'monthly')">+30d</button>
+                <button class="btn btn-ghost btn-sm" onclick="adminUserAccess(${u.id},'extend',365,'annual')">+365d</button>
+              </div>`}
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function adminUserAccess(id, action, days, plan) {
+  if (action === 'revoke' && !confirm('Bloquear o acesso desse usuário?')) return;
+  try {
+    await api(`/api/admin/users/${id}/access`, { method: 'POST', body: { action, days, plan } });
+    toast('Acesso atualizado!');
+    adminUsers = await api('/api/admin/users');
+    renderAdminUsers();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function adminImportOps() {
+  const id = Number(document.getElementById('admin-import-user')?.value);
+  const raw = document.getElementById('admin-import-json')?.value || '';
+  const resultEl = document.getElementById('admin-import-result');
+  let payload;
+  try { payload = JSON.parse(raw); }
+  catch { if (resultEl) resultEl.innerHTML = '<span style="color:var(--danger)">JSON inválido</span>'; return; }
+  try {
+    const r = await api(`/api/admin/users/${id}/import-operations`, { method: 'POST', body: payload });
+    if (resultEl) resultEl.innerHTML = `<span style="color:var(--success)">Importadas ${r.imported} operação(ões)</span>`;
+    const ta = document.getElementById('admin-import-json'); if (ta) ta.value = '';
+  } catch (err) {
+    if (resultEl) resultEl.innerHTML = `<span style="color:var(--danger)">${escapeHtml(err.message)}</span>`;
+  }
 }
 
 function renderAdminNotify() {

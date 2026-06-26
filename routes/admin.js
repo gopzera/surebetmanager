@@ -2,23 +2,99 @@ const express = require('express');
 const db = require('../db/database');
 const auth = require('../middleware/auth');
 const { requireAdmin, logAdminAction } = require('../middleware/requireAdmin');
+const { computeAccess, parseUtc } = require('../middleware/requireAccess');
+const { importOperationsForUser } = require('./operations');
 
 const router = express.Router();
 router.use(auth);
 router.use(requireAdmin);
+
+const PLANS = { monthly: 30, annual: 365 };
 
 // ===== USERS =====
 
 router.get('/users', async (req, res) => {
   try {
     const users = await db.all(
-      `SELECT id, username, display_name, discord_id, discord_username, is_admin, created_at
+      `SELECT id, username, display_name, discord_id, discord_username, is_admin, created_at,
+              access_status, license_expires_at, license_plan
        FROM users ORDER BY display_name`
     );
-    res.json(users);
+    // Attach effective access + days remaining for the admin UI.
+    res.json(users.map(u => ({ ...u, ...computeAccess(u) })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Grant / revoke / extend / block a user's access + license.
+router.post('/users/:id/access', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const target = await db.get('SELECT id, access_status, license_expires_at, license_plan FROM users WHERE id = ?', id);
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+    const action = String(req.body.action || '');
+    const days = Number(req.body.days) || 0;
+    const plan = ['monthly', 'annual', 'manual'].includes(req.body.plan) ? req.body.plan : null;
+
+    let { access_status, license_expires_at, license_plan } = target;
+
+    if (action === 'grant') {
+      // Liberar: dias>0 → expira em now+dias; senão acesso indefinido (NULL).
+      access_status = 'active';
+      license_expires_at = days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null;
+      license_plan = plan || 'manual';
+    } else if (action === 'extend') {
+      // Estender: soma dias a partir do maior entre agora e a expiração atual.
+      access_status = 'active';
+      const cur = parseUtc(license_expires_at);
+      const base = cur && cur.getTime() > Date.now() ? cur.getTime() : Date.now();
+      license_expires_at = new Date(base + (days || 0) * 86400000).toISOString();
+      if (plan) license_plan = plan;
+    } else if (action === 'revoke' || action === 'block') {
+      access_status = 'blocked';
+    } else if (action === 'unblock') {
+      access_status = 'active';
+    } else {
+      return res.status(400).json({ error: 'Ação inválida' });
+    }
+
+    await db.run(
+      'UPDATE users SET access_status = ?, license_expires_at = ?, license_plan = ? WHERE id = ?',
+      access_status, license_expires_at, license_plan, id
+    );
+    await logAdminAction(req.user.id, req.adminIp, 'set_user_access', {
+      targetUserId: id, details: { action, days, plan, access_status, license_expires_at },
+    });
+
+    const updated = await db.get('SELECT is_admin, access_status, license_expires_at, license_plan FROM users WHERE id = ?', id);
+    res.json({ ok: true, ...computeAccess(updated) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Import a Google-Sheets-shaped operations JSON into a target user's account.
+router.post('/users/:id/import-operations', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const target = await db.get('SELECT id FROM users WHERE id = ?', id);
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+    const result = await importOperationsForUser(id, req.body);
+    if (!result.ok) {
+      return res.status(400).json({ error: 'Corrija as linhas inválidas antes de importar.', preview: result.preview });
+    }
+    await logAdminAction(req.user.id, req.adminIp, 'import_operations_for_user', {
+      targetUserId: id, details: { imported: result.imported },
+    });
+    res.json({ ok: true, imported: result.imported, ids: result.ids });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao importar operações' });
   }
 });
 

@@ -168,6 +168,23 @@ const SCHEMA = `
     FOREIGN KEY (account_id) REFERENCES accounts(id)
   );
 
+  -- Licensing payments (Mercado Pago). mp_payment_id UNIQUE makes the webhook
+  -- idempotent (the same approved payment can't extend a license twice).
+  CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    plan TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'BRL',
+    status TEXT NOT NULL DEFAULT 'pending',
+    mp_preference_id TEXT,
+    mp_payment_id TEXT UNIQUE,
+    external_reference TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    approved_at DATETIME,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_operations_user ON operations(user_id);
   CREATE INDEX IF NOT EXISTS idx_operations_date ON operations(created_at);
   CREATE INDEX IF NOT EXISTS idx_operations_type ON operations(type);
@@ -181,6 +198,24 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_op_legs_bm ON operation_legs(bookmaker_id);
   CREATE INDEX IF NOT EXISTS idx_op_leg_accounts_leg ON operation_leg_accounts(leg_id);
   CREATE INDEX IF NOT EXISTS idx_op_leg_accounts_acc ON operation_leg_accounts(account_id);
+  -- Recurring subscriptions (Mercado Pago preapproval). One row per preapproval;
+  -- each authorized charge records a row in payments (mp_payment_id UNIQUE keeps
+  -- license extension idempotent). status mirrors MP: pending, authorized,
+  -- paused, cancelled.
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    plan TEXT NOT NULL,
+    payer_email TEXT,
+    mp_preapproval_id TEXT UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS idx_freebets_user ON freebets(user_id);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_id);
   CREATE INDEX IF NOT EXISTS idx_wallet_positions_wallet ON wallet_positions(wallet_id);
@@ -496,6 +531,11 @@ const db = {
           'notify_operator_payment INTEGER NOT NULL DEFAULT 1',
           // Dashboard toggle: subtract operator costs from headline profit.
           'dash_include_operators INTEGER NOT NULL DEFAULT 0',
+          // Access control / licensing: new users start blocked (must be granted
+          // access or pay). license_expires_at NULL = no expiry (indefinite).
+          "access_status TEXT NOT NULL DEFAULT 'blocked'",
+          'license_expires_at DATETIME',
+          'license_plan TEXT',
         ]) {
           try {
             await client.execute(`ALTER TABLE users ADD COLUMN ${col}`);
@@ -530,6 +570,17 @@ const db = {
         // unmatched free-text house names to curation.
         try { await require('./backfillLegs')(client); }
         catch (e) { console.error('[backfillLegs] failed', e?.message); }
+        // Access control: grandfather all EXISTING users to active access on the
+        // first boot after this feature ships (one-time, guarded). New signups
+        // default to 'blocked'. Runs once so manually-blocked users aren't revived.
+        try {
+          const done = await client.execute({ sql: 'SELECT version FROM schema_migrations WHERE version = ?', args: ['grandfather_access_v1'] });
+          if (!done.rows.length) {
+            await client.execute("UPDATE users SET access_status = 'active' WHERE access_status = 'blocked'");
+            await client.execute({ sql: 'INSERT INTO schema_migrations (version) VALUES (?)', args: ['grandfather_access_v1'] });
+            console.log('[grandfather_access] existing users set to active');
+          }
+        } catch (e) { console.error('[grandfather_access] failed', e?.message); }
       })();
     }
     return initPromise;

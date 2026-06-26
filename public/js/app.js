@@ -27,6 +27,11 @@ async function api(url, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json();
+  // License gate: a feature route returned 402 → show the paywall/blocked screen.
+  if (res.status === 402 && data && data.code === 'no_access') {
+    showBlockedScreen(data);
+    throw new Error(data.error || 'Acesso bloqueado');
+  }
   if (!res.ok) throw new Error(data.error || 'Erro na requisição');
   return data;
 }
@@ -403,23 +408,127 @@ async function checkAuth() {
   handleDiscordUrlParams();
   try {
     currentUser = await api('/api/auth/me');
+    if (!currentUser.has_access) {
+      // Returning from Mercado Pago? Reconcile against MP until access is granted.
+      if (new URLSearchParams(location.search).get('paid') === '1') { await waitForAccessAfterPayment(); return; }
+      // Otherwise try a one-shot reconcile (covers a renewal that just cleared or a
+      // first charge that finished after the user left), then fall back to the paywall.
+      try {
+        const rec = await api('/api/payments/reconcile', { method: 'POST' });
+        if (rec && rec.has_access) { currentUser = await api('/api/auth/me'); showApp(); return; }
+      } catch (_) {}
+      showBlockedScreen(currentUser); return;
+    }
     showApp();
   } catch {
     document.getElementById('auth-page').style.display = 'flex';
     document.getElementById('app').style.display = 'none';
+    document.getElementById('blocked-page').style.display = 'none';
   }
 }
 
+// After returning from Mercado Pago, actively reconcile the payment against MP
+// (doesn't rely on the webhook) until access is granted.
+async function waitForAccessAfterPayment() {
+  showBlockedScreen(currentUser);
+  const inf = document.getElementById('blocked-info');
+  for (let i = 0; i < 8; i++) {
+    if (inf) inf.textContent = 'Confirmando seu pagamento… aguarde alguns segundos.';
+    try {
+      const rec = await api('/api/payments/reconcile', { method: 'POST' });
+      if (rec && rec.has_access) {
+        currentUser = await api('/api/auth/me');
+        history.replaceState({}, '', location.pathname); showApp(); return;
+      }
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 2500));
+  }
+  history.replaceState({}, '', location.pathname);
+  showBlockedScreen(currentUser);
+}
+
+// Subscription options on the paywall — loads plans and starts Checkout Pro.
+async function renderPayOptions() {
+  const box = document.getElementById('blocked-pay');
+  if (!box) return;
+  box.innerHTML = '<div style="color:var(--text-muted);font-size:13px;text-align:center">Carregando opções…</div>';
+  try {
+    const cfg = await api('/api/payments/plans');
+    if (!cfg.enabled || !cfg.plans || !cfg.plans.length) {
+      box.innerHTML = '<div style="font-size:13px;color:var(--text-muted);text-align:center">Pagamento indisponível no momento — peça acesso ao administrador.</div>';
+      return;
+    }
+    const brl = v => 'R$ ' + Number(v).toFixed(2).replace('.', ',');
+    box.innerHTML = cfg.plans
+      .sort((a, b) => a.days - b.days)
+      .map(p => {
+        const period = p.id === 'annual' ? 'ano' : 'mês';
+        const name = p.id === 'annual' ? 'Anual' : 'Mensal';
+        return `
+          <div style="border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px">
+            <div style="font-weight:600">${name} — ${brl(p.price)}</div>
+            <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="startCheckout('${p.id}','subscription')">Assinar (renova todo ${period})</button>
+            <button class="btn btn-ghost btn-sm" style="width:100%;justify-content:center" onclick="startCheckout('${p.id}','oneoff')">Pagar uma vez (${p.days} dias)</button>
+          </div>`;
+      })
+      .join('');
+  } catch {
+    box.innerHTML = '<div style="font-size:13px;color:var(--text-muted);text-align:center">Não foi possível carregar as opções de pagamento.</div>';
+  }
+}
+
+// mode: 'subscription' (recurring preapproval — needs the payer's MP e-mail) or
+// 'oneoff' (Checkout Pro, pay once).
+async function startCheckout(plan, mode = 'oneoff') {
+  try {
+    const body = { plan, mode };
+    if (mode === 'subscription') {
+      const email = (prompt('Informe o e-mail da sua conta Mercado Pago (será usado na cobrança automática):') || '').trim();
+      if (!email) return;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('E-mail inválido', 'error'); return; }
+      body.email = email;
+    }
+    const r = await api('/api/payments/checkout', { method: 'POST', body });
+    if (r.init_point) window.location.href = r.init_point;
+    else toast('Não foi possível iniciar o pagamento', 'error');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// Paywall / blocked screen for users without an active license (non-admins).
+function showBlockedScreen(info) {
+  document.getElementById('auth-page').style.display = 'none';
+  document.getElementById('app').style.display = 'none';
+  const page = document.getElementById('blocked-page');
+  if (page) page.style.display = 'flex';
+  try { stopBgPolling(); } catch (_) {}
+  const exp = info && info.license_expires_at;
+  const expired = exp && new Date(exp).getTime() <= Date.now();
+  const msg = document.getElementById('blocked-message');
+  const inf = document.getElementById('blocked-info');
+  if (msg) msg.textContent = expired ? 'Sua licença expirou.' : 'Seu acesso ainda não está liberado.';
+  if (inf) {
+    inf.textContent = expired
+      ? `Expirou em ${new Date(exp).toLocaleDateString('pt-BR')}. Renove para continuar usando.`
+      : 'Assine para usar o site, ou peça acesso ao administrador.';
+  }
+  // Fase 2 popula #blocked-pay com os botões de assinatura (Mercado Pago).
+  if (typeof renderPayOptions === 'function') renderPayOptions();
+}
+
 async function logout() {
-  await api('/api/auth/logout', { method: 'POST' });
+  try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) {}
   currentUser = null;
   stopBgPolling();
   document.getElementById('auth-page').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
+  const blocked = document.getElementById('blocked-page');
+  if (blocked) blocked.style.display = 'none';
 }
 
 async function showApp() {
   document.getElementById('auth-page').style.display = 'none';
+  const blocked = document.getElementById('blocked-page');
+  if (blocked) blocked.style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   const displayName = currentUser.discord_username || currentUser.display_name;
   document.getElementById('user-name').textContent = displayName;

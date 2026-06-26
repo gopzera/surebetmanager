@@ -9,6 +9,7 @@ const { buildOpLegs } = require('../db/legModel');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 // v2 transition: keep operation_legs in sync as a projection of each legacy write.
 // Built houses + name-match context for mapping legacy free-text legs to houses.
@@ -277,67 +278,61 @@ router.post('/import/preview', async (req, res) => {
   }
 });
 
+// Validate + insert a Google-Sheets-shaped operations payload for a given user.
+// Reused by /import/commit (self) and by the admin "import for user" route.
+// Returns { ok:true, imported, ids } or { ok:false, preview } on validation fail.
+async function importOperationsForUser(userId, payload) {
+  const preview = buildPreview(payload);
+  if (!preview.ok) return { ok: false, preview: previewForResponse(payload) };
+
+  const prepared = [];
+  for (const row of preview.rows) {
+    const op = row.operation;
+    const autoTags = await evaluateRules(db, userId, {
+      type: op.type, game: op.game, notes: op.notes, result: op.result,
+      odd_bet365: op.odd_bet365, odd_poly: op.odd_poly,
+      stake_bet365: op.stake_bet365, stake_poly_usd: op.stake_poly_usd, profit: op.profit,
+    });
+    prepared.push({ op, autoTags });
+  }
+
+  const ids = await db.transaction(async (tx) => {
+    const inserted = [];
+    for (const item of prepared) {
+      const op = item.op;
+      const extraBetsStr = serializeExtraBets(op.extra_bets, []);
+      const r = await tx.run(
+        `INSERT INTO operations (user_id, type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, extra_bets, uses_freebet, freebet_account_id, freebet_account_ids)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        userId, op.type, op.game, op.event_date || null,
+        op.stake_bet365 || 0, op.odd_bet365 || 0,
+        op.stake_poly_usd || 0, op.odd_poly || 0,
+        op.exchange_rate || 1,
+        op.result || 'pending', op.profit || 0, op.notes || null,
+        extraBetsStr, 0, null, null
+      );
+      inserted.push(r.lastInsertRowid);
+      for (const t of item.autoTags) {
+        await tx.run('INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)', r.lastInsertRowid, t);
+      }
+    }
+    return inserted;
+  });
+  for (const opId of ids) await syncLegs(opId);
+  return { ok: true, imported: ids.length, ids };
+}
+
 // Commit Google Sheets JSON import. Always revalidates server-side and appends.
 router.post('/import/commit', async (req, res) => {
   try {
-    const preview = buildPreview(req.body);
-    if (!preview.ok) {
-      return res.status(400).json({
-        error: 'Corrija as linhas invalidas antes de importar.',
-        preview: previewForResponse(req.body),
-      });
+    const result = await importOperationsForUser(req.user.id, req.body);
+    if (!result.ok) {
+      return res.status(400).json({ error: 'Corrija as linhas invalidas antes de importar.', preview: result.preview });
     }
-
-    const prepared = [];
-    for (const row of preview.rows) {
-      const op = row.operation;
-      const autoTags = await evaluateRules(db, req.user.id, {
-        type: op.type,
-        game: op.game,
-        notes: op.notes,
-        result: op.result,
-        odd_bet365: op.odd_bet365,
-        odd_poly: op.odd_poly,
-        stake_bet365: op.stake_bet365,
-        stake_poly_usd: op.stake_poly_usd,
-        profit: op.profit,
-      });
-      prepared.push({ op, autoTags });
-    }
-
-    const ids = await db.transaction(async (tx) => {
-      const inserted = [];
-      for (const item of prepared) {
-        const op = item.op;
-        const extraBetsStr = serializeExtraBets(op.extra_bets, []);
-        const r = await tx.run(
-          `INSERT INTO operations (user_id, type, game, event_date, stake_bet365, odd_bet365, stake_poly_usd, odd_poly, exchange_rate, result, profit, notes, extra_bets, uses_freebet, freebet_account_id, freebet_account_ids)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          req.user.id, op.type, op.game, op.event_date || null,
-          op.stake_bet365 || 0, op.odd_bet365 || 0,
-          op.stake_poly_usd || 0, op.odd_poly || 0,
-          op.exchange_rate || 1,
-          op.result || 'pending', op.profit || 0, op.notes || null,
-          extraBetsStr, 0, null, null
-        );
-        inserted.push(r.lastInsertRowid);
-
-        for (const t of item.autoTags) {
-          await tx.run(
-            'INSERT OR IGNORE INTO operation_tags (operation_id, tag) VALUES (?, ?)',
-            r.lastInsertRowid, t
-          );
-        }
-      }
-      return inserted;
-    });
-
     await audit(req, 'user', req.user.id, 'imported_google_sheets_operations', {
-      count: ids.length,
-      operation_ids: ids.slice(0, 25),
+      count: result.imported, operation_ids: result.ids.slice(0, 25),
     });
-    for (const opId of ids) await syncLegs(opId);
-    res.json({ ok: true, imported: ids.length, ids });
+    res.json({ ok: true, imported: result.imported, ids: result.ids });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro ao importar operacoes' });
@@ -618,3 +613,4 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.importOperationsForUser = importOperationsForUser;

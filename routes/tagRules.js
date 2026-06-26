@@ -6,6 +6,7 @@ const { ALLOWED_FIELDS, NUMERIC_OPS, STRING_OPS } = require('../utils/tagRules')
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 function validateConditions(input) {
   if (!Array.isArray(input) || input.length === 0) return null;

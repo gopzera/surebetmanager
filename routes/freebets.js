@@ -5,6 +5,7 @@ const V = require('../utils/validate');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 const WEEKLY_VOLUME_GOAL = 1500; // R$ per account per week
 const FREEBET_VALUE = 100;       // R$ awarded when threshold is crossed

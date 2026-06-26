@@ -4,6 +4,7 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 router.use(auth);
+router.use(require("../middleware/requireAccess").requireAccess);
 
 // Users are in BRT (UTC-3). Match dashboard/freebets period bucketing.
 const BR_TZ_OFFSET_MS = -3 * 60 * 60 * 1000;
