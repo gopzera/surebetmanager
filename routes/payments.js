@@ -6,10 +6,12 @@ const { computeAccess, parseUtc } = require('../middleware/requireAccess');
 const router = express.Router();
 
 // Mercado Pago. Two ways to license:
-//  - oneoff   → Checkout Pro preference (pay once, get N days).
+//  - oneoff       → Checkout Pro preference (pay once, get N days).
 //  - subscription → Preapproval (recurring auto-charge every period; auto-renews).
-// Access token via env (sandbox works). Prices/durations are env-configurable
-// (MONTHLY_PRICE/ANNUAL_PRICE) and default to R$30 / R$300.
+// Access is granted by TWO independent paths so a missed/blocked webhook never
+// strands a paid user: (1) the webhook, and (2) active reconciliation (POST
+// /reconcile) which pulls the authoritative status straight from MP when the user
+// returns from checkout. Both funnel through the same idempotent apply* helpers.
 const MP_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN;
 const PLANS = {
   monthly: { days: 30, months: 1, price: Number(process.env.MONTHLY_PRICE) || 30, title: 'Surebet Manager — Mensal' },
@@ -24,6 +26,12 @@ function baseUrl(req) {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+async function mpGet(path) {
+  const r = await fetch(`https://api.mercadopago.com${path}`, { headers: { Authorization: `Bearer ${MP_TOKEN}` } });
+  const data = await r.json();
+  return { ok: r.ok, data };
+}
+
 // Add `days` to a user's license, stacking from max(now, current expiry).
 async function extendLicense(tx, userId, plan, planDays) {
   const user = await tx.get('SELECT license_expires_at FROM users WHERE id=?', userId);
@@ -31,6 +39,44 @@ async function extendLicense(tx, userId, plan, planDays) {
   const base = cur && cur.getTime() > Date.now() ? cur.getTime() : Date.now();
   const newExp = new Date(base + planDays * 86400000).toISOString();
   await tx.run("UPDATE users SET access_status='active', license_expires_at=?, license_plan=? WHERE id=?", newExp, plan, userId);
+}
+
+// Apply an approved one-off Checkout Pro payment. Idempotent: a row already marked
+// approved with the same MP payment id is a no-op. Returns true if it credited.
+async function applyOneoff(row, mpPaymentId) {
+  if (row.status === 'approved' && row.mp_payment_id === String(mpPaymentId)) return false;
+  const plan = PLANS[row.plan];
+  if (!plan) return false;
+  await db.transaction(async (tx) => {
+    await tx.run(
+      "UPDATE payments SET status='approved', mp_payment_id=?, approved_at=CURRENT_TIMESTAMP WHERE id=?",
+      String(mpPaymentId), row.id
+    );
+    await extendLicense(tx, row.user_id, row.plan, plan.days);
+  });
+  console.log('[payments] one-off approved → license extended for user', row.user_id, 'plan', row.plan);
+  return true;
+}
+
+// Apply a processed recurring charge. Idempotent via the UNIQUE mp_payment_id —
+// INSERT OR IGNORE; if the charge was already recorded, the license isn't extended
+// again. Returns true if it credited a new period.
+async function applyAuthorized(sub, ap) {
+  const plan = PLANS[sub.plan];
+  if (!plan) return false;
+  const payKey = String((ap.payment && ap.payment.id) || ap.id);
+  let credited = false;
+  await db.transaction(async (tx) => {
+    const ins = await tx.run(
+      "INSERT OR IGNORE INTO payments (user_id, plan, amount, currency, status, mp_payment_id, external_reference, approved_at) VALUES (?, ?, ?, 'BRL', 'approved', ?, ?, CURRENT_TIMESTAMP)",
+      sub.user_id, sub.plan, plan.price, payKey, 'sub_' + sub.id
+    );
+    credited = Number(ins.changes || 0) > 0;
+    await tx.run("UPDATE subscriptions SET status='authorized', updated_at=CURRENT_TIMESTAMP WHERE id=?", sub.id);
+    if (credited) await extendLicense(tx, sub.user_id, sub.plan, plan.days);
+  });
+  if (credited) console.log('[payments] subscription charge → license extended for user', sub.user_id, 'plan', sub.plan);
+  return credited;
 }
 
 // Plans + whether payments are enabled (reachable by blocked users — auth only).
@@ -68,7 +114,7 @@ router.post('/checkout', auth, async (req, res) => {
         headers: { Authorization: `Bearer ${MP_TOKEN}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reason: plan.title,
-          external_reference: String(subId),
+          external_reference: 'sub_' + subId,
           payer_email: email,
           back_url: `${base}/?paid=1`,
           notification_url: `${base}/api/payments/webhook`,
@@ -96,13 +142,14 @@ router.post('/checkout', auth, async (req, res) => {
       req.user.id, planId, plan.price
     );
     const paymentId = Number(r.lastInsertRowid);
+    const ref = 'pay_' + paymentId;
 
     const mpRes = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',
       headers: { Authorization: `Bearer ${MP_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         items: [{ title: plan.title, quantity: 1, unit_price: plan.price, currency_id: 'BRL' }],
-        external_reference: String(paymentId),
+        external_reference: ref,
         metadata: { user_id: req.user.id, plan: planId, payment_id: paymentId },
         notification_url: `${base}/api/payments/webhook`,
         back_urls: { success: `${base}/?paid=1`, failure: `${base}/?paid=0`, pending: `${base}/?paid=pending` },
@@ -112,13 +159,53 @@ router.post('/checkout', auth, async (req, res) => {
     const mpData = await mpRes.json();
     if (!mpRes.ok) { console.error('[payments] MP preference error', mpData); return res.status(502).json({ error: 'Erro ao criar pagamento' }); }
 
-    await db.run('UPDATE payments SET mp_preference_id = ?, external_reference = ? WHERE id = ?', mpData.id, String(paymentId), paymentId);
+    await db.run('UPDATE payments SET mp_preference_id = ?, external_reference = ? WHERE id = ?', mpData.id, ref, paymentId);
     const initPoint = process.env.NODE_ENV === 'production'
       ? mpData.init_point
       : (mpData.sandbox_init_point || mpData.init_point);
     res.json({ init_point: initPoint, preference_id: mpData.id, mode });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Active reconciliation: pull the authoritative status from MP for THIS user's
+// pending payments/subscriptions and grant access if approved. Webhook-independent
+// (works even when the deployment is behind auth and MP can't reach the webhook).
+// Auth only — reachable by blocked users returning from checkout.
+router.post('/reconcile', auth, async (req, res) => {
+  try {
+    if (!MP_TOKEN) return res.json({ changed: false, ...computeAccess({}) });
+    let changed = false;
+
+    const pend = await db.all("SELECT * FROM payments WHERE user_id=? AND status='pending'", req.user.id);
+    for (const row of pend) {
+      const s = await mpGet(`/v1/payments/search?external_reference=${encodeURIComponent('pay_' + row.id)}`);
+      const results = (s.ok && s.data && s.data.results) || [];
+      const approved = results.find(r => r.status === 'approved');
+      if (approved && await applyOneoff(row, approved.id)) changed = true;
+    }
+
+    const subs = await db.all("SELECT * FROM subscriptions WHERE user_id=? AND mp_preapproval_id IS NOT NULL AND status != 'cancelled'", req.user.id);
+    for (const sub of subs) {
+      const pre = await mpGet(`/preapproval/${sub.mp_preapproval_id}`);
+      if (!pre.ok || !pre.data || !pre.data.status) continue;
+      if (pre.data.status !== sub.status) await db.run("UPDATE subscriptions SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", pre.data.status, sub.id);
+      if (pre.data.status === 'authorized') {
+        const ap = await mpGet(`/authorized_payments/search?preapproval_id=${sub.mp_preapproval_id}`);
+        const results = (ap.ok && ap.data && ap.data.results) || [];
+        for (const r of results) {
+          const okPaid = r.status === 'processed' || (r.payment && r.payment.status === 'approved');
+          if (okPaid && await applyAuthorized(sub, r)) changed = true;
+        }
+      }
+    }
+
+    const user = await db.get('SELECT is_admin, access_status, license_expires_at, license_plan FROM users WHERE id = ?', req.user.id);
+    res.json({ changed, ...computeAccess(user || {}) });
+  } catch (err) {
+    console.error('[payments reconcile]', err && err.message);
     res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
@@ -138,10 +225,9 @@ router.get('/status', auth, async (req, res) => {
 
 // Mercado Pago webhook (public + CSRF-exempt — see middleware/csrf.js). Acks fast,
 // then fetches the resource from MP (authoritative — never trusts the body) and acts:
-//  - payment                       → one-off Checkout Pro: extend by plan.days.
-//  - subscription_authorized_payment → a recurring charge cleared: extend by plan.days.
-//  - subscription_preapproval      → subscription created/updated: sync its status.
-// Idempotent: payments.mp_payment_id UNIQUE means a re-delivered charge can't credit twice.
+//  - payment                         → one-off Checkout Pro (external_reference pay_*).
+//  - subscription_authorized_payment → a recurring charge cleared.
+//  - subscription_preapproval        → subscription created/updated: sync its status.
 async function webhookHandler(req, res) {
   res.json({ received: true });
   try {
@@ -150,72 +236,32 @@ async function webhookHandler(req, res) {
     const resourceId = req.query['data.id'] || (req.body && req.body.data && req.body.data.id) || req.query.id || (req.body && req.body.id);
     if (!resourceId) return;
 
-    if (topic === 'subscription_preapproval' || topic === 'preapproval') {
-      return syncPreapproval(resourceId);
-    }
-    if (topic === 'subscription_authorized_payment') {
-      return creditAuthorizedPayment(resourceId);
-    }
-    if (topic === 'payment') {
-      return creditOneoffPayment(resourceId);
-    }
+    if (topic === 'subscription_preapproval' || topic === 'preapproval') return syncPreapproval(resourceId);
+    if (topic === 'subscription_authorized_payment') return creditAuthorizedPayment(resourceId);
+    if (topic === 'payment') return creditOneoffPayment(resourceId);
   } catch (e) {
     console.error('[payments webhook]', e && e.message);
   }
 }
 
-async function mpGet(path) {
-  const r = await fetch(`https://api.mercadopago.com${path}`, { headers: { Authorization: `Bearer ${MP_TOKEN}` } });
-  const data = await r.json();
-  return { ok: r.ok, data };
-}
-
-// One-off Checkout Pro payment → find our payments row by external_reference.
+// One-off Checkout Pro payment → find our payments row by external_reference (pay_*).
 async function creditOneoffPayment(paymentMpId) {
   const { ok, data: pay } = await mpGet(`/v1/payments/${paymentMpId}`);
   if (!ok || pay.status !== 'approved') return;
-  const row = await db.get('SELECT * FROM payments WHERE id = ?', Number(pay.external_reference));
-  if (!row) return; // not a one-off we created (e.g. a subscription charge — handled elsewhere)
-  if (row.status === 'approved' && row.mp_payment_id === String(paymentMpId)) return; // already processed
-  const plan = PLANS[row.plan];
-  if (!plan) return;
-  await db.transaction(async (tx) => {
-    await tx.run(
-      "UPDATE payments SET status='approved', mp_payment_id=?, approved_at=CURRENT_TIMESTAMP WHERE id=?",
-      String(paymentMpId), row.id
-    );
-    await extendLicense(tx, row.user_id, row.plan, plan.days);
-  });
-  console.log('[payments] one-off approved → license extended for user', row.user_id, 'plan', row.plan);
+  const ref = String(pay.external_reference || '');
+  if (!ref.startsWith('pay_')) return; // a subscription's recurring payment — handled via authorized_payment
+  const row = await db.get('SELECT * FROM payments WHERE id = ?', Number(ref.slice(4)));
+  if (row) await applyOneoff(row, paymentMpId);
 }
 
 // Recurring charge cleared → look up the subscription by preapproval, extend one period.
 async function creditAuthorizedPayment(authorizedPaymentId) {
   const { ok, data: ap } = await mpGet(`/authorized_payments/${authorizedPaymentId}`);
   if (!ok) return;
-  const paymentStatus = (ap.payment && ap.payment.status) || ap.status;
-  const approved = ap.status === 'processed' || paymentStatus === 'approved';
+  const approved = ap.status === 'processed' || (ap.payment && ap.payment.status === 'approved');
   if (!approved) return;
   const sub = await db.get('SELECT * FROM subscriptions WHERE mp_preapproval_id = ?', String(ap.preapproval_id));
-  if (!sub) return;
-  const plan = PLANS[sub.plan];
-  if (!plan) return;
-  // Idempotency key: the underlying payment id (falls back to the authorized_payment id).
-  const payKey = String((ap.payment && ap.payment.id) || authorizedPaymentId);
-
-  await db.transaction(async (tx) => {
-    // INSERT OR IGNORE on the UNIQUE mp_payment_id — if it already exists, this charge
-    // was already credited and we must not extend the license again.
-    const ins = await tx.run(
-      "INSERT OR IGNORE INTO payments (user_id, plan, amount, currency, status, mp_payment_id, external_reference, approved_at) VALUES (?, ?, ?, 'BRL', 'approved', ?, ?, CURRENT_TIMESTAMP)",
-      sub.user_id, sub.plan, plan.price, payKey, String(sub.id)
-    );
-    const credited = Number(ins.changes || 0) > 0;
-    if (!credited) return;
-    await tx.run("UPDATE subscriptions SET status='authorized', updated_at=CURRENT_TIMESTAMP WHERE id=?", sub.id);
-    await extendLicense(tx, sub.user_id, sub.plan, plan.days);
-  });
-  console.log('[payments] subscription charge → license extended for user', sub.user_id, 'plan', sub.plan);
+  if (sub) await applyAuthorized(sub, ap);
 }
 
 // Subscription lifecycle (authorized/paused/cancelled) → mirror MP's status locally.

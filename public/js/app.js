@@ -421,17 +421,21 @@ async function checkAuth() {
   }
 }
 
-// After a Checkout Pro redirect, poll /me until the webhook grants access.
+// After returning from Mercado Pago, actively reconcile the payment against MP
+// (doesn't rely on the webhook) until access is granted.
 async function waitForAccessAfterPayment() {
   showBlockedScreen(currentUser);
   const inf = document.getElementById('blocked-info');
   for (let i = 0; i < 8; i++) {
     if (inf) inf.textContent = 'Confirmando seu pagamento… aguarde alguns segundos.';
-    await new Promise(r => setTimeout(r, 2500));
     try {
-      currentUser = await api('/api/auth/me');
-      if (currentUser.has_access) { history.replaceState({}, '', location.pathname); showApp(); return; }
+      const rec = await api('/api/payments/reconcile', { method: 'POST' });
+      if (rec && rec.has_access) {
+        currentUser = await api('/api/auth/me');
+        history.replaceState({}, '', location.pathname); showApp(); return;
+      }
     } catch (_) {}
+    await new Promise(r => setTimeout(r, 2500));
   }
   history.replaceState({}, '', location.pathname);
   showBlockedScreen(currentUser);
