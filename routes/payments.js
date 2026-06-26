@@ -77,7 +77,9 @@ router.post('/checkout', auth, async (req, res) => {
             transaction_amount: plan.price,
             currency_id: 'BRL',
           },
-          status: 'pending',
+          // NOTE: do NOT send status:'pending' — MP returns HTTP 500 when it's set
+          // explicitly on a checkout-flow preapproval. Omitting it defaults to
+          // pending and returns the init_point for the subscriber to authorize.
         }),
       });
       const mpData = await mpRes.json();
