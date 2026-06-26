@@ -600,14 +600,24 @@ function showBlockedScreen(info) {
   const expired = exp && new Date(exp).getTime() <= Date.now();
   const msg = document.getElementById('blocked-message');
   const inf = document.getElementById('blocked-info');
-  if (msg) msg.textContent = expired ? 'Sua licença expirou.' : 'Seu acesso ainda não está liberado.';
+  if (msg) msg.textContent = expired ? 'Sua licença expirou.' : 'Seu acesso não está liberado.';
   if (inf) {
     inf.textContent = expired
-      ? `Expirou em ${new Date(exp).toLocaleDateString('pt-BR')}. Renove para continuar usando.`
-      : 'Assine para usar o site, ou peça acesso ao administrador.';
+      ? `Expirou em ${new Date(exp).toLocaleDateString('pt-BR')}. Assine abaixo para liberar na hora.`
+      : 'Assine abaixo para liberar o acesso na hora — ou fale comigo para negociar.';
   }
   // Fase 2 popula #blocked-pay com os botões de assinatura (Mercado Pago).
   if (typeof renderPayOptions === 'function') renderPayOptions();
+}
+
+// Copy the support Discord handle from the blocked screen.
+function copyDiscord() {
+  const handle = 'gopzudo';
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(handle).then(() => toast('Discord copiado: ' + handle)).catch(() => toast('Discord: ' + handle));
+  } else {
+    toast('Discord: ' + handle);
+  }
 }
 
 async function logout() {
