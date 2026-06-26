@@ -32,6 +32,17 @@ async function api(url, opts = {}) {
     showBlockedScreen(data);
     throw new Error(data.error || 'Acesso bloqueado');
   }
+  // Session ended mid-use (logged out / kicked by single-session login elsewhere) →
+  // drop to the login screen. Guarded by currentUser so login/boot 401s are untouched.
+  if (res.status === 401 && currentUser) {
+    currentUser = null;
+    try { stopBgPolling(); } catch (_) {}
+    const ap = document.getElementById('auth-page'); if (ap) ap.style.display = 'flex';
+    const appEl = document.getElementById('app'); if (appEl) appEl.style.display = 'none';
+    const bp = document.getElementById('blocked-page'); if (bp) bp.style.display = 'none';
+    toast('Sessão encerrada (login em outro dispositivo).', 'error');
+    throw new Error(data.error || 'Sessão encerrada');
+  }
   if (!res.ok) throw new Error(data.error || 'Erro na requisição');
   return data;
 }
@@ -349,6 +360,90 @@ function getDiscordAvatarUrl(discordId, avatarHash, size = 64) {
   return `https://cdn.discordapp.com/avatars/${discordId}/${avatarHash}.png?size=${size}`;
 }
 
+// Bumped whenever the current user changes their picture so the <img> reloads
+// instead of showing the browser-cached one.
+let avatarCacheBust = Date.now();
+
+// Effective avatar URL for a user row (from /me or the ranking endpoints): the
+// uploaded picture when avatar_source==='custom' and one exists, else the Discord
+// avatar, else null (caller renders an initial).
+function userAvatarUrl(u, size = 80) {
+  if (!u) return null;
+  if (u.avatar_source === 'custom' && u.has_avatar) {
+    const bust = (currentUser && u.id === currentUser.id) ? `?v=${avatarCacheBust}` : '';
+    return `/api/profile/avatar/${u.id}${bust}`;
+  }
+  return getDiscordAvatarUrl(u.discord_id, u.discord_avatar, size);
+}
+
+// Update the header avatar in place after a profile change (no full reload).
+function refreshHeaderAvatar() {
+  const avatarEl = document.getElementById('user-avatar');
+  if (!avatarEl) return;
+  const url = userAvatarUrl(currentUser, 64);
+  const displayName = currentUser.discord_username || currentUser.display_name || '?';
+  if (url) {
+    avatarEl.innerHTML = `<img src="${url}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+    avatarEl.style.overflow = 'hidden';
+  } else {
+    avatarEl.textContent = displayName.charAt(0).toUpperCase();
+  }
+}
+
+// ===== PROFILE (avatar / bio) =====
+
+async function uploadAvatar(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { toast('Imagem muito grande (máx. 2MB)', 'error'); input.value = ''; return; }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const r = await api('/api/profile/avatar', { method: 'POST', body: { data: reader.result } });
+      currentUser.has_avatar = true;
+      currentUser.avatar_source = r.avatar_source || 'custom';
+      avatarCacheBust = Date.now();
+      toast('Imagem de perfil atualizada!');
+      renderSettings();
+      refreshHeaderAvatar();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  reader.onerror = () => toast('Falha ao ler a imagem', 'error');
+  reader.readAsDataURL(file);
+}
+
+async function removeAvatar() {
+  if (!confirm('Remover sua imagem de perfil?')) return;
+  try {
+    const r = await api('/api/profile/avatar', { method: 'DELETE' });
+    currentUser.has_avatar = false;
+    currentUser.avatar_source = r.avatar_source || 'discord';
+    avatarCacheBust = Date.now();
+    toast('Imagem removida');
+    renderSettings();
+    refreshHeaderAvatar();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function setAvatarSource(src) {
+  try {
+    const r = await api('/api/profile', { method: 'PUT', body: { avatar_source: src } });
+    currentUser.avatar_source = r.avatar_source;
+    avatarCacheBust = Date.now();
+    renderSettings();
+    refreshHeaderAvatar();
+  } catch (err) { toast(err.message, 'error'); renderSettings(); }
+}
+
+async function saveBio() {
+  const el = document.getElementById('profile-bio');
+  try {
+    const r = await api('/api/profile', { method: 'PUT', body: { bio: el ? el.value : '' } });
+    currentUser.bio = r.bio;
+    toast('Bio salva!');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 function handleDiscordUrlParams() {
   const params = new URLSearchParams(location.search);
   if (params.has('discord_login')) {
@@ -532,14 +627,7 @@ async function showApp() {
   document.getElementById('app').style.display = 'flex';
   const displayName = currentUser.discord_username || currentUser.display_name;
   document.getElementById('user-name').textContent = displayName;
-  const avatarEl = document.getElementById('user-avatar');
-  const discordAvatarUrl = getDiscordAvatarUrl(currentUser.discord_id, currentUser.discord_avatar, 64);
-  if (discordAvatarUrl) {
-    avatarEl.innerHTML = `<img src="${discordAvatarUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
-    avatarEl.style.overflow = 'hidden';
-  } else {
-    avatarEl.textContent = displayName.charAt(0).toUpperCase();
-  }
+  refreshHeaderAvatar();
   await loadAccounts();
   // Show admin nav item only for admins
   const adminNav = document.getElementById('nav-admin');
@@ -3024,12 +3112,52 @@ async function renderSettings() {
   let polyPrefs = { poly_wallet_address: '', notify_fill_order: false, notify_fill_limit_order: false, notify_redeem: false };
   try { polyPrefs = await api('/api/settings/poly'); } catch (_) {}
 
+  const profInitial = escapeHtml((currentUser.display_name || currentUser.discord_username || '?').charAt(0).toUpperCase());
+  const profAvatarUrl = userAvatarUrl(currentUser, 64);
+  const profAvatarInner = profAvatarUrl
+    ? `<img src="${profAvatarUrl}" style="width:100%;height:100%;object-fit:cover" onerror="this.parentElement.textContent='${profInitial}'">`
+    : profInitial;
+
   const mc = document.getElementById('main-content');
   mc.innerHTML = `
     <div class="page-header">
       <div>
         <h1 class="page-title">Configura\u00E7\u00F5es</h1>
         <p class="page-description">Gerencie suas contas e prefer\u00EAncias</p>
+      </div>
+    </div>
+
+    <!-- Perfil -->
+    <div class="chart-container" style="margin-bottom:20px">
+      <h3 class="chart-title" style="margin-bottom:12px">Perfil</h3>
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+        <div id="profile-avatar-preview" style="width:64px;height:64px;border-radius:50%;overflow:hidden;background:var(--border);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:24px;color:var(--text-muted);flex-shrink:0">${profAvatarInner}</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('profile-avatar-file').click()">Enviar imagem</button>
+            ${currentUser.has_avatar ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="removeAvatar()">Remover</button>` : ''}
+          </div>
+          <input type="file" id="profile-avatar-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" onchange="uploadAvatar(this)">
+          <span style="font-size:11px;color:var(--text-muted)">PNG, JPG, WEBP ou GIF \u00B7 m\u00E1x. 2MB</span>
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label class="form-label">Imagem usada no ranking</label>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px">
+            <input type="radio" name="avatar-source" value="discord" ${currentUser.avatar_source !== 'custom' ? 'checked' : ''} onchange="setAvatarSource('discord')" style="accent-color:var(--primary)">
+            Imagem do Discord
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:${currentUser.has_avatar ? 'pointer' : 'not-allowed'};font-size:14px;opacity:${currentUser.has_avatar ? '1' : '.5'}">
+            <input type="radio" name="avatar-source" value="custom" ${currentUser.avatar_source === 'custom' ? 'checked' : ''} ${currentUser.has_avatar ? '' : 'disabled'} onchange="setAvatarSource('custom')" style="accent-color:var(--primary)">
+            Imagem enviada
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Bio</label>
+        <textarea class="form-input" id="profile-bio" rows="3" maxlength="280" placeholder="Fale um pouco sobre voc\u00EA...">${escapeHtml(currentUser.bio || '')}</textarea>
+        <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="saveBio()">Salvar bio</button>
       </div>
     </div>
 
@@ -4120,7 +4248,7 @@ async function loadRankingTab() {
           const profitVal = Number(u.total_profit) || 0;
           const isMe = u.id === currentUser?.id;
           const dName = u.discord_username || u.display_name;
-          const dAvatar = getDiscordAvatarUrl(u.discord_id, u.discord_avatar, 80);
+          const dAvatar = userAvatarUrl(u, 80);
           const avatarInner = dAvatar
             ? `<img src="${dAvatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" onerror="this.parentElement.textContent='${escapeHtml(dName.charAt(0).toUpperCase())}'"/>`
             : escapeHtml(dName.charAt(0).toUpperCase());

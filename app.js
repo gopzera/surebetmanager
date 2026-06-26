@@ -18,6 +18,8 @@ app.use('/api/finances', express.json({ limit: '7mb' }));
 app.use('/api/restore', express.json({ limit: '20mb' }));
 // Google Sheets operation imports are JSON arrays read client-side from .json files.
 app.use('/api/operations/import', express.json({ limit: '5mb' }));
+// Profile avatar upload carries a base64 image (2MB binary → ~2.7MB base64).
+app.use('/api/profile', express.json({ limit: '3mb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
@@ -45,6 +47,7 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api/profile', require('./routes/profile'));
 app.use('/api/giros', require('./routes/giros'));
 app.use('/api/finances', require('./routes/finances'));
 app.use('/api/audit', require('./routes/audit'));

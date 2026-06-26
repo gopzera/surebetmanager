@@ -30,6 +30,14 @@ async function issueSession(req, res, payload) {
     'INSERT INTO sessions (jti, user_id, expires_at, user_agent, ip) VALUES (?, ?, ?, ?, ?)',
     jti, payload.id, expiresAt, ua, ip
   );
+  // Single active session per account (anti shared-account): logging in anywhere
+  // revokes every other session, so a second device kicks the first. The other
+  // device's next request fails the revocation check (bounded by the auth cache
+  // TTL) and it's logged out.
+  await db.run(
+    'UPDATE sessions SET revoked = 1 WHERE user_id = ? AND jti != ? AND revoked = 0',
+    payload.id, jti
+  );
   const token = jwt.sign({ ...payload, jti }, process.env.JWT_SECRET, { expiresIn: '30d' });
   res.cookie('token', token, cookieOpts);
   return token;
@@ -133,10 +141,14 @@ router.post('/logout-all', auth, async (req, res) => {
 router.get('/me', auth, async (req, res) => {
   try {
     const user = await db.get(
-      'SELECT id, username, display_name, discord_id, discord_username, discord_avatar, is_admin, access_status, license_expires_at, license_plan FROM users WHERE id = ?',
+      `SELECT id, username, display_name, discord_id, discord_username, discord_avatar,
+              is_admin, access_status, license_expires_at, license_plan, bio, avatar_source,
+              (SELECT COUNT(*) FROM user_avatars av WHERE av.user_id = users.id) AS has_avatar
+       FROM users WHERE id = ?`,
       req.user.id
     );
     if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
+    user.has_avatar = !!user.has_avatar;
     // Attach effective access state so the frontend can gate the UI / show paywall.
     const { computeAccess } = require('../middleware/requireAccess');
     res.json({ ...user, ...computeAccess(user) });
