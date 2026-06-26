@@ -44,6 +44,8 @@ router.get('/', async (req, res) => {
         u.discord_id,
         u.discord_username,
         u.discord_avatar,
+        u.avatar_source,
+        (SELECT COUNT(*) FROM user_avatars av WHERE av.user_id = u.id) AS has_avatar,
         COALESCE(SUM(o.profit), 0) as total_profit,
         COUNT(o.id) as total_ops
       FROM users u
@@ -71,6 +73,8 @@ router.get('/sortudos', async (req, res) => {
         u.discord_id,
         u.discord_username,
         u.discord_avatar,
+        u.avatar_source,
+        (SELECT COUNT(*) FROM user_avatars av WHERE av.user_id = u.id) AS has_avatar,
         COALESCE(SUM(g.profit), 0) as total_profit,
         COUNT(g.id) as total_giros,
         COALESCE(SUM(g.quantity), 0) as total_quantity

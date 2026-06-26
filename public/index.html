@@ -53,13 +53,32 @@
 
   <!-- Acesso bloqueado / paywall -->
   <div id="blocked-page" class="auth-container" style="display:none">
-    <div class="auth-card">
-      <div style="text-align:center;margin-bottom:8px;font-size:36px;">&#128274;</div>
-      <h1 class="auth-title">Acesso bloqueado</h1>
-      <p class="auth-subtitle" id="blocked-message">Seu acesso ainda não está liberado.</p>
-      <div id="blocked-info" style="text-align:center;font-size:13px;color:var(--text-muted);margin-bottom:16px"></div>
+    <div class="auth-card" style="max-width:430px">
+      <div style="text-align:center;margin-bottom:4px;font-size:42px;line-height:1">&#128274;</div>
+      <h1 class="auth-title" style="text-align:center">Acesso bloqueado</h1>
+      <p class="auth-subtitle" id="blocked-message" style="text-align:center">Seu acesso ainda não está liberado.</p>
+      <div id="blocked-info" style="text-align:center;font-size:13px;color:var(--text-muted);margin-bottom:18px"></div>
+
       <div id="blocked-pay" style="display:flex;flex-direction:column;gap:10px"></div>
-      <div class="auth-switch" style="margin-top:16px">
+
+      <div style="display:flex;align-items:center;gap:10px;margin:18px 0 14px;color:var(--text-muted);font-size:12px">
+        <span style="flex:1;height:1px;background:var(--border)"></span>
+        <span>ou fale comigo</span>
+        <span style="flex:1;height:1px;background:var(--border)"></span>
+      </div>
+
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center">
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">Quer negociar o acesso ou tirar dúvidas? Me chama no Discord:</div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap">
+          <span style="display:inline-flex;align-items:center;gap:8px;font-weight:700;color:#5865F2;font-size:16px">
+            <svg width="20" height="15" viewBox="0 0 71 55" fill="currentColor"><path d="M60.1 4.9A58.5 58.5 0 0045.4.2a.2.2 0 00-.2.1 40.8 40.8 0 00-1.8 3.7 54 54 0 00-16.2 0A26.5 26.5 0 0025.4.3a.2.2 0 00-.2-.1A58.4 58.4 0 0010.5 5a.2.2 0 00-.1 0C1.5 18 -.9 30.6.3 43a.2.2 0 00.1.2A58.7 58.7 0 0018 54.7a.2.2 0 00.3-.1 42 42 0 003.6-5.9.2.2 0 00-.1-.3 38.6 38.6 0 01-5.5-2.6.2.2 0 010-.4l1.1-.9a.2.2 0 01.2 0 41.9 41.9 0 0035.6 0 .2.2 0 01.2 0l1.1.9a.2.2 0 010 .3 36.2 36.2 0 01-5.5 2.7.2.2 0 00-.1.3 47.2 47.2 0 003.6 5.8.2.2 0 00.3.1A58.5 58.5 0 0070.6 43.2a.2.2 0 00.1-.1c1.4-14.7-2.4-27.5-10.2-38.8a.2.2 0 00-.1 0zM23.7 35.6c-3.4 0-6.1-3.1-6.1-6.9s2.7-6.9 6.1-6.9 6.2 3.1 6.1 6.9c0 3.8-2.7 6.9-6.1 6.9zm22.6 0c-3.4 0-6.1-3.1-6.1-6.9s2.7-6.9 6.1-6.9 6.2 3.1 6.1 6.9c0 3.8-2.7 6.9-6.1 6.9z"/></svg>
+            gopzudo
+          </span>
+          <button class="btn btn-ghost btn-sm" onclick="copyDiscord()">Copiar</button>
+        </div>
+      </div>
+
+      <div class="auth-switch" style="margin-top:18px;text-align:center">
         <a onclick="logout()">Sair</a>
       </div>
     </div>

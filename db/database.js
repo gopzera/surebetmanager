@@ -411,6 +411,17 @@ const SCHEMA = `
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_receipt_blobs_user ON receipt_blobs(user_id);
+
+  -- Custom profile picture (one per user). Binary BLOB; replaces the row on
+  -- re-upload. Whether it's actually shown is governed by users.avatar_source.
+  CREATE TABLE IF NOT EXISTS user_avatars (
+    user_id INTEGER PRIMARY KEY,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
 `;
 
 // Versioned migrations live in /migrations as NNN_name.sql. Each file is
@@ -536,6 +547,11 @@ const db = {
           "access_status TEXT NOT NULL DEFAULT 'blocked'",
           'license_expires_at DATETIME',
           'license_plan TEXT',
+          // Profile: free-text bio + which avatar to show in the ranking/header.
+          // 'discord' (default) uses the linked Discord avatar; 'custom' uses the
+          // image uploaded to user_avatars.
+          'bio TEXT',
+          "avatar_source TEXT NOT NULL DEFAULT 'discord'",
         ]) {
           try {
             await client.execute(`ALTER TABLE users ADD COLUMN ${col}`);
