@@ -71,6 +71,7 @@ router.post('/checkout', auth, async (req, res) => {
           external_reference: String(subId),
           payer_email: email,
           back_url: `${base}/?paid=1`,
+          notification_url: `${base}/api/payments/webhook`,
           auto_recurring: {
             frequency: plan.months,
             frequency_type: 'months',
