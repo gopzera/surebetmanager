@@ -448,18 +448,37 @@ async function renderPayOptions() {
       box.innerHTML = '<div style="font-size:13px;color:var(--text-muted);text-align:center">Pagamento indisponível no momento — peça acesso ao administrador.</div>';
       return;
     }
+    const brl = v => 'R$ ' + Number(v).toFixed(2).replace('.', ',');
     box.innerHTML = cfg.plans
       .sort((a, b) => a.days - b.days)
-      .map(p => `<button class="btn btn-primary" style="width:100%;justify-content:center" onclick="startCheckout('${p.id}')">Assinar ${p.id === 'annual' ? 'anual' : 'mensal'} — R$ ${Number(p.price).toFixed(2).replace('.', ',')}</button>`)
+      .map(p => {
+        const period = p.id === 'annual' ? 'ano' : 'mês';
+        const name = p.id === 'annual' ? 'Anual' : 'Mensal';
+        return `
+          <div style="border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px">
+            <div style="font-weight:600">${name} — ${brl(p.price)}</div>
+            <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="startCheckout('${p.id}','subscription')">Assinar (renova todo ${period})</button>
+            <button class="btn btn-ghost btn-sm" style="width:100%;justify-content:center" onclick="startCheckout('${p.id}','oneoff')">Pagar uma vez (${p.days} dias)</button>
+          </div>`;
+      })
       .join('');
   } catch {
     box.innerHTML = '<div style="font-size:13px;color:var(--text-muted);text-align:center">Não foi possível carregar as opções de pagamento.</div>';
   }
 }
 
-async function startCheckout(plan) {
+// mode: 'subscription' (recurring preapproval — needs the payer's MP e-mail) or
+// 'oneoff' (Checkout Pro, pay once).
+async function startCheckout(plan, mode = 'oneoff') {
   try {
-    const r = await api('/api/payments/checkout', { method: 'POST', body: { plan } });
+    const body = { plan, mode };
+    if (mode === 'subscription') {
+      const email = (prompt('Informe o e-mail da sua conta Mercado Pago (será usado na cobrança automática):') || '').trim();
+      if (!email) return;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('E-mail inválido', 'error'); return; }
+      body.email = email;
+    }
+    const r = await api('/api/payments/checkout', { method: 'POST', body });
     if (r.init_point) window.location.href = r.init_point;
     else toast('Não foi possível iniciar o pagamento', 'error');
   } catch (err) { toast(err.message, 'error'); }

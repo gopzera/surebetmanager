@@ -198,7 +198,24 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_op_legs_bm ON operation_legs(bookmaker_id);
   CREATE INDEX IF NOT EXISTS idx_op_leg_accounts_leg ON operation_leg_accounts(leg_id);
   CREATE INDEX IF NOT EXISTS idx_op_leg_accounts_acc ON operation_leg_accounts(account_id);
+  -- Recurring subscriptions (Mercado Pago preapproval). One row per preapproval;
+  -- each authorized charge records a row in payments (mp_payment_id UNIQUE keeps
+  -- license extension idempotent). status mirrors MP: pending, authorized,
+  -- paused, cancelled.
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    plan TEXT NOT NULL,
+    payer_email TEXT,
+    mp_preapproval_id TEXT UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS idx_freebets_user ON freebets(user_id);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_id);
   CREATE INDEX IF NOT EXISTS idx_wallet_positions_wallet ON wallet_positions(wallet_id);
