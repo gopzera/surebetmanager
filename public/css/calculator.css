@@ -872,6 +872,21 @@
 .calc-page .c-cents-switch.on { background: var(--poly); color: #0b1324; }
 .calc-page .c-cents-switch:hover { filter: brightness(1.15); }
 
+/* ── CURRENCY SIGNALLING (flags + tint per line) ── */
+.calc-page .c-cur-usd {
+  border-color: rgba(52,211,153,.5) !important;
+  background: rgba(16,185,129,.10) !important;
+  color: var(--green-bright) !important;
+}
+.calc-page .c-cur-brl {
+  border-color: rgba(245,200,11,.5) !important;
+  background: rgba(245,200,11,.10) !important;
+  color: #f5c80b !important;
+}
+/* subtle left accent on the stake input matching the line's currency */
+.calc-page input.c-stake-usd { border-left: 3px solid var(--green-bright); }
+.calc-page input.c-stake-brl { border-left: 3px solid #f5c80b; }
+
 /* ── FX PANEL (dólar nas corretoras) ── */
 .calc-page .c-fx-panel {
   background: var(--surface2); border: 1px solid var(--border);

@@ -755,7 +755,7 @@ function calcBuildTable() {
       </td>
       <td class="c-ctr-col">
         <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
-          <button class="c-cur-btn" id="calc-curbtn-${row.id}" onclick="calcCycleCur(${row.id})">${cur==="USD"?"$ USD":"R$ BRL"}</button>
+          <button class="c-cur-btn c-cur-${cur==="USD"?'usd':'brl'}" id="calc-curbtn-${row.id}" onclick="calcCycleCur(${row.id})" title="Clique para alternar a moeda desta linha">${cur==="USD"?"🇺🇸 USD":"🇧🇷 BRL"}</button>
           ${cur==="USD" ? `<div style="display:flex;align-items:center;gap:3px">
             <span style="font:400 9px/1 var(--mono);color:var(--text3)">R$/\$</span>
             <input type="number" min="0.01" step="0.01"
@@ -770,8 +770,8 @@ function calcBuildTable() {
       <td>
         <div style="display:flex;flex-direction:column;gap:3px">
           <div style="display:flex;align-items:center;gap:4px">
-            <span id="calc-cursym-${row.id}" style="font:400 11px/1 var(--mono);color:var(--text3)">${CALC_CURR_SYMS[cur]}</span>
-            <input type="number" id="calc-stake-${row.id}" class="${stakeFixed}" style="width:92px;text-align:right"
+            <span id="calc-cursym-${row.id}" style="font:400 11px/1 var(--mono);color:var(--text3)">${cur==="USD"?"🇺🇸":"🇧🇷"} ${CALC_CURR_SYMS[cur]}</span>
+            <input type="number" id="calc-stake-${row.id}" class="${stakeFixed} c-stake-${cur==="USD"?'usd':'brl'}" style="width:92px;text-align:right"
               oninput="calcOnStakeInput(${row.id},this.value)"
               value="${stakeVal}"
               placeholder="${isLay?"Backer stake":"Your stake"}">
@@ -1998,8 +1998,6 @@ function renderCalculator() {
       <button class="c-btn" onclick="calcResetAll()">Reset all</button>
     </div>
 
-    <div id="calc-simulator" style="display:none"></div>
-
     <div class="c-fx-panel" id="calc-fx-panel">
       <div class="c-fx-head">
         <span class="c-fx-title">\uD83D\uDCB1 D\u00F3lar nas corretoras</span>
@@ -2008,6 +2006,8 @@ function renderCalculator() {
       <div id="calc-fx-body"><div class="c-ticker-load">Buscando cota\u00E7\u00F5es\u2026</div></div>
       <div class="c-fx-note">Compra = voc\u00EA paga (ask) \u00B7 Venda = voc\u00EA recebe (bid). Verde = melhor. Clique num valor pra usar como cota\u00E7\u00E3o manual.</div>
     </div>
+
+    <div id="calc-simulator" style="display:none"></div>
 
     <div style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
