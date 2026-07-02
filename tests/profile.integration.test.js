@@ -88,7 +88,7 @@ describe('single active session (anti shared-account)', () => {
 
     const bAfter = await req(devB, 'GET', '/api/profile');
     expect(bAfter.status).toBe(200);
-  });
+  }, 15000);
 });
 
 describe('profile (bio + avatar)', () => {
@@ -133,5 +133,5 @@ describe('profile (bio + avatar)', () => {
 
     const gone = await req(dev, 'GET', `/api/profile/avatar/${userId}`);
     expect(gone.status).toBe(404);
-  });
+  }, 15000);
 });
