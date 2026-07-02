@@ -27,12 +27,17 @@ async function fetchJson(url, ms = 3500) {
 let cache = { ts: 0, data: null };
 const CACHE_MS = 4000;
 
+const pick = (d) => (d && Array.isArray(d.asks) && Array.isArray(d.bids) ? { asks: d.asks, bids: d.bids } : null);
+
 router.get('/quotes', async (req, res) => {
   try {
     if (cache.data && Date.now() - cache.ts < CACHE_MS) return res.json(cache.data);
-    const d = await fetchJson('https://api.mexc.com/api/v3/depth?symbol=USDCBRL&limit=50');
-    const book = d && Array.isArray(d.asks) && Array.isArray(d.bids) ? { asks: d.asks, bids: d.bids } : null;
-    const data = { mexc: { USDCBRL: book }, ts: Date.now() };
+    // USDCBRL (direct) + BRLUSDT (inverted → normalized to USDT/BRL client-side).
+    const [usdc, brlusdt] = await Promise.all([
+      fetchJson('https://api.mexc.com/api/v3/depth?symbol=USDCBRL&limit=50'),
+      fetchJson('https://api.mexc.com/api/v3/depth?symbol=BRLUSDT&limit=50'),
+    ]);
+    const data = { mexc: { USDCBRL: pick(usdc), BRLUSDT: pick(brlusdt) }, ts: Date.now() };
     cache = { ts: Date.now(), data };
     res.json(data);
   } catch (err) {
