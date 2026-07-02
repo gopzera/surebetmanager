@@ -1547,3 +1547,52 @@ tbody tr:last-child td { border-bottom: none; }
   .alert-card { flex-direction: column; }
   .watcher-controls { flex-direction: column; align-items: flex-start; }
 }
+
+/* ===== Retrospectiva (recap) ===== */
+.recap-hero {
+  background: linear-gradient(135deg, var(--primary), #4c3aaa);
+  border-radius: var(--radius); padding: 28px 24px; text-align: center;
+  color: #fff; margin-bottom: 16px;
+}
+.recap-hero-label { font-size: 13px; opacity: .85; text-transform: uppercase; letter-spacing: .5px; }
+.recap-hero-value { font-size: 44px; font-weight: 800; margin: 6px 0; line-height: 1.1; }
+.recap-hero-sub { font-size: 13px; opacity: .92; }
+.recap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.recap-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.recap-card-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.recap-card-value { font-size: 24px; font-weight: 800; line-height: 1.15; word-break: break-word; }
+.recap-card-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.recap-types { display: flex; flex-direction: column; }
+.recap-type { display: grid; grid-template-columns: 1fr 96px 130px; gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.recap-type span:nth-child(2), .recap-type span:nth-child(3) { text-align: right; }
+.recap-type:last-child { border-bottom: none; }
+.recap-type-head { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .3px; font-weight: 600; }
+.recap-type-count { font-family: 'JetBrains Mono', monospace; color: var(--text-muted); }
+@media (max-width: 520px) { .recap-type { grid-template-columns: 1fr 64px 96px; gap: 8px; font-size: 12px; } }
+
+/* ===== User profile modal (from ranking) ===== */
+.up-modal { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; }
+.up-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.6); }
+.up-content {
+  position: relative; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); width: min(620px, 94vw); max-height: 90vh;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.up-content canvas { max-width: 100%; }
+.up-close { position: absolute; top: 12px; right: 14px; background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; line-height: 1; }
+.up-close:hover { color: var(--text); }
+.up-header { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; padding-right: 24px; }
+.up-avatar {
+  width: 72px; height: 72px; border-radius: 50%; overflow: hidden; flex-shrink: 0;
+  background: var(--primary); color: #fff; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 28px;
+}
+.up-name { font-size: 20px; font-weight: 700; }
+.up-bio { font-size: 13px; color: var(--text-muted); margin-top: 3px; word-break: break-word; white-space: pre-wrap; }
+.up-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+/* Stack the two charts so each gets the full modal width — avoids the cramped,
+   horizontally-scrolling layout when they sit side by side in a narrow modal. */
+.up-charts { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.up-charts .chart-container { min-width: 0; }
+@media (max-width: 560px) { .up-stats { grid-template-columns: 1fr; } }

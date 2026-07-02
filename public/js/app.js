@@ -691,6 +691,7 @@ function navigate(page) {
     'admin': renderAdmin,
     'giros': renderGiros,
     'finances': renderFinances,
+    'recap': renderRecap,
   };
   (pages[page] || renderDashboard)();
 }
@@ -734,11 +735,6 @@ async function renderDashboard() {
     </div>
     <div id="dash-alerts" class="dash-alerts"></div>
     <div class="stats-grid" id="stats-grid"></div>
-    <div id="dash-operators-card"></div>
-    <div class="dash-pair">
-      <div class="volume-card" id="volume-card"></div>
-      <div class="wins-card" id="wins-card"></div>
-    </div>
     <div class="charts-row">
       <div class="chart-container">
         <h3 class="chart-title">Lucro Diário (últimos 30 dias)</h3>
@@ -756,6 +752,13 @@ async function renderDashboard() {
       </div>
       <div id="recent-table"></div>
     </div>
+    <!-- Secundário: métricas de apoio no fim da página -->
+    <div class="dash-pair">
+      <div class="volume-card" id="volume-card"></div>
+      <div class="wins-card" id="wins-card"></div>
+    </div>
+    <div id="dash-operators-card"></div>
+    <div id="dash-fx-card"></div>
   `;
   showDashboardSkeleton();
 
@@ -763,6 +766,7 @@ async function renderDashboard() {
     const data = await api('/api/dashboard/stats');
     window._dashStatsData = data;
     renderStats(data);
+    renderDashFx(data.fx);
     renderDashOperators(data.operators);
     renderVolumeTracker(data);
     renderWinsBySideCard(data.winsBySide);
@@ -791,6 +795,160 @@ async function loadDashboardAlerts() {
       </div>
     `).join('');
   } catch (_) { el.innerHTML = ''; }
+}
+
+// Live USDC/BRL for the dashboard FX card (browser-side, cached 60s). Binance
+// first, then USDT, then a generic USD→BRL fallback.
+let _usdcBrlCache = { rate: null, ts: 0 };
+async function fetchUsdcBrlLive() {
+  if (_usdcBrlCache.rate && Date.now() - _usdcBrlCache.ts < 60000) return _usdcBrlCache.rate;
+  const tries = [
+    () => fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDCBRL', { cache: 'no-store' }).then(r => r.json()).then(d => parseFloat(d.price)),
+    () => fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDTBRL', { cache: 'no-store' }).then(r => r.json()).then(d => parseFloat(d.price)),
+    () => fetch('https://open.er-api.com/v6/latest/USD').then(r => r.json()).then(d => d.rates.BRL),
+  ];
+  for (const fn of tries) {
+    try { const v = await fn(); if (v > 0) { _usdcBrlCache = { rate: v, ts: Date.now() }; return v; } } catch (_) {}
+  }
+  return null;
+}
+
+// FX card: revalues the realized USD P&L of settled operations at today's dollar,
+// so the user sees how the exchange rate helped/hurt vs the rate they operated at.
+async function renderDashFx(fx) {
+  const el = document.getElementById('dash-fx-card');
+  if (!el) return;
+  if (!fx || !fx.legs || fx.usd_staked <= 0) { el.innerHTML = ''; return; }
+  const rate = await fetchUsdcBrlLive();
+  if (!rate) { el.innerHTML = ''; return; }
+  const avgRate = fx.brl_staked / fx.usd_staked;               // volume-weighted operating rate
+  const fxImpact = fx.usd_pnl * rate - fx.brl_pnl;             // revaluation of realized USD P&L
+  const deltaPct = avgRate > 0 ? (rate / avgRate - 1) * 100 : 0;
+  const caveat = 'Estimativa: revaloriza ao câmbio de hoje o resultado em dólar das operações liquidadas (vitória: stake×(odd−1); derrota: −stake). Assume que os dólares não foram convertidos de volta — não é lucro realizado.';
+  el.innerHTML = `
+    <div class="chart-container" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px">
+        <div>
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:4px">Impacto do dólar <span title="${caveat}" style="cursor:help">&#9432;</span></div>
+          <div style="font-size:26px;font-weight:800" class="${profitClass(fxImpact)}">${fxImpact >= 0 ? '+' : ''}${formatBRL(fxImpact)}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px">revalorização do seu P&amp;L em dólar ao câmbio de hoje</div>
+        </div>
+        <div style="display:flex;gap:22px;flex-wrap:wrap;text-align:right">
+          <div>
+            <div style="font-size:11px;color:var(--text-muted)">Dólar médio das ops</div>
+            <div style="font-size:16px;font-weight:600;font-family:'JetBrains Mono',monospace">R$${avgRate.toFixed(4)}</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-muted)">Dólar agora</div>
+            <div style="font-size:16px;font-weight:600;font-family:'JetBrains Mono',monospace">R$${rate.toFixed(4)}
+              <span class="${deltaPct >= 0 ? 'positive' : 'negative'}" style="font-size:11px">${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(2)}%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
+        Sobre US$ ${Math.round(fx.usd_staked).toLocaleString('pt-BR')} operados em pontas de dólar (${fx.legs} pernas liquidadas). Estimativa — assume posição em dólar não convertida de volta.
+      </div>
+    </div>`;
+}
+
+// ===== RETROSPECTIVA (recap) =====
+let recapPeriodKey = null;
+
+// Period options: World Cup 2026 special + the last 6 calendar months.
+function recapPeriods() {
+  const now = new Date();
+  const months = [];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    const pad = n => String(n).padStart(2, '0');
+    const label = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    months.push({
+      key: `${d.getFullYear()}-${pad(d.getMonth() + 1)}`,
+      label: label.charAt(0).toUpperCase() + label.slice(1),
+      start: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`,
+      end: `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`,
+    });
+  }
+  return [{ key: 'worldcup', label: '🏆 Copa do Mundo', start: '2026-06-11', end: '2026-07-19' }, ...months];
+}
+
+function setRecapPeriod(key) { recapPeriodKey = key; renderRecap(); }
+
+async function renderRecap() {
+  const periods = recapPeriods();
+  if (!recapPeriodKey || !periods.some(p => p.key === recapPeriodKey)) {
+    // Default: the previous full month (they'll usually recap the month that just ended).
+    const now = new Date();
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    recapPeriodKey = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+    if (!periods.some(p => p.key === recapPeriodKey)) recapPeriodKey = periods[1] ? periods[1].key : 'worldcup';
+  }
+  const mc = document.getElementById('main-content');
+  mc.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Retrospectiva</h1>
+        <p class="page-description">Seu recap do período — estilo "Rewind"</p>
+      </div>
+    </div>
+    <div class="watcher-tabs" style="margin-bottom:16px;flex-wrap:wrap">
+      ${periods.map(p => `<button class="watcher-tab ${p.key === recapPeriodKey ? 'active' : ''}" onclick="setRecapPeriod('${p.key}')">${p.label}</button>`).join('')}
+    </div>
+    <div id="recap-content"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando…</div></div>
+  `;
+  loadRecap();
+}
+
+async function loadRecap() {
+  const periods = recapPeriods();
+  const p = periods.find(x => x.key === recapPeriodKey);
+  const el = document.getElementById('recap-content');
+  if (!p || !el) return;
+  try {
+    const d = await api(`/api/dashboard/recap?start=${p.start}&end=${p.end}`);
+    el.innerHTML = recapHtml(d, p);
+  } catch (err) {
+    el.innerHTML = `<div style="color:var(--danger);padding:20px">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function recapHtml(d, p) {
+  const s = d.summary || {};
+  if (!s.ops) return `<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma operação em ${escapeHtml(p.label)}.</div>`;
+  const avg = s.active_days ? s.profit / s.active_days : 0;
+  const fmtDate = ds => ds ? new Date(ds + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '—';
+  const card = (label, value, sub, big) => `<div class="recap-card"><div class="recap-card-label">${label}</div><div class="recap-card-value" style="${big ? '' : 'font-size:18px'}">${value}</div>${sub ? `<div class="recap-card-sub">${sub}</div>` : ''}</div>`;
+  return `
+    <div class="recap-hero">
+      <div class="recap-hero-label">${escapeHtml(p.label)} · lucro total</div>
+      <div class="recap-hero-value">${formatBRL(s.profit)}</div>
+      <div class="recap-hero-sub">${s.ops} operações · ${s.active_days} dias ativos · ${formatBRL(avg)}/dia ativo</div>
+    </div>
+    <div class="recap-grid">
+      ${card('💰 Total operado', formatBRL(s.volume), '', true)}
+      ${d.biggest ? card('🚀 Maior tacada', formatBRL(d.biggest.profit), `${escapeHtml(d.biggest.game || '')} · ${fmtDate(d.biggest.date)}`, true) : ''}
+      ${d.bestDay ? card('📈 Dia mais lucrativo', formatBRL(d.bestDay.profit), `${fmtDate(d.bestDay.date)} · ${d.bestDay.ops} ops`, true) : ''}
+      ${d.topHouse ? card('🏠 Casa favorita', escapeHtml(d.topHouse.name), `${d.topHouse.count} operações`, false) : ''}
+      ${d.topCombo ? card('🔗 Combinação mais usada', escapeHtml(d.topCombo.combo), `${d.topCombo.count}x`, false) : ''}
+      ${(d.giros && d.giros.count) ? card('🎰 Giros', formatBRL(d.giros.profit), `${d.giros.count} giros`, true) : ''}
+    </div>
+    <div class="chart-container" style="margin-top:16px">
+      <h3 class="chart-title" style="margin-bottom:12px">Por tipo de operação</h3>
+      <div class="recap-types">
+        <div class="recap-type recap-type-head">
+          <span>Tipo</span><span>Operações</span><span>Lucro</span>
+        </div>
+        ${(d.byType || []).map(t => `<div class="recap-type">
+          <span>${typeLabel(t.type)}</span>
+          <span class="recap-type-count">${t.count}</span>
+          <span class="${profitClass(t.profit)}" style="font-weight:600">${formatBRL(t.profit)}</span>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:16px;color:var(--text-muted);font-size:12px">📸 Tire um print e compartilhe com a galera!</div>
+  `;
 }
 
 function renderDashOperators(op) {
@@ -4266,12 +4424,12 @@ async function loadRankingTab() {
             ? `${u.total_giros} giro(s) registrado(s) · ${u.total_quantity || 0} giros grátis`
             : `${u.total_ops} opera\u00E7\u00F5es`;
           return `
-            <div class="ranking-row ${isMe ? 'ranking-me' : ''}" style="
+            <div class="ranking-row ${isMe ? 'ranking-me' : ''}" onclick="openUserProfile(${u.id})" title="Ver perfil de ${escapeHtml(dName)}" style="
               display:flex;align-items:center;gap:16px;
               padding:14px 20px;
               background:var(--bg-card);
               border:1px solid ${isMe ? 'var(--primary)' : 'var(--border)'};
-              border-radius:var(--radius);
+              border-radius:var(--radius);cursor:pointer;
               ${isMe ? 'box-shadow:0 0 12px rgba(108,92,231,.15);' : ''}
             ">
               <div style="width:36px;text-align:center;font-size:${i < 3 ? '22px' : '14px'}">${medal}</div>
@@ -4314,12 +4472,103 @@ function statCardHtml(label, value, sub) {
 const WEEKDAY_NAMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 const WEEKDAY_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
+// ===== USER PROFILE MODAL (from ranking) =====
+let _upCharts = {};
+
+async function openUserProfile(id) {
+  let modal = document.getElementById('user-profile-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'user-profile-modal';
+    modal.className = 'up-modal';
+    modal.innerHTML = `<div class="up-backdrop" onclick="closeUserProfile()"></div><div class="up-content" id="up-content"></div>`;
+    document.body.appendChild(modal);
+  }
+  document.getElementById('up-content').innerHTML = `<button class="up-close" onclick="closeUserProfile()">✕</button><div style="text-align:center;padding:48px;color:var(--text-muted)">Carregando…</div>`;
+  modal.style.display = 'flex';
+  try {
+    const d = await api(`/api/ranking/user/${id}`);
+    renderUserProfile(d);
+  } catch (err) {
+    document.getElementById('up-content').innerHTML = `<button class="up-close" onclick="closeUserProfile()">✕</button><div style="padding:32px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function closeUserProfile() {
+  const m = document.getElementById('user-profile-modal');
+  if (m) m.style.display = 'none';
+  Object.values(_upCharts).forEach(c => { try { c.destroy(); } catch (_) {} });
+  _upCharts = {};
+}
+
+function renderUserProfile(d) {
+  Object.values(_upCharts).forEach(c => { try { c.destroy(); } catch (_) {} });
+  _upCharts = {};
+  const p = d.profile, s = d.stats;
+  const name = p.discord_username || p.display_name || '?';
+  const url = userAvatarUrl(p, 96);
+  const avatarInner = url ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover">` : escapeHtml(name.charAt(0).toUpperCase());
+  document.getElementById('up-content').innerHTML = `
+    <button class="up-close" onclick="closeUserProfile()">✕</button>
+    <div class="up-header">
+      <div class="up-avatar">${avatarInner}</div>
+      <div style="min-width:0">
+        <div class="up-name">${escapeHtml(name)}</div>
+        <div class="up-bio">${p.bio ? escapeHtml(p.bio) : '<span style="opacity:.55">Sem bio</span>'}</div>
+      </div>
+    </div>
+    <div class="up-stats">
+      <div class="stat-card"><div class="stat-label">Lucro no mês</div><div class="stat-value ${profitClass(s.month.profit)}">${formatBRL(s.month.profit)}</div><div class="stat-sub">${s.month.count} operação(ões)</div></div>
+      <div class="stat-card"><div class="stat-label">Lucro total</div><div class="stat-value ${profitClass(s.allTime.profit)}">${formatBRL(s.allTime.profit)}</div><div class="stat-sub">${s.allTime.count} operação(ões)</div></div>
+    </div>
+    <div class="up-charts">
+      <div class="chart-container"><h4 class="chart-title" style="font-size:13px;margin-bottom:10px">Lucro diário (30 dias)</h4><div style="position:relative;height:190px"><canvas id="up-daily-chart"></canvas></div></div>
+      <div class="chart-container"><h4 class="chart-title" style="font-size:13px;margin-bottom:10px">Por tipo de operação</h4><div style="position:relative;height:190px"><canvas id="up-type-chart"></canvas></div></div>
+    </div>`;
+  renderUpDailyChart(s.dailyProfits || []);
+  renderUpTypeChart(s.profitByType || []);
+}
+
+function renderUpDailyChart(dailyProfits) {
+  const ctx = document.getElementById('up-daily-chart');
+  if (!ctx) return;
+  const labels = dailyProfits.map(d => new Date(d.date + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }));
+  const values = dailyProfits.map(d => d.profit);
+  const colors = values.map(v => v >= 0 ? 'rgba(0,200,83,0.8)' : 'rgba(239,83,80,0.8)');
+  _upCharts.daily = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b8fa3', font: { size: 10 } } },
+        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b8fa3', callback: v => 'R$' + v } },
+      },
+    },
+  });
+}
+
+function renderUpTypeChart(profitByType) {
+  const ctx = document.getElementById('up-type-chart');
+  if (!ctx) return;
+  const typeColors = { aquecimento: '#ffa726', arbitragem: '#00c853', aumentada25: '#6c5ce7', arbitragem_br: '#26c6da', punter: '#ef5350', tentativa_duplo: '#ec407a' };
+  if (!profitByType.length) {
+    _upCharts.type = new Chart(ctx, { type: 'doughnut', data: { labels: ['Sem dados'], datasets: [{ data: [1], backgroundColor: ['#2e3247'] }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8b8fa3' } } } } });
+    return;
+  }
+  _upCharts.type = new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels: profitByType.map(p => typeLabel(p.type)), datasets: [{ data: profitByType.map(p => p.count), backgroundColor: profitByType.map(p => typeColors[p.type] || '#6c5ce7'), borderWidth: 0 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '65%', plugins: { legend: { position: 'bottom', labels: { color: '#e4e6f0', padding: 12, font: { size: 11 } } } } },
+  });
+}
+
 async function renderBookmakersPage() {
   const mc = document.getElementById('main-content');
   mc.innerHTML = `
     <div class="page-header">
       <div>
-        <h1 class="page-title">Análises</h1>
+        <h1 class="page-title">Estatísticas</h1>
         <p class="page-description">Casas, horários e dias — volume, lucro e atividade</p>
       </div>
     </div>
@@ -4331,6 +4580,7 @@ async function renderBookmakersPage() {
       </div>
     </div>
     <div id="bookmaker-summary" class="stats-grid" style="margin-bottom:20px"></div>
+    <div id="bookmaker-topops" style="margin-bottom:24px"></div>
 
     <h3 class="chart-title" style="margin:0 0 12px">Casas</h3>
     <div class="chart-container" style="margin-bottom:16px">
@@ -4385,14 +4635,42 @@ async function loadBookmakerPerformance() {
     const totalVolume = rows.reduce((s, r) => s + (Number(r.volume) || 0), 0);
     const peakHour = byHour.reduce((best, h) => (h.count > (best?.count || 0) ? h : best), null);
     const bestDay = byWeekday.reduce((best, d) => (d.profit > (best?.profit || -Infinity) ? d : best), null);
+    const totals = data.totals || { ops: 0, profit: 0 };
+    const roi = totalVolume > 0 ? (Number(totals.profit) / totalVolume) * 100 : 0;
     const summary = document.getElementById('bookmaker-summary');
     if (summary) {
       summary.innerHTML = `
-        ${statCardHtml('Casas com movimento', String(rows.length), 'no período')}
+        ${statCardHtml('Lucro no período', formatBRL(Number(totals.profit) || 0), `${Number(totals.ops) || 0} operação(ões)`)}
+        ${statCardHtml('ROI médio', `${roi.toFixed(2)}%`, 'lucro / volume')}
         ${statCardHtml('Volume total', formatBRL(totalVolume), 'soma dos stakes')}
+        ${statCardHtml('Casas com movimento', String(rows.length), 'no período')}
         ${statCardHtml('Horário de pico', peakHour && peakHour.count ? `${String(peakHour.hour).padStart(2, '0')}h` : '—', peakHour && peakHour.count ? `${peakHour.count} operação(ões)` : 'sem dados')}
         ${statCardHtml('Dia mais lucrativo', bestDay && bestDay.profit > -Infinity && bestDay.count ? WEEKDAY_NAMES[bestDay.weekday] : '—', bestDay && bestDay.count ? formatBRL(bestDay.profit) : 'sem dados')}
       `;
+    }
+
+    // Biggest operations of the period.
+    const topEl = document.getElementById('bookmaker-topops');
+    const topOps = data.topOps || [];
+    if (topEl) {
+      if (!topOps.length) { topEl.innerHTML = ''; }
+      else {
+        const fmtDate = ds => ds ? new Date(ds + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '—';
+        topEl.innerHTML = `
+          <h3 class="chart-title" style="margin:0 0 12px">Maiores operações do período</h3>
+          <div class="chart-container">
+            ${topOps.map((o, i) => `
+              <div style="display:flex;align-items:center;gap:12px;padding:9px 0;${i < topOps.length - 1 ? 'border-bottom:1px solid var(--border)' : ''}">
+                <span style="color:var(--text-muted);font-weight:700;width:20px">${i + 1}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(o.game || '—')}</div>
+                  <div style="font-size:11px;color:var(--text-muted)">${fmtDate(o.date)}</div>
+                </div>
+                <span class="${profitClass(Number(o.profit) || 0)}" style="font-weight:700;font-family:'JetBrains Mono',monospace">${formatBRL(Number(o.profit) || 0)}</span>
+              </div>
+            `).join('')}
+          </div>`;
+      }
     }
 
     renderBookmakerChart(rows);
