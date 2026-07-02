@@ -193,6 +193,9 @@ function calcToggleTheme() {
 
 // -- Rate fetcher --
 async function calcFetchRate() {
+  // Auto-stop polling once the user leaves the calculator; skip while tab hidden.
+  if (!document.getElementById('calc-ticker-body')) { if (calcRateInterval) { clearInterval(calcRateInterval); calcRateInterval = null; } return; }
+  if (document.hidden) return;
   const dot = document.getElementById('calc-status-dot');
   if (dot) dot.className = "c-dot c-dot-load";
   const attempts = [
@@ -268,15 +271,45 @@ function calcClearManualRate() {
 // -- Multi-exchange dollar panel (buy/sell across brokers, via backend proxy) --
 let calcFxInterval = null;
 
+// Fetch helper with timeout; returns parsed JSON or null (never throws).
+async function calcFxGet(url, ms = 4000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { const r = await fetch(url, { signal: ctrl.signal, cache: 'no-store' }); return r.ok ? await r.json() : null; }
+  catch { return null; }
+  finally { clearTimeout(t); }
+}
+
+// Exchanges reachable straight from the browser: Binance/Bitget send CORS '*',
+// Bybit reflects the Origin header. Fetching client-side also uses the user's BR
+// IP, avoiding the cloud-IP geo-block that trips Binance/Bybit from our servers.
+const CALC_FX_CLIENT = [
+  { id: 'binance', label: 'Binance', async q() {
+    for (const p of ['USDCBRL', 'USDTBRL']) { const d = await calcFxGet(`https://api.binance.com/api/v3/ticker/bookTicker?symbol=${p}`); const bid = +(d && d.bidPrice), ask = +(d && d.askPrice); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
+  { id: 'bybit', label: 'Bybit', async q() {
+    for (const p of ['USDCBRL', 'USDTBRL']) { const d = await calcFxGet(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${p}`); const t = d && d.result && d.result.list && d.result.list[0]; const bid = +(t && t.bid1Price), ask = +(t && t.ask1Price); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
+  { id: 'bitget', label: 'Bitget', async q() {
+    for (const p of ['USDTBRL', 'USDCBRL']) { const d = await calcFxGet(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${p}`); const t = d && d.data && d.data[0]; const bid = +(t && t.bidPr), ask = +(t && t.askPr); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
+];
+
 async function calcFetchFxQuotes() {
-  const body = document.getElementById('calc-fx-body');
-  try {
-    const res = await fetch('/api/fx/quotes', { cache: 'no-store' });
-    if (!res.ok) throw new Error('http ' + res.status);
-    calcRenderFxQuotes(await res.json());
-  } catch (_) {
-    if (body) body.innerHTML = `<div style="color:var(--red);font-size:11px;font-family:var(--mono)">Falha ao buscar cotações das corretoras</div>`;
-  }
+  // Auto-stop polling once the user leaves the calculator; skip while tab hidden.
+  if (!document.getElementById('calc-fx-body')) { if (calcFxInterval) { clearInterval(calcFxInterval); calcFxInterval = null; } return; }
+  if (document.hidden) return;
+
+  const clientP = CALC_FX_CLIENT.map(async s => {
+    try { const r = await s.q(); return r ? { id: s.id, label: s.label, ok: true, ...r } : { id: s.id, label: s.label, ok: false }; }
+    catch { return { id: s.id, label: s.label, ok: false }; }
+  });
+  // Backend proxies MEXC (no CORS) and serves as a fallback for the others.
+  const serverP = calcFxGet('/api/fx/quotes').then(d => (d && d.quotes) || []);
+
+  const [clientRes, serverQuotes] = await Promise.all([Promise.all(clientP), serverP]);
+  const byId = {};
+  for (const q of serverQuotes) byId[q.id] = q;      // base (mexc + fallbacks)
+  for (const q of clientRes) if (q.ok) byId[q.id] = q; // client-side OK wins
+  const order = ['binance', 'bybit', 'mexc', 'bitget'];
+  calcRenderFxQuotes({ quotes: order.map(id => byId[id]).filter(Boolean) });
 }
 
 function calcRenderFxQuotes(data) {
@@ -1948,15 +1981,6 @@ function renderCalculator() {
       <div id="calc-brl-warn" style="display:none" class="c-warn-bar">\u26A0 Linhas em BRL precisam da cota\u00E7\u00E3o ao vivo</div>
     </div>
 
-    <div class="c-fx-panel" id="calc-fx-panel">
-      <div class="c-fx-head">
-        <span class="c-fx-title">\uD83D\uDCB1 D\u00F3lar nas corretoras</span>
-        <button class="c-refresh-btn" onclick="calcFetchFxQuotes()" title="Atualizar">\u21BA</button>
-      </div>
-      <div id="calc-fx-body"><div class="c-ticker-load">Buscando cota\u00E7\u00F5es\u2026</div></div>
-      <div class="c-fx-note">Compra = voc\u00EA paga (ask) \u00B7 Venda = voc\u00EA recebe (bid). Verde = melhor. Clique num valor pra usar como cota\u00E7\u00E3o manual.</div>
-    </div>
-
     <div class="c-tbl-wrap">
       <table>
         <thead id="calc-thead"></thead>
@@ -1975,6 +1999,15 @@ function renderCalculator() {
     </div>
 
     <div id="calc-simulator" style="display:none"></div>
+
+    <div class="c-fx-panel" id="calc-fx-panel">
+      <div class="c-fx-head">
+        <span class="c-fx-title">\uD83D\uDCB1 D\u00F3lar nas corretoras</span>
+        <button class="c-refresh-btn" onclick="calcFetchFxQuotes()" title="Atualizar">\u21BA</button>
+      </div>
+      <div id="calc-fx-body"><div class="c-ticker-load">Buscando cota\u00E7\u00F5es\u2026</div></div>
+      <div class="c-fx-note">Compra = voc\u00EA paga (ask) \u00B7 Venda = voc\u00EA recebe (bid). Verde = melhor. Clique num valor pra usar como cota\u00E7\u00E3o manual.</div>
+    </div>
 
     <div style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
