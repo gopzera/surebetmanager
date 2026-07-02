@@ -22,50 +22,17 @@ async function fetchJson(url, ms = 3500) {
   }
 }
 
-// Each source tries USDCBRL first, then USDTBRL. Returns { pair, bid, ask } or null.
-// bid = best price someone pays you (you SELL into it); ask = price you pay (you BUY).
+// Only MEXC needs the proxy: it doesn't send CORS headers, so the browser can't
+// fetch it directly. Binance/Bybit/Bitget are fetched client-side (they allow CORS
+// and the user's BR IP avoids the cloud-IP geo-block that trips them server-side).
+// Tries USDCBRL first, then USDTBRL. bid = you SELL into it; ask = you BUY at it.
 const SOURCES = [
-  {
-    id: 'binance', label: 'Binance',
-    async quote() {
-      for (const pair of ['USDCBRL', 'USDTBRL']) {
-        const d = await fetchJson(`https://api.binance.com/api/v3/ticker/bookTicker?symbol=${pair}`);
-        const bid = d && parseFloat(d.bidPrice), ask = d && parseFloat(d.askPrice);
-        if (bid > 0 && ask > 0) return { pair, bid, ask };
-      }
-      return null;
-    },
-  },
-  {
-    id: 'bybit', label: 'Bybit',
-    async quote() {
-      for (const pair of ['USDCBRL', 'USDTBRL']) {
-        const d = await fetchJson(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${pair}`);
-        const t = d && d.result && Array.isArray(d.result.list) ? d.result.list[0] : null;
-        const bid = t && parseFloat(t.bid1Price), ask = t && parseFloat(t.ask1Price);
-        if (bid > 0 && ask > 0) return { pair, bid, ask };
-      }
-      return null;
-    },
-  },
   {
     id: 'mexc', label: 'MEXC',
     async quote() {
       for (const pair of ['USDCBRL', 'USDTBRL']) {
         const d = await fetchJson(`https://api.mexc.com/api/v3/ticker/bookTicker?symbol=${pair}`);
         const bid = d && parseFloat(d.bidPrice), ask = d && parseFloat(d.askPrice);
-        if (bid > 0 && ask > 0) return { pair, bid, ask };
-      }
-      return null;
-    },
-  },
-  {
-    id: 'bitget', label: 'Bitget',
-    async quote() {
-      for (const pair of ['USDTBRL', 'USDCBRL']) {
-        const d = await fetchJson(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${pair}`);
-        const t = d && Array.isArray(d.data) ? d.data[0] : null;
-        const bid = t && parseFloat(t.bidPr), ask = t && parseFloat(t.askPr);
         if (bid > 0 && ask > 0) return { pair, bid, ask };
       }
       return null;
