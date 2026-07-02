@@ -27,15 +27,26 @@ const CALC_CURR_SYMS = { USD:"$", BRL:"R$" };
 // -- Calculator state --
 let calcNumOut = 2;
 let calcShowComm = false;
-// Polymarket share prices are normally whole cents ($0.01). For extreme odds the
-// book allows tenth-of-a-cent prices (e.g. 97,6¢ = $0.976) — this toggle rounds
-// to 0,1¢ (3 decimals) instead of 1¢ (2 decimals).
-let calcBrokenCents = localStorage.getItem('calcBrokenCents') === '1';
+// Polymarket share-price tick granularity. As of the 2026 decimalization the book
+// trades in 0,25¢ ticks ($0.0025 steps → 74,75¢ / 74,50¢ / 74,25¢...). We still
+// support 1¢ (legacy) and 0,1¢ (extreme-odds) rounding.
+//   'cent'    → 1¢     (2 casas em $)
+//   'quarter' → 0,25¢  (4 casas em $)  ← novo padrão Polymarket
+//   'tenth'   → 0,1¢   (3 casas em $)
+const CALC_TICK_FACTORS = { cent: 100, quarter: 400, tenth: 1000 };
+let calcTickMode = (() => {
+  const m = localStorage.getItem('calcTickMode');
+  if (m && CALC_TICK_FACTORS[m]) return m;
+  if (localStorage.getItem('calcBrokenCents') === '1') return 'tenth'; // migrate old toggle
+  return 'quarter';
+})();
 let calcRoundValue = 0;
 let calcRoundUseFx = false;
 let calcNextId = 3;
 let calcRows = [];
-let calcUsdcBrl = null;
+let calcUsdcBrl = null;   // EFFECTIVE rate used in all math (manual override or live)
+let calcLiveRate = null;  // last rate fetched from Binance/fallbacks
+let calcManualRate = null; // user-typed override; when set, wins over the live rate
 let calcLastUpdated = null;
 let calcResult = null;
 let calcDarkMode = true;
@@ -48,6 +59,9 @@ function makeCalcRow(id) {
     id, odds: "2", comm: "0",
     betType: "back",      // "back" | "lay"
     usePoly: false, cat: "Sports",
+    // When true (Poly back rows only), the odd cell takes the share price in CENTS
+    // (e.g. 74,75) instead of a decimal odd; odds is derived as 100/cents.
+    polyCentsInput: false,
     currency: "USD", isFixed: false, fixedStake: "",
     manualStake: null,    // user-typed override when another row is the fixed anchor
     customRate: null,     // custom BRL/USD rate for display on USD rows
@@ -179,6 +193,9 @@ function calcToggleTheme() {
 
 // -- Rate fetcher --
 async function calcFetchRate() {
+  // Auto-stop polling once the user leaves the calculator; skip while tab hidden.
+  if (!document.getElementById('calc-ticker-body')) { if (calcRateInterval) { clearInterval(calcRateInterval); calcRateInterval = null; } return; }
+  if (document.hidden) return;
   const dot = document.getElementById('calc-status-dot');
   if (dot) dot.className = "c-dot c-dot-load";
   const attempts = [
@@ -199,8 +216,10 @@ async function calcFetchRate() {
 }
 
 function calcGotRate(price, source) {
-  calcUsdcBrl = price;
+  calcLiveRate = price;
   calcLastUpdated = new Date();
+  // A manual override wins; otherwise the live rate drives the math.
+  if (calcManualRate == null) calcUsdcBrl = price;
   const dot = document.getElementById('calc-status-dot');
   if (dot) dot.className = "c-dot c-dot-ok";
   const body = document.getElementById('calc-ticker-body');
@@ -210,6 +229,116 @@ function calcGotRate(price, source) {
   calcCompute();
   calcUpdateDisplay();
 }
+
+// Effective rate = manual override when set, else the live rate.
+function calcApplyEffectiveRate() {
+  calcUsdcBrl = calcManualRate != null ? calcManualRate : calcLiveRate;
+  const badge = document.getElementById('calc-manual-badge');
+  if (badge) badge.style.display = calcManualRate != null ? '' : 'none';
+  const clearBtn = document.getElementById('calc-manual-clear');
+  if (clearBtn) clearBtn.style.display = calcManualRate != null ? '' : 'none';
+  calcCompute();
+  calcUpdateDisplay();
+}
+
+// User typed a manual USDC/BRL rate (overrides Binance everywhere). Empty = live.
+function calcOnManualRateInput(val) {
+  const s = String(val == null ? '' : val).replace(',', '.').trim();
+  if (s === '') calcManualRate = null;
+  else { const n = parseFloat(s); calcManualRate = (n > 0) ? n : null; }
+  calcApplyEffectiveRate();
+}
+
+// Set the manual rate programmatically (e.g. clicking an exchange quote) and sync
+// the input.
+function calcSetManualRate(rate) {
+  const n = parseFloat(rate);
+  if (!(n > 0)) return;
+  calcManualRate = n;
+  const inp = document.getElementById('calc-manual-rate');
+  if (inp) inp.value = n.toFixed(4);
+  calcApplyEffectiveRate();
+  if (typeof toast === 'function') toast('Cotação manual: R$' + n.toFixed(4));
+}
+
+function calcClearManualRate() {
+  calcManualRate = null;
+  const inp = document.getElementById('calc-manual-rate');
+  if (inp) inp.value = '';
+  calcApplyEffectiveRate();
+}
+
+// -- Multi-exchange dollar panel (buy/sell across brokers, via backend proxy) --
+let calcFxInterval = null;
+
+// Fetch helper with timeout; returns parsed JSON or null (never throws).
+async function calcFxGet(url, ms = 4000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { const r = await fetch(url, { signal: ctrl.signal, cache: 'no-store' }); return r.ok ? await r.json() : null; }
+  catch { return null; }
+  finally { clearTimeout(t); }
+}
+
+// Exchanges reachable straight from the browser: Binance/Bitget send CORS '*',
+// Bybit reflects the Origin header. Fetching client-side also uses the user's BR
+// IP, avoiding the cloud-IP geo-block that trips Binance/Bybit from our servers.
+const CALC_FX_CLIENT = [
+  { id: 'binance', label: 'Binance', async q() {
+    for (const p of ['USDCBRL', 'USDTBRL']) { const d = await calcFxGet(`https://api.binance.com/api/v3/ticker/bookTicker?symbol=${p}`); const bid = +(d && d.bidPrice), ask = +(d && d.askPrice); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
+  { id: 'bybit', label: 'Bybit', async q() {
+    for (const p of ['USDCBRL', 'USDTBRL']) { const d = await calcFxGet(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${p}`); const t = d && d.result && d.result.list && d.result.list[0]; const bid = +(t && t.bid1Price), ask = +(t && t.ask1Price); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
+  { id: 'bitget', label: 'Bitget', async q() {
+    for (const p of ['USDTBRL', 'USDCBRL']) { const d = await calcFxGet(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${p}`); const t = d && d.data && d.data[0]; const bid = +(t && t.bidPr), ask = +(t && t.askPr); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
+];
+
+async function calcFetchFxQuotes() {
+  // Auto-stop polling once the user leaves the calculator; skip while tab hidden.
+  if (!document.getElementById('calc-fx-body')) { if (calcFxInterval) { clearInterval(calcFxInterval); calcFxInterval = null; } return; }
+  if (document.hidden) return;
+
+  const clientP = CALC_FX_CLIENT.map(async s => {
+    try { const r = await s.q(); return r ? { id: s.id, label: s.label, ok: true, ...r } : { id: s.id, label: s.label, ok: false }; }
+    catch { return { id: s.id, label: s.label, ok: false }; }
+  });
+  // Backend proxies MEXC (no CORS) and serves as a fallback for the others.
+  const serverP = calcFxGet('/api/fx/quotes').then(d => (d && d.quotes) || []);
+
+  const [clientRes, serverQuotes] = await Promise.all([Promise.all(clientP), serverP]);
+  const byId = {};
+  for (const q of serverQuotes) byId[q.id] = q;      // base (mexc + fallbacks)
+  for (const q of clientRes) if (q.ok) byId[q.id] = q; // client-side OK wins
+  const order = ['binance', 'bybit', 'mexc', 'bitget'];
+  calcRenderFxQuotes({ quotes: order.map(id => byId[id]).filter(Boolean) });
+}
+
+function calcRenderFxQuotes(data) {
+  const body = document.getElementById('calc-fx-body');
+  if (!body) return;
+  const quotes = (data && data.quotes) || [];
+  const ok = quotes.filter(q => q.ok);
+  const bestAsk = ok.length ? Math.min(...ok.map(q => q.ask)) : null; // cheapest to BUY
+  const bestBid = ok.length ? Math.max(...ok.map(q => q.bid)) : null; // best to SELL
+  const rows = quotes.map(q => {
+    if (!q.ok) return `<tr class="c-fx-off"><td>${q.label}</td><td colspan="3" style="color:var(--text3)">indisponível</td></tr>`;
+    const spread = q.bid > 0 ? (q.ask - q.bid) / q.bid * 100 : 0;
+    const buyBest = q.ask === bestAsk ? ' c-fx-best' : '';
+    const sellBest = q.bid === bestBid ? ' c-fx-best' : '';
+    return `<tr>
+      <td>${q.label}<span class="c-fx-pair">${q.pair}</span></td>
+      <td class="c-fx-cell${buyBest}" title="Comprar (ask) — clique pra usar como cotação manual" onclick="calcUseQuote(${q.ask})">R$${q.ask.toFixed(4)}</td>
+      <td class="c-fx-cell${sellBest}" title="Vender (bid) — clique pra usar como cotação manual" onclick="calcUseQuote(${q.bid})">R$${q.bid.toFixed(4)}</td>
+      <td class="c-fx-spread">${spread.toFixed(2)}%</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML = `
+    <table class="c-fx-table">
+      <thead><tr><th>Corretora</th><th title="Preço pra comprar dólar (ask)">Compra</th><th title="Preço pra vender dólar (bid)">Venda</th><th>Spread</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" style="color:var(--text3)">—</td></tr>'}</tbody>
+    </table>`;
+}
+
+function calcUseQuote(rate) { calcSetManualRate(rate); }
 
 // -- Fork type --
 function calcBuildForkSelect() {
@@ -254,11 +383,20 @@ function calcToggleShowComm() {
   calcBuildTable();
 }
 
-function calcToggleBrokenCents() {
-  calcBrokenCents = !calcBrokenCents;
-  localStorage.setItem('calcBrokenCents', calcBrokenCents ? '1' : '0');
-  const btn = document.getElementById('calc-broken-cents-btn');
-  if (btn) { btn.textContent = calcBrokenCents ? 'Centavos quebrados: ON' : 'Centavos quebrados'; btn.classList.toggle('on', calcBrokenCents); }
+function calcToggleHelp() {
+  const box = document.getElementById('calc-help-box');
+  const btn = document.getElementById('calc-help-btn');
+  if (!box) return;
+  const show = box.style.display === 'none';
+  box.style.display = show ? '' : 'none';
+  if (btn) btn.classList.toggle('on', show);
+}
+
+function calcSetTickMode(mode) {
+  if (!CALC_TICK_FACTORS[mode]) return;
+  calcTickMode = mode;
+  localStorage.setItem('calcTickMode', mode);
+  document.querySelectorAll('#calc-tick-btns .c-btn').forEach(b => b.classList.toggle('on', b.dataset.tick === mode));
   calcCompute(); calcBuildTable();
 }
 
@@ -445,12 +583,27 @@ function calcCompute() {
 }
 
 // -- Build table --
-// Round a Polymarket share price to the active granularity: 0,1¢ (broken cents)
-// or 1¢. Single source of truth so the price hint, shares, "real odd" and the
-// split preview all agree.
+// Round a Polymarket share price to the active tick (1¢ / 0,25¢ / 0,1¢). Single
+// source of truth so the price hint, shares, "real odd" and split preview agree.
 function calcRoundSharePrice(priceExact) {
-  const factor = calcBrokenCents ? 1000 : 100;
+  const factor = CALC_TICK_FACTORS[calcTickMode] || 100;
   return Math.round(priceExact * factor) / factor;
+}
+
+// Decimals needed to render a share price as DOLLARS at the active tick.
+function calcPriceDecimals() {
+  return calcTickMode === 'quarter' ? 4 : calcTickMode === 'tenth' ? 3 : 2;
+}
+
+// Human label for the active tick (for tooltips).
+function calcTickLabel() {
+  return calcTickMode === 'quarter' ? '0,25¢' : calcTickMode === 'tenth' ? '0,1¢' : '1¢';
+}
+
+// Format a share price (given in DOLLARS, e.g. 0.7475) as Polymarket cents:
+// "74,75¢". Always 2 decimals to match Polymarket's current display (28,00¢).
+function calcFmtCents(priceDollars) {
+  return (priceDollars * 100).toFixed(2).replace('.', ',') + '¢';
 }
 
 // -- Polymarket price/shares helpers (reused in build and update) --
@@ -470,10 +623,11 @@ function calcPolyState(row) {
 function calcBuildPolyPriceHint(row) {
   const s = calcPolyState(row);
   if (!s.isPoly) return "";
-  const priceStr = s.priceRounded.toFixed(calcBrokenCents ? 3 : 2);
+  // Show the share price the way Polymarket does now: cents, 2 decimals ("74,75¢").
+  const centsStr = calcFmtCents(s.priceRounded);
   const realOddStr = s.realOdd.toFixed(10);
   return `
-    <div class="c-poly-price" title="Preço por share em limit order (arredondado para ${calcBrokenCents ? '0,1¢' : '1¢'})">$${priceStr}/share</div>
+    <div class="c-poly-price" title="Preço por share em limit order (${centsStr} = $${s.priceRounded.toFixed(calcPriceDecimals())}, arredondado para tick ${calcTickLabel()})">${centsStr}/share</div>
     ${s.oddDiffers ? `<div class="c-poly-real-odd" title="Odd real com preço arredondado">odd real: ${realOddStr}</div>
     <button type="button" class="c-poly-odd-btn" onclick="calcUseRealOdd(${row.id})" title="Substituir a odd pela odd real">transformar em odd real</button>` : ''}
   `;
@@ -499,14 +653,14 @@ function calcBuildPolySharesHint(row, idx) {
       if (!(priceRounded > 0)) return '';
       const shares = stakeUsd / priceRounded;
       const feeLabel = t.fee ? 'c/fee' : 's/fee';
-      return `<div>T${j + 1} (${feeLabel}): ${shares.toFixed(2)} sh × $${priceRounded.toFixed(calcBrokenCents ? 3 : 2)} = $${stakeUsd.toFixed(2)}</div>`;
+      return `<div>T${j + 1} (${feeLabel}): ${shares.toFixed(2)} sh × ${calcFmtCents(priceRounded)} = $${stakeUsd.toFixed(2)}</div>`;
     }).filter(Boolean).join('');
     if (!lines) return '';
     return `<div class="c-shares-badge c-shares-split" title="Split de liquidez ativo — breakdown por tier">${lines}</div>`;
   }
 
   const shares = p.total / s.priceRounded;
-  return `<div class="c-shares-badge" title="Shares em limit order a $${s.priceRounded.toFixed(calcBrokenCents ? 3 : 2)} cada">Shares: ${shares.toFixed(2)}</div>`;
+  return `<div class="c-shares-badge" title="Shares em limit order a ${calcFmtCents(s.priceRounded)} cada">Shares: ${shares.toFixed(2)}</div>`;
 }
 
 function calcBuildTable() {
@@ -533,6 +687,7 @@ function calcBuildTable() {
   document.getElementById("calc-tbody").innerHTML = calcRows.map((row, idx) => {
     const cur = row.currency;
     const isLay = row.betType === "lay";
+    const canCents = !isLay && row.usePoly; // cents-input switch only for Poly back rows
     const catOpts = CAT_KEYS.map(k =>
       `<option value="${k}"${row.cat===k?" selected":""}>${k}</option>`
     ).join("");
@@ -541,10 +696,10 @@ function calcBuildTable() {
     if (calcShowComm) {
       const eff = calcResult ? calcResult.effArr[idx] : null;
       commCols = `
-        <td><input type="number" min="-40" max="40" step="0.01" value="${row.comm}"
+        <td data-label="Comm %"><input type="number" min="-40" max="40" step="0.01" value="${row.comm}"
           style="width:70px;text-align:center"
           oninput="calcOnCommInput(${row.id},this.value)"></td>
-        <td class="c-num-col" id="calc-ao-${row.id}" style="font-size:12px">
+        <td class="c-num-col" data-label="Eff. Odds" id="calc-ao-${row.id}" style="font-size:12px">
           ${eff ? `<span style="font-family:var(--mono);font-size:11px">${eff.toFixed(4)}</span>` : "\u2014"}
         </td>`;
     }
@@ -572,37 +727,44 @@ function calcBuildTable() {
 
     return `
     <tr class="${isLay?"c-is-lay":""}">
-      <td class="c-ctr-col" style="font:600 11px/1 var(--mono);color:var(--text3)">${idx+1}</td>
-      <td class="c-ctr-col">
+      <td class="c-ctr-col c-line-num" data-label="Linha" style="font:600 11px/1 var(--mono);color:var(--text3)">${idx+1}</td>
+      <td class="c-ctr-col" data-label="Aposta">
         <button class="c-bl-btn ${isLay?"c-lay":"c-back"}" onclick="calcToggleBL(${row.id})" title="${isLay?"Lay (you're the bookmaker)":"Back (you're the bettor)"}">${isLay?"\u2212":"+"}</button>
       </td>
-      <td>
+      <td data-label="Odd">
         <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
-          <input type="number" min="1.001" step="0.01" value="${row.odds}" style="width:88px;text-align:center"
-            placeholder="${isLay?"Lay odds":"Back odds"}"
-            oninput="calcOnOddsInput(${row.id},this.value)">
+          <div style="display:flex;align-items:center;gap:4px;justify-content:center">
+            ${canCents ? `<button type="button" class="c-cents-switch ${row.polyCentsInput?'on':''}" onclick="calcTogglePolyCentsInput(${row.id})" title="Alternar entre digitar a ODD ou os CENTAVOS da share (ex.: 74,75)">${row.polyCentsInput?'¢':'odd'}</button>` : ''}
+            ${(canCents && row.polyCentsInput)
+              ? `<input type="number" min="0.01" max="99.99" step="0.25" value="${calcOddToCents(row.odds)}" style="width:80px;text-align:center"
+                   placeholder="¢ da share" title="Centavos da share (ex.: 74,75). A odd é derivada como 100/centavos."
+                   oninput="calcOnPolyCentsInput(${row.id},this.value)">`
+              : `<input type="number" min="1.001" step="0.01" value="${row.odds}" style="width:88px;text-align:center"
+                   placeholder="${isLay?"Lay odds":"Back odds"}"
+                   oninput="calcOnOddsInput(${row.id},this.value)">`}
+          </div>
           <div id="calc-polyprice-${row.id}" class="c-polyprice-wrap">${polyPriceHint}</div>
         </div>
       </td>
-      <td class="c-num-col" id="calc-prob-${row.id}" style="font-size:12px">
+      <td class="c-num-col" data-label="Prob%" id="calc-prob-${row.id}" style="font-size:12px">
         ${(parseFloat(row.odds)||0) > 1 ? (100/(parseFloat(row.odds))).toFixed(1)+"%" : "\u2014"}
       </td>
       ${commCols}
-      <td class="c-poly-td c-ctr-col">
+      <td class="c-poly-td c-ctr-col" data-label="Poly">
         <input type="checkbox" ${row.usePoly&&!isLay?"checked":""} ${isLay?"disabled":""} onchange="calcOnPolyChange(${row.id},this.checked)" title="${isLay?"Polymarket only for back bets":"Use Polymarket taker fee"}">
       </td>
-      <td class="c-poly-td">
+      <td class="c-poly-td" data-label="Categoria">
         <select id="calc-catsel-${row.id}" ${(row.usePoly&&!isLay)?"":"disabled"} onchange="calcOnCatChange(${row.id},this.value)">${catOpts}</select>
       </td>
-      <td id="calc-fee-${row.id}" class="c-poly-td c-num-col">
+      <td id="calc-fee-${row.id}" class="c-poly-td c-num-col" data-label="Taker Fee">
         ${(!isLay && row.usePoly) ? (() => {
           const fp = calcTakerFeePct(parseFloat(row.odds)||0, parseFloat(row.comm)||0, row.cat);
           return fp > 0 ? `<span class="c-fee-badge">${fp.toFixed(3)}%</span>` : `<span style="color:var(--text3)">\u2014</span>`;
         })() : `<span style="color:var(--text3)">\u2014</span>`}
       </td>
-      <td class="c-ctr-col">
+      <td class="c-ctr-col" data-label="Moeda">
         <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
-          <button class="c-cur-btn" id="calc-curbtn-${row.id}" onclick="calcCycleCur(${row.id})">${cur==="USD"?"$ USD":"R$ BRL"}</button>
+          <button class="c-cur-btn c-cur-${cur==="USD"?'usd':'brl'}" id="calc-curbtn-${row.id}" onclick="calcCycleCur(${row.id})" title="Clique para alternar a moeda desta linha">${cur==="USD"?"🇺🇸 USD":"🇧🇷 BRL"}</button>
           ${cur==="USD" ? `<div style="display:flex;align-items:center;gap:3px">
             <span style="font:400 9px/1 var(--mono);color:var(--text3)">R$/\$</span>
             <input type="number" min="0.01" step="0.01"
@@ -614,11 +776,11 @@ function calcBuildTable() {
           </div>` : ""}
         </div>
       </td>
-      <td>
+      <td data-label="Stake">
         <div style="display:flex;flex-direction:column;gap:3px">
           <div style="display:flex;align-items:center;gap:4px">
-            <span id="calc-cursym-${row.id}" style="font:400 11px/1 var(--mono);color:var(--text3)">${CALC_CURR_SYMS[cur]}</span>
-            <input type="number" id="calc-stake-${row.id}" class="${stakeFixed}" style="width:92px;text-align:right"
+            <span id="calc-cursym-${row.id}" style="font:400 11px/1 var(--mono);color:var(--text3)">${cur==="USD"?"🇺🇸":"🇧🇷"} ${CALC_CURR_SYMS[cur]}</span>
+            <input type="number" id="calc-stake-${row.id}" class="${stakeFixed} c-stake-${cur==="USD"?'usd':'brl'}" style="width:92px;text-align:right"
               oninput="calcOnStakeInput(${row.id},this.value)"
               value="${stakeVal}"
               placeholder="${isLay?"Backer stake":"Your stake"}">
@@ -629,15 +791,15 @@ function calcBuildTable() {
           ${calcBuildSplitControls(row)}
         </div>
       </td>
-      <td class="c-ctr-col">
+      <td class="c-ctr-col" data-label="Freebet">
         <input type="checkbox" ${row.usesFreebet?"checked":""} ${row.polySplit?"disabled":""} onchange="calcOnFreebetChange(${row.id},this.checked)"
           title="${row.polySplit?'Desative o split para usar freebet':'Usar saldo de freebet nesta linha (odd cai 1 e stake n\u00E3o entra no total)'}">
       </td>
-      <td class="c-ctr-col" id="calc-fixcell-${row.id}">
+      <td class="c-ctr-col" data-label="Fixar" id="calc-fixcell-${row.id}">
         <button class="c-fix-btn ${row.isFixed?"c-fix-on":"c-fix-off"}" ${row.polySplit?"disabled":""} onclick="calcToggleFix(${row.id})"
           title="${row.polySplit?"Desative o split para fixar o stake":(row.isFixed?"Unfix stake":"Fix this stake")}">${row.isFixed?"\uD83D\uDD12":"\uD83D\uDD13"}</button>
       </td>
-      <td id="calc-profit-${row.id}" class="c-num-col">\u2014</td>
+      <td id="calc-profit-${row.id}" class="c-num-col" data-label="Lucro">\u2014</td>
     </tr>`;
   }).join("");
 
@@ -651,6 +813,8 @@ function calcUpdateDisplay() {
   if (!calcResult) {
     document.getElementById("calc-tfoot").innerHTML = "";
     document.getElementById("calc-cards").innerHTML = "";
+    const vEl = document.getElementById("calc-verdict");
+    if (vEl) vEl.style.display = "none";
     if (roiBadge) roiBadge.style.display = "none";
     return;
   }
@@ -775,6 +939,18 @@ function calcUpdateDisplay() {
     }
   }
 
+  // Verdict hero — the first thing the user wants to know, made prominent.
+  const verdictEl = document.getElementById("calc-verdict");
+  if (verdictEl) {
+    const rr = calcResult;
+    verdictEl.style.display = "";
+    verdictEl.className = "c-verdict " + (rr.isSurebet ? "c-verdict-yes" : "c-verdict-no");
+    const profitBRL = calcUsdcBrl ? ` · R$${cf2(rr.minProfit * calcUsdcBrl)}` : "";
+    verdictEl.innerHTML = `
+      <span class="c-verdict-main">${rr.isSurebet ? "✓ SUREBET" : "✗ Sem arbitragem"}</span>
+      <span class="c-verdict-sub">ROI ${rr.roi.toFixed(2)}% · Lucro mín ${rr.minProfit >= 0 ? "+" : ""}$${cf2(Math.abs(rr.minProfit))}${profitBRL}</span>`;
+  }
+
   // Cards
   const r = calcResult;
   const vc = r.isSurebet ? "c-green" : "c-red";
@@ -799,6 +975,31 @@ function calcUpdateDisplay() {
 
 // -- Input handlers --
 function calcOnOddsInput(id, val) { calcRows.find(r=>r.id===id).odds = val; calcCompute(); calcUpdateDisplay(); }
+
+// Cents-input mode (Poly back rows): the odd cell shows the share price in cents.
+// Given odds, cents = share price × 100 at the active tick.
+function calcOddToCents(odds) {
+  const o = parseFloat(odds);
+  if (!(o > 1)) return '';
+  const p = calcRoundSharePrice(1 / o);
+  if (!(p > 0)) return '';
+  return (p * 100).toFixed(2);
+}
+function calcTogglePolyCentsInput(id) {
+  const row = calcRows.find(r => r.id === id);
+  if (!row) return;
+  row.polyCentsInput = !row.polyCentsInput;
+  calcCompute(); calcBuildTable();
+}
+// User typed the share price in cents → derive the decimal odd (odds = 100/cents).
+// Does NOT rebuild the table (keeps focus/cursor in the input while typing).
+function calcOnPolyCentsInput(id, val) {
+  const row = calcRows.find(r => r.id === id);
+  if (!row) return;
+  const cents = parseFloat(String(val).replace(',', '.'));
+  if (cents > 0 && cents < 100) row.odds = String(100 / cents);
+  calcCompute(); calcUpdateDisplay();
+}
 function calcUseRealOdd(id) {
   const row = calcRows.find(r => r.id === id);
   if (!row) return;
@@ -1065,11 +1266,11 @@ function calcUpdateSplitPreview() {
     const sharesUsed = (price > 0 && capUsed > 0) ? capUsed / price : 0;
     if (!(price > 0)) { el.textContent = ''; continue; }
     if (sharesNum > 0) {
-      el.textContent = `$${price.toFixed(2)}/sh · ${sharesUsed.toFixed(1)} / ${sharesNum.toFixed(0)} sh ($${capUsed.toFixed(2)})`;
+      el.textContent = `${calcFmtCents(price)}/sh · ${sharesUsed.toFixed(1)} / ${sharesNum.toFixed(0)} sh ($${capUsed.toFixed(2)})`;
     } else if (isLast) {
-      el.textContent = `$${price.toFixed(2)}/sh · ${sharesUsed.toFixed(1)} sh (absorber) · $${capUsed.toFixed(2)}`;
+      el.textContent = `${calcFmtCents(price)}/sh · ${sharesUsed.toFixed(1)} sh (absorber) · $${capUsed.toFixed(2)}`;
     } else {
-      el.textContent = `$${price.toFixed(2)}/sh · —`;
+      el.textContent = `${calcFmtCents(price)}/sh · —`;
     }
   }
 
@@ -1109,7 +1310,7 @@ function calcUpdateSplitPreview() {
     <div><span>Alocação total nessa perna</span><strong>$${allocTotal.toFixed(2)}</strong></div>
     <div><span>Retorno se essa perna vencer</span><strong>$${payout.toFixed(2)}</strong></div>
     <div><span>Shares compradas (total)</span><strong>${totalShares.toFixed(2)}</strong></div>
-    <div><span>Preço médio por share</span><strong>${totalShares > 0 ? '$' + avgPrice.toFixed(4) : '—'}</strong></div>
+    <div><span>Preço médio por share</span><strong>${totalShares > 0 ? calcFmtCents(avgPrice) : '—'}</strong></div>
     <div><span>Odd média (ponderada por shares)</span><strong>${totalShares > 0 ? avgOdd.toFixed(4) : '—'}</strong></div>
     ${insufficient ? `
       <div class="c-split-warn">
@@ -1490,6 +1691,7 @@ function calcSaveToHistory() {
     rows: calcRows.map(r => ({
       odds: r.odds, comm: r.comm, betType: r.betType,
       usePoly: r.usePoly, cat: r.cat, currency: r.currency,
+      polyCentsInput: r.polyCentsInput,
       customRate: r.customRate, usesFreebet: r.usesFreebet,
       // Per-row anchors / overrides — these decide how the solver allocates.
       isFixed: r.isFixed, fixedStake: r.fixedStake,
@@ -1535,6 +1737,7 @@ function calcLoadFromHistory(idx) {
     id: i + 1, odds: r.odds || "", comm: r.comm || "0",
     betType: r.betType || "back", usePoly: !!r.usePoly,
     cat: r.cat || "Sports", currency: r.currency || "USD",
+    polyCentsInput: !!r.polyCentsInput,
     isFixed: !!r.isFixed,
     fixedStake: r.fixedStake || "",
     manualStake: r.manualStake !== undefined ? r.manualStake : null,
@@ -1624,6 +1827,7 @@ function calcSaveState() {
     rows: calcRows.map(r => ({
       id: r.id, odds: r.odds, comm: r.comm, betType: r.betType,
       usePoly: r.usePoly, cat: r.cat, currency: r.currency,
+      polyCentsInput: r.polyCentsInput,
       isFixed: r.isFixed, fixedStake: r.fixedStake,
       manualStake: r.manualStake, customRate: r.customRate,
       usesFreebet: r.usesFreebet,
@@ -1652,6 +1856,7 @@ function calcRestoreState() {
         id: r.id, odds: r.odds || "", comm: r.comm || "0",
         betType: r.betType || "back", usePoly: !!r.usePoly,
         cat: r.cat || "Sports", currency: r.currency || "USD",
+        polyCentsInput: !!r.polyCentsInput,
         isFixed: !!r.isFixed, fixedStake: r.fixedStake || "",
         manualStake: r.manualStake !== undefined ? r.manualStake : null,
         customRate: r.customRate !== undefined ? r.customRate : null,
@@ -1755,10 +1960,19 @@ function renderCalculator() {
         <button class="c-theme-btn" id="calc-theme-btn" onclick="calcToggleTheme()">${calcDarkMode ? "\u2728 Light" : "\uD83C\uDF19 Dark"}</button>
         <div class="c-ticker">
           <div class="c-ticker-top">
-            <span><span class="c-dot c-dot-load" id="calc-status-dot"></span>USDC / BRL</span>
+            <span><span class="c-dot c-dot-load" id="calc-status-dot"></span>USDC / BRL
+              <span id="calc-manual-badge" class="c-manual-badge" style="display:${calcManualRate!=null?'':'none'}">manual</span></span>
             <button class="c-refresh-btn" onclick="calcFetchRate()" title="Atualizar">\u21BA</button>
           </div>
           <div id="calc-ticker-body"><div class="c-ticker-load">Buscando cota\u00E7\u00E3o\u2026</div></div>
+          <div class="c-ticker-manual">
+            <span title="Cota\u00E7\u00E3o USDC/BRL manual \u2014 sobrep\u00F5e a cota\u00E7\u00E3o ao vivo em todo o c\u00E1lculo">Manual R$</span>
+            <input type="number" step="0.0001" min="0" id="calc-manual-rate"
+              placeholder="ao vivo" value="${calcManualRate!=null?calcManualRate:''}"
+              oninput="calcOnManualRateInput(this.value)">
+            <button class="c-refresh-btn" id="calc-manual-clear" onclick="calcClearManualRate()"
+              title="Voltar pra cota\u00E7\u00E3o ao vivo" style="display:${calcManualRate!=null?'':'none'}">ao vivo</button>
+          </div>
           <div class="c-ticker-note">\u21BB atualiza a cada 5s</div>
         </div>
       </div>
@@ -1778,9 +1992,29 @@ function renderCalculator() {
       </div>
       <div class="c-ctrl-sep"></div>
       <button class="c-btn ${calcShowComm?'on':''}" id="calc-show-comm-btn" onclick="calcToggleShowComm()">${calcShowComm ? "Hide commissions" : "Show commissions"}</button>
-      <button class="c-btn ${calcBrokenCents?'on':''}" id="calc-broken-cents-btn" onclick="calcToggleBrokenCents()" title="Arredonda o pre\u00E7o da share da Polymarket para 0,1\u00A2 (ex.: 97,6\u00A2) em vez de 1\u00A2">${calcBrokenCents ? "Centavos quebrados: ON" : "Centavos quebrados"}</button>
+      <div class="c-ctrl-group">
+        <span class="c-ctrl-label" title="Tamanho do tick de pre\u00E7o da share na Polymarket">Tick</span>
+        <div id="calc-tick-btns" style="display:flex;gap:4px">
+          <button class="c-btn ${calcTickMode==='cent'?'on':''}" data-tick="cent" onclick="calcSetTickMode('cent')" title="Arredonda a share para 1\u00A2">1\u00A2</button>
+          <button class="c-btn ${calcTickMode==='quarter'?'on':''}" data-tick="quarter" onclick="calcSetTickMode('quarter')" title="Formato tick 0,25\u00A2 (novo padr\u00E3o Polymarket: 74,75 / 74,50 / 74,25)">0,25\u00A2</button>
+          <button class="c-btn ${calcTickMode==='tenth'?'on':''}" data-tick="tenth" onclick="calcSetTickMode('tenth')" title="Arredonda a share para 0,1\u00A2 (odds extremas)">0,1\u00A2</button>
+        </div>
+      </div>
+
+      <button class="c-btn" id="calc-help-btn" onclick="calcToggleHelp()" title="Novidades e dicas">\u2754 Ajuda</button>
 
       <div id="calc-brl-warn" style="display:none" class="c-warn-bar">\u26A0 Linhas em BRL precisam da cota\u00E7\u00E3o ao vivo</div>
+    </div>
+
+    <div id="calc-help-box" class="c-help-box" style="display:none">
+      <div class="c-help-title">Novidades &amp; dicas</div>
+      <ul>
+        <li><strong>Tick</strong> \u2014 arredondamento do pre\u00E7o da share na Polymarket. Use <strong>0,25\u00A2</strong> (novo padr\u00E3o: 74,75 / 74,50 / 74,25).</li>
+        <li><strong>Manual R$</strong> (no ticker do d\u00F3lar) \u2014 digite a cota\u00E7\u00E3o pra sobrepor a Binance em todo o c\u00E1lculo; "ao vivo" volta ao autom\u00E1tico.</li>
+        <li><strong>Switch \u00A2 / odd</strong> \u2014 nas linhas Polymarket, alterne pra digitar os <strong>centavos da share</strong> em vez da odd.</li>
+        <li><strong>\uD83D\uDCB1 D\u00F3lar nas corretoras</strong> \u2014 compare compra/venda entre corretoras; clique num valor pra us\u00E1-lo como cota\u00E7\u00E3o manual.</li>
+        <li><strong>\uD83C\uDDFA\uD83C\uDDF8 / \uD83C\uDDE7\uD83C\uDDF7</strong> \u2014 confira sempre a bandeira da moeda em cada linha antes de calcular.</li>
+      </ul>
     </div>
 
     <div class="c-tbl-wrap">
@@ -1791,6 +2025,8 @@ function renderCalculator() {
       </table>
     </div>
 
+    <div id="calc-verdict" class="c-verdict" style="display:none"></div>
+
     <div class="c-cards" id="calc-cards"></div>
 
     <div class="c-actions">
@@ -1798,6 +2034,15 @@ function renderCalculator() {
       <button class="c-btn c-primary" onclick="calcImportToOperation()" id="calc-import-btn">\uD83D\uDCE5 Importar p/ Opera\u00E7\u00E3o</button>
       <button class="c-btn" onclick="calcManualSaveToHistory()" id="calc-save-history-btn">\uD83D\uDCBE Salvar no hist\u00F3rico</button>
       <button class="c-btn" onclick="calcResetAll()">Reset all</button>
+    </div>
+
+    <div class="c-fx-panel" id="calc-fx-panel">
+      <div class="c-fx-head">
+        <span class="c-fx-title">\uD83D\uDCB1 D\u00F3lar nas corretoras</span>
+        <button class="c-refresh-btn" onclick="calcFetchFxQuotes()" title="Atualizar">\u21BA</button>
+      </div>
+      <div id="calc-fx-body"><div class="c-ticker-load">Buscando cota\u00E7\u00F5es\u2026</div></div>
+      <div class="c-fx-note">Compra = voc\u00EA paga (ask) \u00B7 Venda = voc\u00EA recebe (bid). Verde = melhor. Clique num valor pra usar como cota\u00E7\u00E3o manual.</div>
     </div>
 
     <div id="calc-simulator" style="display:none"></div>
@@ -1821,9 +2066,16 @@ function renderCalculator() {
   // Build fork select
   calcBuildForkSelect();
 
-  // Start rate fetching
+  // Start rate fetching (clear any prior intervals so re-rendering the page
+  // doesn't stack timers).
+  if (calcRateInterval) clearInterval(calcRateInterval);
   calcFetchRate();
   calcRateInterval = setInterval(calcFetchRate, 5000);
+
+  // Multi-exchange dollar panel.
+  if (calcFxInterval) clearInterval(calcFxInterval);
+  calcFetchFxQuotes();
+  calcFxInterval = setInterval(calcFetchFxQuotes, 10000);
 
   // Build initial table
   calcCompute();

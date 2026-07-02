@@ -846,6 +846,94 @@
   font-size: 12px;
 }
 
+/* ── MANUAL RATE (ticker) ── */
+.calc-page .c-manual-badge {
+  margin-left: 6px; padding: 1px 6px; border-radius: var(--r-xs);
+  font-size: 9px; font-weight: 700; text-transform: uppercase;
+  background: var(--fix-bg); color: var(--fix); border: 1px solid var(--fix-border);
+}
+.calc-page .c-ticker-manual {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-soft);
+  font-size: 11px; color: var(--text2);
+}
+.calc-page .c-ticker-manual input {
+  width: 78px; text-align: right; font-size: 11px; padding: 3px 5px;
+  font-family: var(--mono);
+}
+.calc-page .c-ticker-manual .c-refresh-btn { font-size: 10px; padding: 2px 6px; width: auto; }
+
+/* ── CENTS/ODD SWITCH (poly rows) ── */
+.calc-page .c-cents-switch {
+  border: 1px solid var(--poly-border); background: var(--poly-bg); color: var(--poly);
+  border-radius: var(--r-xs); font-size: 10px; font-weight: 700; padding: 3px 6px;
+  cursor: pointer; min-width: 30px; font-family: var(--mono);
+}
+.calc-page .c-cents-switch.on { background: var(--poly); color: #0b1324; }
+.calc-page .c-cents-switch:hover { filter: brightness(1.15); }
+
+/* ── CURRENCY SIGNALLING (flags + tint per line) ── */
+.calc-page .c-cur-usd {
+  border-color: rgba(52,211,153,.5) !important;
+  background: rgba(16,185,129,.10) !important;
+  color: var(--green-bright) !important;
+}
+.calc-page .c-cur-brl {
+  border-color: rgba(245,200,11,.5) !important;
+  background: rgba(245,200,11,.10) !important;
+  color: #f5c80b !important;
+}
+/* subtle left accent on the stake input matching the line's currency */
+.calc-page input.c-stake-usd { border-left: 3px solid var(--green-bright); }
+.calc-page input.c-stake-brl { border-left: 3px solid #f5c80b; }
+
+/* ── VERDICT HERO ── */
+.calc-page .c-verdict {
+  display: flex; align-items: center; justify-content: center; gap: 8px 16px; flex-wrap: wrap;
+  margin: 14px 0; padding: 13px 20px; border-radius: var(--r); border: 1px solid; text-align: center;
+}
+.calc-page .c-verdict-main { font: 800 22px/1 var(--display); letter-spacing: .5px; }
+.calc-page .c-verdict-sub { font: 600 13px/1.3 var(--mono); opacity: .92; }
+.calc-page .c-verdict-yes {
+  background: var(--green-bg); border-color: var(--green-border); color: var(--green-bright);
+  box-shadow: 0 0 22px var(--green-glow);
+}
+.calc-page .c-verdict-no { background: var(--red-bg); border-color: var(--red-border); color: var(--red); }
+
+/* ── HELP BOX ── */
+.calc-page .c-help-box {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 12px 16px; margin-bottom: 14px; font-size: 12.5px;
+}
+.calc-page .c-help-title { font-weight: 700; margin-bottom: 8px; color: var(--text); }
+.calc-page .c-help-box ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; color: var(--text2); }
+.calc-page .c-help-box strong { color: var(--text); }
+
+/* ── FX PANEL (dólar nas corretoras) ── */
+.calc-page .c-fx-panel {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 12px 14px; margin-bottom: 14px;
+}
+.calc-page .c-fx-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.calc-page .c-fx-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.calc-page .c-fx-note { font-size: 10px; color: var(--text2); margin-top: 8px; }
+.calc-page .c-fx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.calc-page .c-fx-table th {
+  text-align: right; padding: 4px 10px; color: var(--text2); font-weight: 600;
+  border-bottom: 1px solid var(--border); font-size: 11px;
+}
+.calc-page .c-fx-table th:first-child { text-align: left; }
+.calc-page .c-fx-table td { padding: 5px 10px; text-align: right; font-family: var(--mono); }
+.calc-page .c-fx-table td:first-child { text-align: left; font-family: var(--sans); color: var(--text); }
+.calc-page .c-fx-pair { margin-left: 6px; font-size: 9px; color: var(--text2); font-family: var(--mono); }
+.calc-page .c-fx-cell { cursor: pointer; border-radius: var(--r-xs); }
+.calc-page .c-fx-cell:hover { background: var(--cyan-dim); color: var(--cyan); }
+.calc-page .c-fx-best { color: var(--green-bright); font-weight: 700; background: var(--green-bg); }
+.calc-page .c-fx-spread { color: var(--text2); }
+.calc-page .c-fx-off td { color: var(--text3); }
+
 /* ── RESPONSIVE ── */
 @media (max-width: 640px) {
   .calc-page .c-hdr-brand h2 { font-size: 22px; }
@@ -853,4 +941,37 @@
   .calc-page .c-ticker { min-width: unset; width: 100%; }
   .calc-page .c-cards { grid-template-columns: repeat(2, 1fr); }
   .calc-page .c-controls { gap: 10px; }
+  .calc-page .c-verdict-main { font-size: 18px; }
+
+  /* Table → stacked cards (one card per bet, labelled rows). */
+  .calc-page .c-tbl-wrap { overflow-x: visible; }
+  .calc-page .c-tbl-wrap table { min-width: 0 !important; width: 100%; }
+  .calc-page .c-tbl-wrap thead { display: none; }
+  .calc-page .c-tbl-wrap table,
+  .calc-page .c-tbl-wrap tbody,
+  .calc-page .c-tbl-wrap tfoot,
+  .calc-page .c-tbl-wrap tr,
+  .calc-page .c-tbl-wrap td { display: block; width: 100%; }
+  .calc-page .c-tbl-wrap tbody tr {
+    border: 1px solid var(--border); border-radius: var(--r-sm);
+    margin-bottom: 12px; padding: 6px 12px; background: var(--surface);
+  }
+  .calc-page .c-tbl-wrap td {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 6px 0; border: none; text-align: right;
+  }
+  .calc-page .c-tbl-wrap td::before {
+    content: attr(data-label); color: var(--text2); font-size: 11px; font-weight: 600;
+    text-align: left; flex-shrink: 0;
+  }
+  .calc-page .c-tbl-wrap td.c-line-num {
+    justify-content: flex-start; gap: 6px; font-size: 12px !important; color: var(--text) !important;
+    border-bottom: 1px solid var(--border-soft); margin-bottom: 4px; padding-bottom: 8px;
+  }
+  .calc-page .c-tbl-wrap td.c-line-num::before { content: "Linha"; }
+  .calc-page .c-tbl-wrap td input[type="number"] { width: auto; max-width: 130px; }
+  .calc-page .c-tbl-wrap td select { max-width: 150px; }
+  /* footer total row as its own card */
+  .calc-page .c-tbl-wrap tfoot tr { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 12px; background: var(--tfoot-bg); }
+  .calc-page .c-tbl-wrap tfoot td[colspan] { justify-content: flex-start; }
 }
