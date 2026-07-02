@@ -268,11 +268,17 @@ function calcClearManualRate() {
   calcApplyEffectiveRate();
 }
 
-// -- Multi-exchange dollar panel (buy/sell across brokers, via backend proxy) --
+// -- Multi-exchange dollar panel --
+// Uses ORDER BOOK depth (not just top-of-book) so a thin best price (e.g. MEXC
+// showing ~$1 at the top) doesn't mislead. For each side we show the EFFECTIVE
+// price to trade a target size and a near-top liquidity rating. Split by stable
+// (USDC/BRL and USDT/BRL). Binance/Bybit/Bitget fetched client-side (CORS + BR IP
+// avoids the cloud-IP geo-block); MEXC (no CORS, USDC only) via the backend proxy.
 let calcFxInterval = null;
+let calcFxBooks = null; // { USDC:[{id,label,book}], USDT:[...] }
+let calcFxTarget = Number(localStorage.getItem('calcFxTarget')) || 1000;
 
-// Fetch helper with timeout; returns parsed JSON or null (never throws).
-async function calcFxGet(url, ms = 4000) {
+async function calcFxGet(url, ms = 4500) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try { const r = await fetch(url, { signal: ctrl.signal, cache: 'no-store' }); return r.ok ? await r.json() : null; }
@@ -280,62 +286,140 @@ async function calcFxGet(url, ms = 4000) {
   finally { clearTimeout(t); }
 }
 
-// Exchanges reachable straight from the browser: Binance/Bitget send CORS '*',
-// Bybit reflects the Origin header. Fetching client-side also uses the user's BR
-// IP, avoiding the cloud-IP geo-block that trips Binance/Bybit from our servers.
-const CALC_FX_CLIENT = [
-  { id: 'binance', label: 'Binance', async q() {
-    for (const p of ['USDCBRL', 'USDTBRL']) { const d = await calcFxGet(`https://api.binance.com/api/v3/ticker/bookTicker?symbol=${p}`); const bid = +(d && d.bidPrice), ask = +(d && d.askPrice); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
-  { id: 'bybit', label: 'Bybit', async q() {
-    for (const p of ['USDCBRL', 'USDTBRL']) { const d = await calcFxGet(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${p}`); const t = d && d.result && d.result.list && d.result.list[0]; const bid = +(t && t.bid1Price), ask = +(t && t.ask1Price); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
-  { id: 'bitget', label: 'Bitget', async q() {
-    for (const p of ['USDTBRL', 'USDCBRL']) { const d = await calcFxGet(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${p}`); const t = d && d.data && d.data[0]; const bid = +(t && t.bidPr), ask = +(t && t.askPr); if (bid > 0 && ask > 0) return { pair: p, bid, ask }; } return null; } },
-];
+// Normalize [[price,qty],...] to numeric, dropping bad rows.
+function calcFxNorm(levels) {
+  return (levels || []).map(l => [parseFloat(l[0]), parseFloat(l[1])]).filter(l => l[0] > 0 && l[1] > 0);
+}
+
+// Fetch + normalize an order book (base asset is the stablecoin, so qty ≈ USD).
+async function calcFxBook(url, kind) {
+  const d = await calcFxGet(url);
+  if (!d) return null;
+  if (kind === 'binance' || kind === 'mexc') return { asks: calcFxNorm(d.asks), bids: calcFxNorm(d.bids) };
+  if (kind === 'bybit') { const r = d.result || {}; return { asks: calcFxNorm(r.a), bids: calcFxNorm(r.b) }; }
+  if (kind === 'bitget') { const x = d.data || {}; return { asks: calcFxNorm(x.asks), bids: calcFxNorm(x.bids) }; }
+  return null;
+}
+
+// Which exchanges list each pair (confirmed via the APIs). Order = display order.
+const CALC_FX_MARKETS = {
+  USDC: [
+    { id: 'binance', label: 'Binance', book: () => calcFxBook('https://api.binance.com/api/v3/depth?symbol=USDCBRL&limit=50', 'binance') },
+    { id: 'bybit', label: 'Bybit', book: () => calcFxBook('https://api.bybit.com/v5/market/orderbook?category=spot&symbol=USDCBRL&limit=50', 'bybit') },
+    { id: 'mexc', label: 'MEXC', server: true }, // via /api/fx/quotes (no CORS)
+  ],
+  USDT: [
+    { id: 'binance', label: 'Binance', book: () => calcFxBook('https://api.binance.com/api/v3/depth?symbol=USDTBRL&limit=50', 'binance') },
+    { id: 'bybit', label: 'Bybit', book: () => calcFxBook('https://api.bybit.com/v5/market/orderbook?category=spot&symbol=USDTBRL&limit=50', 'bybit') },
+    { id: 'bitget', label: 'Bitget', book: () => calcFxBook('https://api.bitget.com/api/v2/spot/market/orderbook?symbol=USDTBRL&limit=50', 'bitget') },
+  ],
+};
+
+// Walk the book (levels best-first; qty ≈ USD) to fill `targetUsd`. Returns the
+// volume-weighted effective price, whether the book covered the size, and the
+// top-of-book price for reference.
+function calcFxFill(levels, targetUsd) {
+  if (!levels || !levels.length) return null;
+  let filled = 0, cost = 0;
+  for (const [price, qty] of levels) {
+    if (filled >= targetUsd) break;
+    const take = Math.min(qty, targetUsd - filled);
+    filled += take; cost += take * price;
+  }
+  if (filled <= 0) return null;
+  return { vwap: cost / filled, filled, enough: filled >= targetUsd * 0.999, top: levels[0][0] };
+}
+
+// USD available within `bandPct` of the best price — the "usable" near-top depth.
+function calcFxDepthUsd(levels, bandPct = 0.003) {
+  if (!levels || !levels.length) return 0;
+  const best = levels[0][0];
+  let usd = 0;
+  for (const [price, qty] of levels) {
+    if (Math.abs(price - best) / best > bandPct) break;
+    usd += qty;
+  }
+  return usd;
+}
+
+function calcFxLiqLabel(depthUsd, target) {
+  if (depthUsd >= target * 10) return { k: 'high', t: 'alta' };
+  if (depthUsd >= target) return { k: 'mid', t: 'média' };
+  return { k: 'low', t: 'baixa' };
+}
 
 async function calcFetchFxQuotes() {
   // Auto-stop polling once the user leaves the calculator; skip while tab hidden.
   if (!document.getElementById('calc-fx-body')) { if (calcFxInterval) { clearInterval(calcFxInterval); calcFxInterval = null; } return; }
   if (document.hidden) return;
 
-  const clientP = CALC_FX_CLIENT.map(async s => {
-    try { const r = await s.q(); return r ? { id: s.id, label: s.label, ok: true, ...r } : { id: s.id, label: s.label, ok: false }; }
-    catch { return { id: s.id, label: s.label, ok: false }; }
-  });
-  // Backend proxies MEXC (no CORS) and serves as a fallback for the others.
-  const serverP = calcFxGet('/api/fx/quotes').then(d => (d && d.quotes) || []);
+  const collected = { USDC: {}, USDT: {} };
+  const tasks = [];
+  for (const [stable, list] of Object.entries(CALC_FX_MARKETS)) {
+    for (const ex of list) {
+      if (ex.server) continue;
+      tasks.push((async () => { try { collected[stable][ex.id] = await ex.book(); } catch { collected[stable][ex.id] = null; } })());
+    }
+  }
+  // MEXC (USDC) via backend proxy.
+  tasks.push((async () => {
+    const d = await calcFxGet('/api/fx/quotes');
+    const raw = d && d.mexc && d.mexc.USDCBRL;
+    collected.USDC.mexc = raw ? { asks: calcFxNorm(raw.asks), bids: calcFxNorm(raw.bids) } : null;
+  })());
+  await Promise.all(tasks);
 
-  const [clientRes, serverQuotes] = await Promise.all([Promise.all(clientP), serverP]);
-  const byId = {};
-  for (const q of serverQuotes) byId[q.id] = q;      // base (mexc + fallbacks)
-  for (const q of clientRes) if (q.ok) byId[q.id] = q; // client-side OK wins
-  const order = ['binance', 'bybit', 'mexc', 'bitget'];
-  calcRenderFxQuotes({ quotes: order.map(id => byId[id]).filter(Boolean) });
+  calcFxBooks = {};
+  for (const [stable, list] of Object.entries(CALC_FX_MARKETS)) {
+    calcFxBooks[stable] = list.map(ex => ({ id: ex.id, label: ex.label, book: collected[stable][ex.id] || null }));
+  }
+  calcRenderFx();
 }
 
-function calcRenderFxQuotes(data) {
+function calcOnFxTarget(val) {
+  const n = parseFloat(String(val).replace(',', '.'));
+  calcFxTarget = (n > 0) ? n : 1000;
+  localStorage.setItem('calcFxTarget', String(calcFxTarget));
+  calcRenderFx();
+}
+
+function calcRenderFx() {
   const body = document.getElementById('calc-fx-body');
   if (!body) return;
-  const quotes = (data && data.quotes) || [];
-  const ok = quotes.filter(q => q.ok);
-  const bestAsk = ok.length ? Math.min(...ok.map(q => q.ask)) : null; // cheapest to BUY
-  const bestBid = ok.length ? Math.max(...ok.map(q => q.bid)) : null; // best to SELL
-  const rows = quotes.map(q => {
-    if (!q.ok) return `<tr class="c-fx-off"><td>${q.label}</td><td colspan="3" style="color:var(--text3)">indisponível</td></tr>`;
-    const spread = q.bid > 0 ? (q.ask - q.bid) / q.bid * 100 : 0;
-    const buyBest = q.ask === bestAsk ? ' c-fx-best' : '';
-    const sellBest = q.bid === bestBid ? ' c-fx-best' : '';
-    return `<tr>
-      <td>${q.label}<span class="c-fx-pair">${q.pair}</span></td>
-      <td class="c-fx-cell${buyBest}" title="Comprar (ask) — clique pra usar como cotação manual" onclick="calcUseQuote(${q.ask})">R$${q.ask.toFixed(4)}</td>
-      <td class="c-fx-cell${sellBest}" title="Vender (bid) — clique pra usar como cotação manual" onclick="calcUseQuote(${q.bid})">R$${q.bid.toFixed(4)}</td>
-      <td class="c-fx-spread">${spread.toFixed(2)}%</td>
-    </tr>`;
-  }).join('');
-  body.innerHTML = `
-    <table class="c-fx-table">
-      <thead><tr><th>Corretora</th><th title="Preço pra comprar dólar (ask)">Compra</th><th title="Preço pra vender dólar (bid)">Venda</th><th>Spread</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="4" style="color:var(--text3)">—</td></tr>'}</tbody>
-    </table>`;
+  if (!calcFxBooks) { body.innerHTML = `<div class="c-ticker-load">Buscando cotações…</div>`; return; }
+  const target = calcFxTarget;
+
+  const renderSection = (stable, rows) => {
+    const comp = rows.map(r => {
+      if (!r.book) return { ...r, ok: false };
+      const ask = calcFxFill(r.book.asks, target); // BUY dollars
+      const bid = calcFxFill(r.book.bids, target); // SELL dollars
+      if (!ask || !bid) return { ...r, ok: false };
+      return { ...r, ok: true, ask, bid, askLiq: calcFxDepthUsd(r.book.asks), bidLiq: calcFxDepthUsd(r.book.bids) };
+    });
+    const okRows = comp.filter(c => c.ok);
+    const bestBuy = okRows.filter(c => calcFxLiqLabel(c.askLiq, target).k !== 'low').reduce((m, c) => (m == null || c.ask.vwap < m ? c.ask.vwap : m), null);
+    const bestSell = okRows.filter(c => calcFxLiqLabel(c.bidLiq, target).k !== 'low').reduce((m, c) => (m == null || c.bid.vwap > m ? c.bid.vwap : m), null);
+    const warn = e => e ? '' : ' <span class="c-fx-warn" title="O livro não cobre todo o tamanho — preço é do que há disponível">⚠</span>';
+    const rowsHtml = comp.map(c => {
+      if (!c.ok) return `<tr class="c-fx-off"><td>${c.label}</td><td colspan="2" style="color:var(--text3);text-align:center">indisponível</td></tr>`;
+      const aLab = calcFxLiqLabel(c.askLiq, target), bLab = calcFxLiqLabel(c.bidLiq, target);
+      const buyBest = (bestBuy != null && c.ask.vwap === bestBuy) ? ' c-fx-best' : '';
+      const sellBest = (bestSell != null && c.bid.vwap === bestSell) ? ' c-fx-best' : '';
+      return `<tr>
+        <td>${c.label}</td>
+        <td class="c-fx-cell${buyBest}" onclick="calcUseQuote(${c.ask.vwap})" title="Compra efetiva p/ $${target} (topo R$${c.ask.top.toFixed(4)} · liq perto do topo ~$${Math.round(c.askLiq).toLocaleString('pt-BR')})">R$${c.ask.vwap.toFixed(4)} <span class="c-liq c-liq-${aLab.k}">${aLab.t}</span>${warn(c.ask.enough)}</td>
+        <td class="c-fx-cell${sellBest}" onclick="calcUseQuote(${c.bid.vwap})" title="Venda efetiva p/ $${target} (topo R$${c.bid.top.toFixed(4)} · liq perto do topo ~$${Math.round(c.bidLiq).toLocaleString('pt-BR')})">R$${c.bid.vwap.toFixed(4)} <span class="c-liq c-liq-${bLab.k}">${bLab.t}</span>${warn(c.bid.enough)}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="c-fx-section-title">${stable} / BRL</div>
+      <table class="c-fx-table">
+        <thead><tr><th>Corretora</th><th title="Preço efetivo pra COMPRAR dólar">Compra</th><th title="Preço efetivo pra VENDER dólar">Venda</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>`;
+  };
+
+  body.innerHTML = renderSection('USDC', calcFxBooks.USDC || []) + `<div style="height:12px"></div>` + renderSection('USDT', calcFxBooks.USDT || []);
 }
 
 function calcUseQuote(rate) { calcSetManualRate(rate); }
@@ -2039,10 +2123,14 @@ function renderCalculator() {
     <div class="c-fx-panel" id="calc-fx-panel">
       <div class="c-fx-head">
         <span class="c-fx-title">\uD83D\uDCB1 D\u00F3lar nas corretoras</span>
-        <button class="c-refresh-btn" onclick="calcFetchFxQuotes()" title="Atualizar">\u21BA</button>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="c-fx-target-lbl" title="Tamanho da opera\u00E7\u00E3o usado pra calcular o pre\u00E7o efetivo considerando a liquidez do livro">Tamanho $</span>
+          <input type="number" id="calc-fx-target" min="1" step="100" value="${calcFxTarget}" oninput="calcOnFxTarget(this.value)" style="width:74px;text-align:right;font-size:11px;padding:3px 5px">
+          <button class="c-refresh-btn" onclick="calcFetchFxQuotes()" title="Atualizar">\u21BA</button>
+        </div>
       </div>
       <div id="calc-fx-body"><div class="c-ticker-load">Buscando cota\u00E7\u00F5es\u2026</div></div>
-      <div class="c-fx-note">Compra = voc\u00EA paga (ask) \u00B7 Venda = voc\u00EA recebe (bid). Verde = melhor. Clique num valor pra usar como cota\u00E7\u00E3o manual.</div>
+      <div class="c-fx-note">Pre\u00E7os <strong>efetivos</strong> pra negociar o tamanho escolhido (considera a liquidez do livro, n\u00E3o s\u00F3 o topo). Liquidez perto do topo: <span class="c-liq c-liq-high">alta</span> <span class="c-liq c-liq-mid">m\u00E9dia</span> <span class="c-liq c-liq-low">baixa</span>. Verde = melhor (ignora baixa liq). Clique num pre\u00E7o pra us\u00E1-lo como cota\u00E7\u00E3o manual.</div>
     </div>
 
     <div id="calc-simulator" style="display:none"></div>

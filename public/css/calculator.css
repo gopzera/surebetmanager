@@ -933,6 +933,20 @@
 .calc-page .c-fx-best { color: var(--green-bright); font-weight: 700; background: var(--green-bg); }
 .calc-page .c-fx-spread { color: var(--text2); }
 .calc-page .c-fx-off td { color: var(--text3); }
+.calc-page .c-fx-section-title {
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--text2); margin: 4px 0 4px; font-family: var(--mono);
+}
+.calc-page .c-fx-target-lbl { font-size: 11px; color: var(--text2); }
+.calc-page .c-fx-warn { color: var(--amber); }
+.calc-page .c-liq {
+  display: inline-block; margin-left: 5px; padding: 0 5px; border-radius: 8px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase; vertical-align: middle;
+  font-family: var(--sans); letter-spacing: .3px;
+}
+.calc-page .c-liq-high { background: var(--green-bg); color: var(--green-bright); border: 1px solid var(--green-border); }
+.calc-page .c-liq-mid  { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
+.calc-page .c-liq-low  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
 /* ── RESPONSIVE ── */
 @media (max-width: 640px) {
