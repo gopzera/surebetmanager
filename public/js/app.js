@@ -4482,6 +4482,7 @@ async function renderBookmakersPage() {
       </div>
     </div>
     <div id="bookmaker-summary" class="stats-grid" style="margin-bottom:20px"></div>
+    <div id="bookmaker-topops" style="margin-bottom:24px"></div>
 
     <h3 class="chart-title" style="margin:0 0 12px">Casas</h3>
     <div class="chart-container" style="margin-bottom:16px">
@@ -4536,14 +4537,42 @@ async function loadBookmakerPerformance() {
     const totalVolume = rows.reduce((s, r) => s + (Number(r.volume) || 0), 0);
     const peakHour = byHour.reduce((best, h) => (h.count > (best?.count || 0) ? h : best), null);
     const bestDay = byWeekday.reduce((best, d) => (d.profit > (best?.profit || -Infinity) ? d : best), null);
+    const totals = data.totals || { ops: 0, profit: 0 };
+    const roi = totalVolume > 0 ? (Number(totals.profit) / totalVolume) * 100 : 0;
     const summary = document.getElementById('bookmaker-summary');
     if (summary) {
       summary.innerHTML = `
-        ${statCardHtml('Casas com movimento', String(rows.length), 'no período')}
+        ${statCardHtml('Lucro no período', formatBRL(Number(totals.profit) || 0), `${Number(totals.ops) || 0} operação(ões)`)}
+        ${statCardHtml('ROI médio', `${roi.toFixed(2)}%`, 'lucro / volume')}
         ${statCardHtml('Volume total', formatBRL(totalVolume), 'soma dos stakes')}
+        ${statCardHtml('Casas com movimento', String(rows.length), 'no período')}
         ${statCardHtml('Horário de pico', peakHour && peakHour.count ? `${String(peakHour.hour).padStart(2, '0')}h` : '—', peakHour && peakHour.count ? `${peakHour.count} operação(ões)` : 'sem dados')}
         ${statCardHtml('Dia mais lucrativo', bestDay && bestDay.profit > -Infinity && bestDay.count ? WEEKDAY_NAMES[bestDay.weekday] : '—', bestDay && bestDay.count ? formatBRL(bestDay.profit) : 'sem dados')}
       `;
+    }
+
+    // Biggest operations of the period.
+    const topEl = document.getElementById('bookmaker-topops');
+    const topOps = data.topOps || [];
+    if (topEl) {
+      if (!topOps.length) { topEl.innerHTML = ''; }
+      else {
+        const fmtDate = ds => ds ? new Date(ds + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '—';
+        topEl.innerHTML = `
+          <h3 class="chart-title" style="margin:0 0 12px">Maiores operações do período</h3>
+          <div class="chart-container">
+            ${topOps.map((o, i) => `
+              <div style="display:flex;align-items:center;gap:12px;padding:9px 0;${i < topOps.length - 1 ? 'border-bottom:1px solid var(--border)' : ''}">
+                <span style="color:var(--text-muted);font-weight:700;width:20px">${i + 1}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(o.game || '—')}</div>
+                  <div style="font-size:11px;color:var(--text-muted)">${fmtDate(o.date)}</div>
+                </div>
+                <span class="${profitClass(Number(o.profit) || 0)}" style="font-weight:700;font-family:'JetBrains Mono',monospace">${formatBRL(Number(o.profit) || 0)}</span>
+              </div>
+            `).join('')}
+          </div>`;
+      }
     }
 
     renderBookmakerChart(rows);

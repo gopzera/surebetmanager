@@ -158,7 +158,20 @@ router.get('/performance', async (req, res) => {
       if (w >= 0 && w < 7) byWeekday[w] = { weekday: w, count: Number(r.c) || 0, profit: Number(r.p) || 0 };
     }
 
-    res.json({ period: period.period, bookmakers, combos: comboList, byHour, byWeekday });
+    // Personal totals + biggest operations for the period (Estatísticas summary).
+    const totals = await db.get(
+      `SELECT COUNT(*) AS ops, COALESCE(SUM(o.profit), 0) AS profit
+       FROM operations o WHERE o.user_id = ? AND ${period.clause}`,
+      userId, ...period.params
+    );
+    const topOps = await db.all(
+      `SELECT o.game, o.profit, ${OP_DATE_EXPR} AS date, o.type
+       FROM operations o WHERE o.user_id = ? AND ${period.clause}
+       ORDER BY o.profit DESC LIMIT 5`,
+      userId, ...period.params
+    );
+
+    res.json({ period: period.period, bookmakers, combos: comboList, byHour, byWeekday, totals, topOps });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno do servidor' });
