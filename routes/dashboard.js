@@ -97,6 +97,25 @@ router.get('/stats', async (req, res) => {
       userId
     );
 
+    // FX exposure — over the USD legs of SETTLED operations, sum the realized USD
+    // P&L (winner: stake*(odd-1); loser: -stake) and the BRL it was booked at (using
+    // each leg's recorded rate). The frontend combines this with the live rate to
+    // show how the dollar's move revalued that realized dollar P&L, plus the
+    // volume-weighted average operating rate. Void/pending excluded.
+    const fxAgg = await db.get(
+      `SELECT
+         COALESCE(SUM(l.stake_orig), 0) AS usd_staked,
+         COALESCE(SUM(l.stake_orig * l.rate), 0) AS brl_staked,
+         COALESCE(SUM(CASE WHEN l.won = 1 THEN l.stake_orig * (l.odd - 1) ELSE -l.stake_orig END), 0) AS usd_pnl,
+         COALESCE(SUM((CASE WHEN l.won = 1 THEN l.stake_orig * (l.odd - 1) ELSE -l.stake_orig END) * l.rate), 0) AS brl_pnl,
+         COUNT(*) AS legs
+       FROM operation_legs l
+       JOIN operations o ON o.id = l.operation_id
+       WHERE o.user_id = ? AND l.currency = 'USD' AND l.stake_orig > 0
+         AND o.result IS NOT NULL AND o.result NOT IN ('pending', 'void')`,
+      userId
+    );
+
     // Giros profit (all-time + per period) — kept separate so the frontend can toggle inclusion
     const girosTodayRow = await db.get(
       `SELECT COALESCE(SUM(profit), 0) as profit, COUNT(*) as count
@@ -302,6 +321,7 @@ router.get('/stats', async (req, res) => {
       },
       operators,
       winsBySide,
+      fx: fxAgg,
     });
   } catch (err) {
     console.error(err);

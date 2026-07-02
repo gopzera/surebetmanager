@@ -734,6 +734,7 @@ async function renderDashboard() {
     </div>
     <div id="dash-alerts" class="dash-alerts"></div>
     <div class="stats-grid" id="stats-grid"></div>
+    <div id="dash-fx-card"></div>
     <div id="dash-operators-card"></div>
     <div class="dash-pair">
       <div class="volume-card" id="volume-card"></div>
@@ -763,6 +764,7 @@ async function renderDashboard() {
     const data = await api('/api/dashboard/stats');
     window._dashStatsData = data;
     renderStats(data);
+    renderDashFx(data.fx);
     renderDashOperators(data.operators);
     renderVolumeTracker(data);
     renderWinsBySideCard(data.winsBySide);
@@ -791,6 +793,61 @@ async function loadDashboardAlerts() {
       </div>
     `).join('');
   } catch (_) { el.innerHTML = ''; }
+}
+
+// Live USDC/BRL for the dashboard FX card (browser-side, cached 60s). Binance
+// first, then USDT, then a generic USD→BRL fallback.
+let _usdcBrlCache = { rate: null, ts: 0 };
+async function fetchUsdcBrlLive() {
+  if (_usdcBrlCache.rate && Date.now() - _usdcBrlCache.ts < 60000) return _usdcBrlCache.rate;
+  const tries = [
+    () => fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDCBRL', { cache: 'no-store' }).then(r => r.json()).then(d => parseFloat(d.price)),
+    () => fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDTBRL', { cache: 'no-store' }).then(r => r.json()).then(d => parseFloat(d.price)),
+    () => fetch('https://open.er-api.com/v6/latest/USD').then(r => r.json()).then(d => d.rates.BRL),
+  ];
+  for (const fn of tries) {
+    try { const v = await fn(); if (v > 0) { _usdcBrlCache = { rate: v, ts: Date.now() }; return v; } } catch (_) {}
+  }
+  return null;
+}
+
+// FX card: revalues the realized USD P&L of settled operations at today's dollar,
+// so the user sees how the exchange rate helped/hurt vs the rate they operated at.
+async function renderDashFx(fx) {
+  const el = document.getElementById('dash-fx-card');
+  if (!el) return;
+  if (!fx || !fx.legs || fx.usd_staked <= 0) { el.innerHTML = ''; return; }
+  const rate = await fetchUsdcBrlLive();
+  if (!rate) { el.innerHTML = ''; return; }
+  const avgRate = fx.brl_staked / fx.usd_staked;               // volume-weighted operating rate
+  const fxImpact = fx.usd_pnl * rate - fx.brl_pnl;             // revaluation of realized USD P&L
+  const deltaPct = avgRate > 0 ? (rate / avgRate - 1) * 100 : 0;
+  const caveat = 'Estimativa: revaloriza ao câmbio de hoje o resultado em dólar das operações liquidadas (vitória: stake×(odd−1); derrota: −stake). Assume que os dólares não foram convertidos de volta — não é lucro realizado.';
+  el.innerHTML = `
+    <div class="chart-container" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px">
+        <div>
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:4px">Impacto do dólar <span title="${caveat}" style="cursor:help">&#9432;</span></div>
+          <div style="font-size:26px;font-weight:800" class="${profitClass(fxImpact)}">${fxImpact >= 0 ? '+' : ''}${formatBRL(fxImpact)}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px">revalorização do seu P&amp;L em dólar ao câmbio de hoje</div>
+        </div>
+        <div style="display:flex;gap:22px;flex-wrap:wrap;text-align:right">
+          <div>
+            <div style="font-size:11px;color:var(--text-muted)">Dólar médio das ops</div>
+            <div style="font-size:16px;font-weight:600;font-family:'JetBrains Mono',monospace">R$${avgRate.toFixed(4)}</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-muted)">Dólar agora</div>
+            <div style="font-size:16px;font-weight:600;font-family:'JetBrains Mono',monospace">R$${rate.toFixed(4)}
+              <span class="${deltaPct >= 0 ? 'positive' : 'negative'}" style="font-size:11px">${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(2)}%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
+        Sobre US$ ${Math.round(fx.usd_staked).toLocaleString('pt-BR')} operados em pontas de dólar (${fx.legs} pernas liquidadas). Estimativa — assume posição em dólar não convertida de volta.
+      </div>
+    </div>`;
 }
 
 function renderDashOperators(op) {
