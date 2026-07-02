@@ -1575,9 +1575,11 @@ tbody tr:last-child td { border-bottom: none; }
 .up-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.6); }
 .up-content {
   position: relative; background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); width: min(620px, 94vw); max-height: 90vh; overflow: auto;
+  border-radius: var(--radius); width: min(620px, 94vw); max-height: 90vh;
+  overflow-y: auto; overflow-x: hidden;
   padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
 }
+.up-content canvas { max-width: 100%; }
 .up-close { position: absolute; top: 12px; right: 14px; background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; line-height: 1; }
 .up-close:hover { color: var(--text); }
 .up-header { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; padding-right: 24px; }
@@ -1589,5 +1591,8 @@ tbody tr:last-child td { border-bottom: none; }
 .up-name { font-size: 20px; font-weight: 700; }
 .up-bio { font-size: 13px; color: var(--text-muted); margin-top: 3px; word-break: break-word; white-space: pre-wrap; }
 .up-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
-.up-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 560px) { .up-stats, .up-charts { grid-template-columns: 1fr; } }
+/* Stack the two charts so each gets the full modal width — avoids the cramped,
+   horizontally-scrolling layout when they sit side by side in a narrow modal. */
+.up-charts { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.up-charts .chart-container { min-width: 0; }
+@media (max-width: 560px) { .up-stats { grid-template-columns: 1fr; } }
