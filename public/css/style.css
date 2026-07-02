@@ -1547,3 +1547,22 @@ tbody tr:last-child td { border-bottom: none; }
   .alert-card { flex-direction: column; }
   .watcher-controls { flex-direction: column; align-items: flex-start; }
 }
+
+/* ===== Retrospectiva (recap) ===== */
+.recap-hero {
+  background: linear-gradient(135deg, var(--primary), #4c3aaa);
+  border-radius: var(--radius); padding: 28px 24px; text-align: center;
+  color: #fff; margin-bottom: 16px;
+}
+.recap-hero-label { font-size: 13px; opacity: .85; text-transform: uppercase; letter-spacing: .5px; }
+.recap-hero-value { font-size: 44px; font-weight: 800; margin: 6px 0; line-height: 1.1; }
+.recap-hero-sub { font-size: 13px; opacity: .92; }
+.recap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.recap-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.recap-card-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.recap-card-value { font-size: 24px; font-weight: 800; line-height: 1.15; word-break: break-word; }
+.recap-card-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.recap-types { display: flex; flex-direction: column; }
+.recap-type { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.recap-type:last-child { border-bottom: none; }
+.recap-type b { color: var(--text-muted); font-weight: 600; }

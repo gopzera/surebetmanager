@@ -691,6 +691,7 @@ function navigate(page) {
     'admin': renderAdmin,
     'giros': renderGiros,
     'finances': renderFinances,
+    'recap': renderRecap,
   };
   (pages[page] || renderDashboard)();
 }
@@ -848,6 +849,99 @@ async function renderDashFx(fx) {
         Sobre US$ ${Math.round(fx.usd_staked).toLocaleString('pt-BR')} operados em pontas de dólar (${fx.legs} pernas liquidadas). Estimativa — assume posição em dólar não convertida de volta.
       </div>
     </div>`;
+}
+
+// ===== RETROSPECTIVA (recap) =====
+let recapPeriodKey = null;
+
+// Period options: World Cup 2026 special + the last 6 calendar months.
+function recapPeriods() {
+  const now = new Date();
+  const months = [];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    const pad = n => String(n).padStart(2, '0');
+    const label = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    months.push({
+      key: `${d.getFullYear()}-${pad(d.getMonth() + 1)}`,
+      label: label.charAt(0).toUpperCase() + label.slice(1),
+      start: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`,
+      end: `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`,
+    });
+  }
+  return [{ key: 'worldcup', label: '🏆 Copa do Mundo', start: '2026-06-11', end: '2026-07-19' }, ...months];
+}
+
+function setRecapPeriod(key) { recapPeriodKey = key; renderRecap(); }
+
+async function renderRecap() {
+  const periods = recapPeriods();
+  if (!recapPeriodKey || !periods.some(p => p.key === recapPeriodKey)) {
+    // Default: the previous full month (they'll usually recap the month that just ended).
+    const now = new Date();
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    recapPeriodKey = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+    if (!periods.some(p => p.key === recapPeriodKey)) recapPeriodKey = periods[1] ? periods[1].key : 'worldcup';
+  }
+  const mc = document.getElementById('main-content');
+  mc.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Retrospectiva</h1>
+        <p class="page-description">Seu recap do período — estilo "Rewind"</p>
+      </div>
+    </div>
+    <div class="watcher-tabs" style="margin-bottom:16px;flex-wrap:wrap">
+      ${periods.map(p => `<button class="watcher-tab ${p.key === recapPeriodKey ? 'active' : ''}" onclick="setRecapPeriod('${p.key}')">${p.label}</button>`).join('')}
+    </div>
+    <div id="recap-content"><div style="text-align:center;padding:40px;color:var(--text-muted)">Carregando…</div></div>
+  `;
+  loadRecap();
+}
+
+async function loadRecap() {
+  const periods = recapPeriods();
+  const p = periods.find(x => x.key === recapPeriodKey);
+  const el = document.getElementById('recap-content');
+  if (!p || !el) return;
+  try {
+    const d = await api(`/api/dashboard/recap?start=${p.start}&end=${p.end}`);
+    el.innerHTML = recapHtml(d, p);
+  } catch (err) {
+    el.innerHTML = `<div style="color:var(--danger);padding:20px">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function recapHtml(d, p) {
+  const s = d.summary || {};
+  if (!s.ops) return `<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma operação em ${escapeHtml(p.label)}.</div>`;
+  const avg = s.active_days ? s.profit / s.active_days : 0;
+  const typeLabels = { aquecimento: 'Aquecimento', arbitragem: 'Arbitragem', aumentada25: 'Aumentada', arbitragem_br: 'Arb BR', punter: 'Punter', tentativa_duplo: 'Tentativa dupla' };
+  const fmtDate = ds => ds ? new Date(ds + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '—';
+  const card = (label, value, sub, big) => `<div class="recap-card"><div class="recap-card-label">${label}</div><div class="recap-card-value" style="${big ? '' : 'font-size:18px'}">${value}</div>${sub ? `<div class="recap-card-sub">${sub}</div>` : ''}</div>`;
+  return `
+    <div class="recap-hero">
+      <div class="recap-hero-label">${escapeHtml(p.label)} · lucro total</div>
+      <div class="recap-hero-value">${formatBRL(s.profit)}</div>
+      <div class="recap-hero-sub">${s.ops} operações · ${s.active_days} dias ativos · ${formatBRL(avg)}/dia ativo</div>
+    </div>
+    <div class="recap-grid">
+      ${card('💰 Total operado', formatBRL(s.volume), '', true)}
+      ${d.biggest ? card('🚀 Maior tacada', formatBRL(d.biggest.profit), `${escapeHtml(d.biggest.game || '')} · ${fmtDate(d.biggest.date)}`, true) : ''}
+      ${d.bestDay ? card('📈 Dia mais lucrativo', formatBRL(d.bestDay.profit), `${fmtDate(d.bestDay.date)} · ${d.bestDay.ops} ops`, true) : ''}
+      ${d.topHouse ? card('🏠 Casa favorita', escapeHtml(d.topHouse.name), `${d.topHouse.count} operações`, false) : ''}
+      ${d.topCombo ? card('🔗 Combinação mais usada', escapeHtml(d.topCombo.combo), `${d.topCombo.count}x`, false) : ''}
+      ${(d.giros && d.giros.count) ? card('🎰 Giros', formatBRL(d.giros.profit), `${d.giros.count} giros`, true) : ''}
+    </div>
+    <div class="chart-container" style="margin-top:16px">
+      <h3 class="chart-title" style="margin-bottom:12px">Por tipo de operação</h3>
+      <div class="recap-types">
+        ${(d.byType || []).map(t => `<div class="recap-type"><span>${typeLabels[t.type] || t.type}</span><b>${t.count}</b><span class="${profitClass(t.profit)}">${formatBRL(t.profit)}</span></div>`).join('')}
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:16px;color:var(--text-muted);font-size:12px">📸 Tire um print e compartilhe com a galera!</div>
+  `;
 }
 
 function renderDashOperators(op) {

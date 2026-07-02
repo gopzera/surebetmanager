@@ -330,6 +330,85 @@ router.get('/stats', async (req, res) => {
 });
 
 
+// Retrospectiva (Spotify-Wrapped style) for an arbitrary date range — same numbers
+// as the stats/estatísticas, scoped to [start, end]. Powers the monthly recap and
+// the World Cup recap.
+router.get('/recap', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(req.query.start || '') ? req.query.start : null;
+    const end = /^\d{4}-\d{2}-\d{2}$/.test(req.query.end || '') ? req.query.end : null;
+    if (!start || !end) return res.status(400).json({ error: 'Período inválido' });
+    const range = `${OP_DATE_EXPR} >= ? AND ${OP_DATE_EXPR} <= ?`;
+
+    const summary = await db.get(
+      `SELECT COUNT(*) AS ops, COALESCE(SUM(o.profit), 0) AS profit,
+              COUNT(DISTINCT ${OP_DATE_EXPR}) AS active_days
+       FROM operations o WHERE o.user_id = ? AND ${range}`,
+      userId, start, end
+    );
+    const byType = await db.all(
+      `SELECT o.type, COUNT(*) AS count, COALESCE(SUM(o.profit), 0) AS profit
+       FROM operations o WHERE o.user_id = ? AND ${range} GROUP BY o.type ORDER BY count DESC`,
+      userId, start, end
+    );
+    const biggest = await db.get(
+      `SELECT o.game, o.profit, ${OP_DATE_EXPR} AS date, o.type
+       FROM operations o WHERE o.user_id = ? AND ${range} ORDER BY o.profit DESC LIMIT 1`,
+      userId, start, end
+    );
+    const bestDay = await db.get(
+      `SELECT ${OP_DATE_EXPR} AS date, COALESCE(SUM(o.profit), 0) AS profit, COUNT(*) AS ops
+       FROM operations o WHERE o.user_id = ? AND ${range} GROUP BY date ORDER BY profit DESC LIMIT 1`,
+      userId, start, end
+    );
+    const girosRow = await db.get(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(profit), 0) AS profit
+       FROM giros WHERE user_id = ? AND DATE(created_at, '-3 hours') >= ? AND DATE(created_at, '-3 hours') <= ?`,
+      userId, start, end
+    );
+
+    // Houses + combos + total volume (BRL) from the relational legs.
+    const legRows = await db.all(
+      `SELECT l.operation_id, l.bookmaker_id, b.name AS bm_name, l.stake, l.raw_bookmaker
+       FROM operation_legs l JOIN operations o ON o.id = l.operation_id
+       LEFT JOIN bookmakers b ON b.id = l.bookmaker_id
+       WHERE o.user_id = ? AND ${range}`,
+      userId, start, end
+    );
+    const byOp = new Map();
+    let volume = 0;
+    for (const r of legRows) {
+      volume += Number(r.stake) || 0;
+      const key = r.bookmaker_id ? `id:${r.bookmaker_id}` : `name:${String(r.raw_bookmaker || '—').toLowerCase()}`;
+      let e = byOp.get(r.operation_id);
+      if (!e) { e = new Map(); byOp.set(r.operation_id, e); }
+      e.set(key, r.bm_name || r.raw_bookmaker || '—');
+    }
+    const houseCount = new Map();
+    const comboCount = new Map();
+    for (const houses of byOp.values()) {
+      for (const name of houses.values()) houseCount.set(name, (houseCount.get(name) || 0) + 1);
+      const names = [...houses.values()].sort((a, b) => a.localeCompare(b));
+      if (names.length >= 2) { const ck = names.join(' + '); comboCount.set(ck, (comboCount.get(ck) || 0) + 1); }
+    }
+    const topHouse = [...houseCount.entries()].sort((a, b) => b[1] - a[1])[0] || null;
+    const topCombo = [...comboCount.entries()].sort((a, b) => b[1] - a[1])[0] || null;
+
+    res.json({
+      start, end,
+      summary: { ...summary, volume },
+      byType, biggest, bestDay,
+      giros: girosRow,
+      topHouse: topHouse ? { name: topHouse[0], count: topHouse[1] } : null,
+      topCombo: topCombo ? { combo: topCombo[0], count: topCombo[1] } : null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
 // Data export / backup
 router.get('/export', async (req, res) => {
   try {
