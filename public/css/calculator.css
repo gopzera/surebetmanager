@@ -972,6 +972,12 @@
 }
 .calc-page .c-fx-ob-btn:hover { border-color: var(--cyan); color: var(--cyan); }
 .calc-page .c-default-btn.on { background: var(--fix); color: #0b1324; border-color: var(--fix); }
+.calc-page .c-fx-star {
+  background: none; border: none; cursor: pointer; padding: 0 2px; margin-left: 3px;
+  color: var(--text3); font-size: 13px; line-height: 1; vertical-align: middle;
+}
+.calc-page .c-fx-star:hover { color: var(--fix); }
+.calc-page .c-fx-star.on { color: var(--fix); }
 
 /* order book modal */
 .c-ob-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }

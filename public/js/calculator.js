@@ -46,9 +46,14 @@ let calcNextId = 3;
 let calcRows = [];
 let calcUsdcBrl = null;   // EFFECTIVE rate used in all math (manual override or live)
 let calcLiveRate = null;  // last rate fetched from Binance/fallbacks
-// Persistent default rate ("tornar padrão"); applied as the manual override on load.
-let calcDefaultRate = (() => { const v = parseFloat(localStorage.getItem('calcDefaultRate')); return v > 0 ? v : null; })();
-let calcManualRate = calcDefaultRate; // user-typed override (or persisted default); wins over live
+// Persistent default SOURCE ("tornar padrão"): use a given exchange/side as the
+// calculator's rate (e.g. Binance "compra"); it TRACKS that source's live effective
+// price on every refresh. Shape: { stable, exchange, side:'ask'|'bid' }.
+let calcDefaultSource = (() => {
+  try { const v = JSON.parse(localStorage.getItem('calcDefaultSource')); return (v && v.stable && v.exchange && v.side) ? v : null; }
+  catch { return null; }
+})();
+let calcManualRate = null; // manual override (typed, or fed by a default source); wins over live
 let calcLastUpdated = null;
 let calcResult = null;
 let calcDarkMode = true;
@@ -236,19 +241,26 @@ function calcGotRate(price, source) {
 function calcApplyEffectiveRate() {
   calcUsdcBrl = calcManualRate != null ? calcManualRate : calcLiveRate;
   const badge = document.getElementById('calc-manual-badge');
-  if (badge) badge.style.display = calcManualRate != null ? '' : 'none';
+  if (badge) {
+    if (calcDefaultSource) { badge.style.display = ''; badge.textContent = 'padrão: ' + calcFxLabelOf(calcDefaultSource.exchange) + ' ' + (calcDefaultSource.side === 'ask' ? 'compra' : 'venda'); }
+    else if (calcManualRate != null) { badge.style.display = ''; badge.textContent = 'manual'; }
+    else badge.style.display = 'none';
+  }
   const clearBtn = document.getElementById('calc-manual-clear');
-  if (clearBtn) clearBtn.style.display = calcManualRate != null ? '' : 'none';
+  if (clearBtn) clearBtn.style.display = (calcManualRate != null || calcDefaultSource) ? '' : 'none';
   calcCompute();
   calcUpdateDisplay();
 }
 
 // User typed a manual USDC/BRL rate (overrides Binance everywhere). Empty = live.
+// Typing takes manual control, so it drops any default source.
 function calcOnManualRateInput(val) {
+  calcClearDefaultSource(false);
   const s = String(val == null ? '' : val).replace(',', '.').trim();
   if (s === '') calcManualRate = null;
   else { const n = parseFloat(s); calcManualRate = (n > 0) ? n : null; }
   calcApplyEffectiveRate();
+  calcRenderFx();
 }
 
 // Set the manual rate programmatically (e.g. clicking an exchange quote) and sync
@@ -264,10 +276,12 @@ function calcSetManualRate(rate) {
 }
 
 function calcClearManualRate() {
+  calcClearDefaultSource(false);
   calcManualRate = null;
   const inp = document.getElementById('calc-manual-rate');
   if (inp) inp.value = '';
   calcApplyEffectiveRate();
+  calcRenderFx();
 }
 
 // -- Multi-exchange dollar panel --
@@ -405,26 +419,55 @@ function calcFxToggleHelp() {
   if (btn) btn.classList.toggle('on', show);
 }
 
-// "Tornar padrão": persist the current rate as the calculator's default (applied on
-// load). Clicking again clears it.
-function calcMakeDefaultRate() {
-  if (calcDefaultRate != null) {
-    calcDefaultRate = null;
-    localStorage.removeItem('calcDefaultRate');
-    if (typeof toast === 'function') toast('Cotação padrão removida');
+function calcFxLabelOf(id) { return ({ binance: 'Binance', bybit: 'Bybit', mexc: 'MEXC', bitget: 'Bitget' })[id] || id; }
+
+// Star on a price cell → make that exchange/side the calculator's default source
+// (the rate then tracks its live effective price). Clicking the active one clears it.
+function calcSetDefaultSource(stable, id, side) {
+  const cur = calcDefaultSource;
+  const same = cur && cur.stable === stable && cur.exchange === id && cur.side === side;
+  if (same) {
+    calcClearDefaultSource(true);
+    if (typeof toast === 'function') toast('Cotação padrão removida (voltou pra ao vivo)');
   } else {
-    const rate = calcManualRate != null ? calcManualRate : calcLiveRate;
-    if (!(rate > 0)) { if (typeof toast === 'function') toast('Sem cotação pra salvar ainda', 'error'); return; }
-    calcDefaultRate = rate;
-    localStorage.setItem('calcDefaultRate', String(rate));
-    calcManualRate = rate;
-    const inp = document.getElementById('calc-manual-rate');
-    if (inp) inp.value = rate.toFixed(4);
-    calcApplyEffectiveRate();
-    if (typeof toast === 'function') toast('Cotação padrão salva: R$' + rate.toFixed(4));
+    calcDefaultSource = { stable, exchange: id, side };
+    localStorage.setItem('calcDefaultSource', JSON.stringify(calcDefaultSource));
+    calcApplyDefaultSource();
+    if (typeof toast === 'function') toast('Padrão: ' + calcFxLabelOf(id) + ' ' + (side === 'ask' ? 'compra' : 'venda'));
   }
-  const btn = document.getElementById('calc-default-btn');
-  if (btn) btn.classList.toggle('on', calcDefaultRate != null);
+  calcRenderFx();
+}
+
+function calcClearDefaultSource(revertToLive) {
+  if (!calcDefaultSource) return;
+  calcDefaultSource = null;
+  localStorage.removeItem('calcDefaultSource');
+  if (revertToLive) {
+    calcManualRate = null;
+    const inp = document.getElementById('calc-manual-rate');
+    if (inp) inp.value = '';
+    calcApplyEffectiveRate();
+  }
+}
+
+// Feed the default source's current effective price (for the chosen size) into the
+// manual rate. Called after every FX refresh so the rate tracks the source live.
+function calcApplyDefaultSource() {
+  if (!calcDefaultSource || !calcFxBooks) return;
+  const rows = calcFxBooks[calcDefaultSource.stable] || [];
+  const row = rows.find(r => r.id === calcDefaultSource.exchange);
+  if (!row || !row.book) return;
+  const fill = calcFxFill(calcDefaultSource.side === 'ask' ? row.book.asks : row.book.bids, calcFxTarget);
+  if (!fill) return;
+  calcManualRate = fill.vwap;
+  const inp = document.getElementById('calc-manual-rate');
+  if (inp && document.activeElement !== inp) inp.value = fill.vwap.toFixed(4);
+  calcApplyEffectiveRate();
+}
+
+function calcFxStar(stable, id, side) {
+  const on = calcDefaultSource && calcDefaultSource.stable === stable && calcDefaultSource.exchange === id && calcDefaultSource.side === side;
+  return ` <button type="button" class="c-fx-star${on ? ' on' : ''}" onclick="event.stopPropagation();calcSetDefaultSource('${stable}','${id}','${side}')" title="${on ? 'Remover cotação padrão' : 'Usar como cotação padrão (acompanha o preço vivo)'}">${on ? '★' : '☆'}</button>`;
 }
 
 function calcRenderFx() {
@@ -452,8 +495,8 @@ function calcRenderFx() {
       const sellBest = (bestSell != null && c.bid.vwap === bestSell) ? ' c-fx-best' : '';
       return `<tr>
         <td>${c.label}</td>
-        <td class="c-fx-cell${buyBest}" onclick="calcUseQuote(${c.ask.vwap})" title="Compra efetiva p/ $${target} (topo R$${c.ask.top.toFixed(4)} · liq perto do topo ~$${Math.round(c.askLiq).toLocaleString('pt-BR')})">R$${c.ask.vwap.toFixed(4)} <span class="c-liq c-liq-${aLab.k}">${aLab.t}</span>${warn(c.ask.enough)}</td>
-        <td class="c-fx-cell${sellBest}" onclick="calcUseQuote(${c.bid.vwap})" title="Venda efetiva p/ $${target} (topo R$${c.bid.top.toFixed(4)} · liq perto do topo ~$${Math.round(c.bidLiq).toLocaleString('pt-BR')})">R$${c.bid.vwap.toFixed(4)} <span class="c-liq c-liq-${bLab.k}">${bLab.t}</span>${warn(c.bid.enough)}</td>
+        <td class="c-fx-cell${buyBest}" onclick="calcUseQuote(${c.ask.vwap})" title="Compra efetiva p/ $${target} (topo R$${c.ask.top.toFixed(4)} · liq perto do topo ~$${Math.round(c.askLiq).toLocaleString('pt-BR')})">R$${c.ask.vwap.toFixed(4)} <span class="c-liq c-liq-${aLab.k}">${aLab.t}</span>${warn(c.ask.enough)}${calcFxStar(stable, c.id, 'ask')}</td>
+        <td class="c-fx-cell${sellBest}" onclick="calcUseQuote(${c.bid.vwap})" title="Venda efetiva p/ $${target} (topo R$${c.bid.top.toFixed(4)} · liq perto do topo ~$${Math.round(c.bidLiq).toLocaleString('pt-BR')})">R$${c.bid.vwap.toFixed(4)} <span class="c-liq c-liq-${bLab.k}">${bLab.t}</span>${warn(c.bid.enough)}${calcFxStar(stable, c.id, 'bid')}</td>
         <td class="c-ctr-col"><button type="button" class="c-fx-ob-btn" onclick="calcFxShowOrderbook('${stable}','${c.id}')" title="Ver o order book (última atualização)">livro</button></td>
       </tr>`;
     }).join('');
@@ -465,6 +508,9 @@ function calcRenderFx() {
   };
 
   body.innerHTML = renderSection('USDC', calcFxBooks.USDC || []) + `<div style="height:12px"></div>` + renderSection('USDT', calcFxBooks.USDT || []);
+
+  // If a default source is set, feed its live effective price into the rate.
+  calcApplyDefaultSource();
 }
 
 function calcUseQuote(rate) { calcSetManualRate(rate); }
@@ -2139,9 +2185,7 @@ function renderCalculator() {
               placeholder="ao vivo" value="${calcManualRate!=null?calcManualRate:''}"
               oninput="calcOnManualRateInput(this.value)">
             <button class="c-refresh-btn" id="calc-manual-clear" onclick="calcClearManualRate()"
-              title="Voltar pra cota\u00E7\u00E3o ao vivo" style="display:${calcManualRate!=null?'':'none'}">ao vivo</button>
-            <button class="c-refresh-btn c-default-btn ${calcDefaultRate!=null?'on':''}" id="calc-default-btn" onclick="calcMakeDefaultRate()"
-              title="Fixar a cota\u00E7\u00E3o atual como padr\u00E3o da calculadora (salva no navegador)">\u2605 padr\u00E3o</button>
+              title="Voltar pra cota\u00E7\u00E3o ao vivo" style="display:${(calcManualRate!=null||calcDefaultSource)?'':'none'}">ao vivo</button>
           </div>
           <div class="c-ticker-note">\u21BB atualiza a cada 5s</div>
         </div>
@@ -2227,7 +2271,7 @@ function renderCalculator() {
           <li><strong>Verde</strong> = melhor pre\u00E7o da se\u00E7\u00E3o (ignora as de baixa liquidez).</li>
           <li><strong>\u26A0</strong> = o livro n\u00E3o cobre todo o seu size; o pre\u00E7o \u00E9 do que h\u00E1 dispon\u00EDvel.</li>
           <li><strong>livro</strong> = abre o order book (snapshot do \u00FAltimo request).</li>
-          <li>Clique num pre\u00E7o pra us\u00E1-lo como <strong>cota\u00E7\u00E3o manual</strong>. No ticker do d\u00F3lar, <strong>\u2605 padr\u00E3o</strong> fixa a cota\u00E7\u00E3o como default da calculadora.</li>
+          <li>Clique num pre\u00E7o pra us\u00E1-lo como <strong>cota\u00E7\u00E3o manual</strong> (uma vez). O <strong>\u2606</strong> ao lado do pre\u00E7o fixa aquela <strong>fonte</strong> como padr\u00E3o (ex.: Binance compra) \u2014 a cota\u00E7\u00E3o passa a <strong>acompanhar o pre\u00E7o vivo</strong> daquela corretora/lado.</li>
         </ul>
       </div>
       <div id="calc-fx-body"><div class="c-ticker-load">Buscando cota\u00E7\u00F5es\u2026</div></div>
