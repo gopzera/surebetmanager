@@ -735,12 +735,6 @@ async function renderDashboard() {
     </div>
     <div id="dash-alerts" class="dash-alerts"></div>
     <div class="stats-grid" id="stats-grid"></div>
-    <div id="dash-fx-card"></div>
-    <div id="dash-operators-card"></div>
-    <div class="dash-pair">
-      <div class="volume-card" id="volume-card"></div>
-      <div class="wins-card" id="wins-card"></div>
-    </div>
     <div class="charts-row">
       <div class="chart-container">
         <h3 class="chart-title">Lucro Diário (últimos 30 dias)</h3>
@@ -758,6 +752,13 @@ async function renderDashboard() {
       </div>
       <div id="recent-table"></div>
     </div>
+    <!-- Secundário: métricas de apoio no fim da página -->
+    <div class="dash-pair">
+      <div class="volume-card" id="volume-card"></div>
+      <div class="wins-card" id="wins-card"></div>
+    </div>
+    <div id="dash-operators-card"></div>
+    <div id="dash-fx-card"></div>
   `;
   showDashboardSkeleton();
 
