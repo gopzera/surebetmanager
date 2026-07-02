@@ -933,6 +933,75 @@
 .calc-page .c-fx-best { color: var(--green-bright); font-weight: 700; background: var(--green-bg); }
 .calc-page .c-fx-spread { color: var(--text2); }
 .calc-page .c-fx-off td { color: var(--text3); }
+.calc-page .c-fx-section-title {
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--text2); margin: 4px 0 4px; font-family: var(--mono);
+}
+.calc-page .c-fx-target-lbl { font-size: 11px; color: var(--text2); }
+.calc-page .c-fx-warn { color: var(--amber); }
+.calc-page .c-liq {
+  display: inline-block; margin-left: 5px; padding: 0 5px; border-radius: 8px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase; vertical-align: middle;
+  font-family: var(--sans); letter-spacing: .3px;
+}
+.calc-page .c-liq-high { background: var(--green-bg); color: var(--green-bright); border: 1px solid var(--green-border); }
+.calc-page .c-liq-mid  { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
+.calc-page .c-liq-low  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+
+/* prominent "your size" control */
+.calc-page .c-fx-size {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--cyan-dim); border: 1px solid var(--cyan-glow);
+  border-radius: 20px; padding: 3px 6px 3px 12px;
+}
+.calc-page .c-fx-size label { font-size: 12px; font-weight: 700; color: var(--cyan); white-space: nowrap; cursor: pointer; }
+.calc-page .c-fx-size input {
+  width: 84px; text-align: right; font-size: 13px; font-weight: 700; padding: 4px 8px;
+  font-family: var(--mono); border-radius: 14px;
+}
+.calc-page .c-fx-help-btn { font-size: 11px; }
+.calc-page .c-fx-help {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 12px 16px; margin: 4px 0 10px; font-size: 12.5px;
+}
+.calc-page .c-fx-help ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; color: var(--text2); }
+.calc-page .c-fx-help strong { color: var(--text); }
+.calc-page .c-fx-ob-btn {
+  border: 1px solid var(--border); background: var(--surface3); color: var(--text2);
+  border-radius: var(--r-xs); font-size: 10px; padding: 2px 8px; cursor: pointer; font-family: var(--mono);
+}
+.calc-page .c-fx-ob-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.calc-page .c-default-btn.on { background: var(--fix); color: #0b1324; border-color: var(--fix); }
+.calc-page .c-fx-star {
+  background: none; border: none; cursor: pointer; padding: 0 2px; margin-left: 3px;
+  color: var(--text3); font-size: 13px; line-height: 1; vertical-align: middle;
+}
+.calc-page .c-fx-star:hover { color: var(--fix); }
+.calc-page .c-fx-star.on { color: var(--fix); }
+
+/* order book modal */
+.c-ob-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+.c-ob-modal .c-ob-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.6); }
+.c-ob-modal .c-ob-content {
+  position: relative; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); width: min(560px, 94vw); max-height: 88vh; overflow: auto; padding: 16px 18px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.c-ob-modal .c-ob-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.c-ob-modal .c-ob-title { font-weight: 700; font-size: 14px; color: var(--text); }
+.c-ob-modal .c-ob-close { background: none; border: none; color: var(--text2); font-size: 18px; cursor: pointer; }
+.c-ob-modal .c-ob-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.c-ob-modal .c-ob-side { font-size: 11px; font-weight: 700; margin-bottom: 6px; }
+.c-ob-modal .c-ob-side.c-ob-ask { color: var(--red); }
+.c-ob-modal .c-ob-side.c-ob-bid { color: var(--green-bright); }
+.c-ob-modal .c-ob-tbl { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+.c-ob-modal .c-ob-tbl th { color: var(--text2); font-weight: 600; text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.c-ob-modal .c-ob-tbl td { text-align: right; padding: 3px 6px; color: var(--text); }
+.c-ob-modal td.c-ob-ask { color: var(--red); }
+.c-ob-modal td.c-ob-bid { color: var(--green-bright); }
+.c-ob-modal .c-ob-cum { color: var(--text2); }
+.c-ob-modal .c-ob-note { font-size: 10px; color: var(--text2); margin-top: 10px; }
+@media (max-width: 560px) { .c-ob-modal .c-ob-cols { grid-template-columns: 1fr; } }
 
 /* ── RESPONSIVE ── */
 @media (max-width: 640px) {
