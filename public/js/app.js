@@ -918,7 +918,6 @@ function recapHtml(d, p) {
   const s = d.summary || {};
   if (!s.ops) return `<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma operação em ${escapeHtml(p.label)}.</div>`;
   const avg = s.active_days ? s.profit / s.active_days : 0;
-  const typeLabels = { aquecimento: 'Aquecimento', arbitragem: 'Arbitragem', aumentada25: 'Aumentada', arbitragem_br: 'Arb BR', punter: 'Punter', tentativa_duplo: 'Tentativa dupla' };
   const fmtDate = ds => ds ? new Date(ds + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '—';
   const card = (label, value, sub, big) => `<div class="recap-card"><div class="recap-card-label">${label}</div><div class="recap-card-value" style="${big ? '' : 'font-size:18px'}">${value}</div>${sub ? `<div class="recap-card-sub">${sub}</div>` : ''}</div>`;
   return `
@@ -938,7 +937,14 @@ function recapHtml(d, p) {
     <div class="chart-container" style="margin-top:16px">
       <h3 class="chart-title" style="margin-bottom:12px">Por tipo de operação</h3>
       <div class="recap-types">
-        ${(d.byType || []).map(t => `<div class="recap-type"><span>${typeLabels[t.type] || t.type}</span><b>${t.count}</b><span class="${profitClass(t.profit)}">${formatBRL(t.profit)}</span></div>`).join('')}
+        <div class="recap-type recap-type-head">
+          <span>Tipo</span><span>Operações</span><span>Lucro</span>
+        </div>
+        ${(d.byType || []).map(t => `<div class="recap-type">
+          <span>${typeLabel(t.type)}</span>
+          <span class="recap-type-count">${t.count}</span>
+          <span class="${profitClass(t.profit)}" style="font-weight:600">${formatBRL(t.profit)}</span>
+        </div>`).join('')}
       </div>
     </div>
     <div style="text-align:center;margin-top:16px;color:var(--text-muted);font-size:12px">📸 Tire um print e compartilhe com a galera!</div>
@@ -4418,12 +4424,12 @@ async function loadRankingTab() {
             ? `${u.total_giros} giro(s) registrado(s) · ${u.total_quantity || 0} giros grátis`
             : `${u.total_ops} opera\u00E7\u00F5es`;
           return `
-            <div class="ranking-row ${isMe ? 'ranking-me' : ''}" style="
+            <div class="ranking-row ${isMe ? 'ranking-me' : ''}" onclick="openUserProfile(${u.id})" title="Ver perfil de ${escapeHtml(dName)}" style="
               display:flex;align-items:center;gap:16px;
               padding:14px 20px;
               background:var(--bg-card);
               border:1px solid ${isMe ? 'var(--primary)' : 'var(--border)'};
-              border-radius:var(--radius);
+              border-radius:var(--radius);cursor:pointer;
               ${isMe ? 'box-shadow:0 0 12px rgba(108,92,231,.15);' : ''}
             ">
               <div style="width:36px;text-align:center;font-size:${i < 3 ? '22px' : '14px'}">${medal}</div>
@@ -4465,6 +4471,97 @@ function statCardHtml(label, value, sub) {
 
 const WEEKDAY_NAMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 const WEEKDAY_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+// ===== USER PROFILE MODAL (from ranking) =====
+let _upCharts = {};
+
+async function openUserProfile(id) {
+  let modal = document.getElementById('user-profile-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'user-profile-modal';
+    modal.className = 'up-modal';
+    modal.innerHTML = `<div class="up-backdrop" onclick="closeUserProfile()"></div><div class="up-content" id="up-content"></div>`;
+    document.body.appendChild(modal);
+  }
+  document.getElementById('up-content').innerHTML = `<button class="up-close" onclick="closeUserProfile()">✕</button><div style="text-align:center;padding:48px;color:var(--text-muted)">Carregando…</div>`;
+  modal.style.display = 'flex';
+  try {
+    const d = await api(`/api/ranking/user/${id}`);
+    renderUserProfile(d);
+  } catch (err) {
+    document.getElementById('up-content').innerHTML = `<button class="up-close" onclick="closeUserProfile()">✕</button><div style="padding:32px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function closeUserProfile() {
+  const m = document.getElementById('user-profile-modal');
+  if (m) m.style.display = 'none';
+  Object.values(_upCharts).forEach(c => { try { c.destroy(); } catch (_) {} });
+  _upCharts = {};
+}
+
+function renderUserProfile(d) {
+  Object.values(_upCharts).forEach(c => { try { c.destroy(); } catch (_) {} });
+  _upCharts = {};
+  const p = d.profile, s = d.stats;
+  const name = p.discord_username || p.display_name || '?';
+  const url = userAvatarUrl(p, 96);
+  const avatarInner = url ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover">` : escapeHtml(name.charAt(0).toUpperCase());
+  document.getElementById('up-content').innerHTML = `
+    <button class="up-close" onclick="closeUserProfile()">✕</button>
+    <div class="up-header">
+      <div class="up-avatar">${avatarInner}</div>
+      <div style="min-width:0">
+        <div class="up-name">${escapeHtml(name)}</div>
+        <div class="up-bio">${p.bio ? escapeHtml(p.bio) : '<span style="opacity:.55">Sem bio</span>'}</div>
+      </div>
+    </div>
+    <div class="up-stats">
+      <div class="stat-card"><div class="stat-label">Lucro no mês</div><div class="stat-value ${profitClass(s.month.profit)}">${formatBRL(s.month.profit)}</div><div class="stat-sub">${s.month.count} operação(ões)</div></div>
+      <div class="stat-card"><div class="stat-label">Lucro total</div><div class="stat-value ${profitClass(s.allTime.profit)}">${formatBRL(s.allTime.profit)}</div><div class="stat-sub">${s.allTime.count} operação(ões)</div></div>
+    </div>
+    <div class="up-charts">
+      <div class="chart-container"><h4 class="chart-title" style="font-size:13px;margin-bottom:10px">Lucro diário (30 dias)</h4><div style="position:relative;height:190px"><canvas id="up-daily-chart"></canvas></div></div>
+      <div class="chart-container"><h4 class="chart-title" style="font-size:13px;margin-bottom:10px">Por tipo de operação</h4><div style="position:relative;height:190px"><canvas id="up-type-chart"></canvas></div></div>
+    </div>`;
+  renderUpDailyChart(s.dailyProfits || []);
+  renderUpTypeChart(s.profitByType || []);
+}
+
+function renderUpDailyChart(dailyProfits) {
+  const ctx = document.getElementById('up-daily-chart');
+  if (!ctx) return;
+  const labels = dailyProfits.map(d => new Date(d.date + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }));
+  const values = dailyProfits.map(d => d.profit);
+  const colors = values.map(v => v >= 0 ? 'rgba(0,200,83,0.8)' : 'rgba(239,83,80,0.8)');
+  _upCharts.daily = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b8fa3', font: { size: 10 } } },
+        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b8fa3', callback: v => 'R$' + v } },
+      },
+    },
+  });
+}
+
+function renderUpTypeChart(profitByType) {
+  const ctx = document.getElementById('up-type-chart');
+  if (!ctx) return;
+  const typeColors = { aquecimento: '#ffa726', arbitragem: '#00c853', aumentada25: '#6c5ce7', arbitragem_br: '#26c6da', punter: '#ef5350', tentativa_duplo: '#ec407a' };
+  if (!profitByType.length) {
+    _upCharts.type = new Chart(ctx, { type: 'doughnut', data: { labels: ['Sem dados'], datasets: [{ data: [1], backgroundColor: ['#2e3247'] }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8b8fa3' } } } } });
+    return;
+  }
+  _upCharts.type = new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels: profitByType.map(p => typeLabel(p.type)), datasets: [{ data: profitByType.map(p => p.count), backgroundColor: profitByType.map(p => typeColors[p.type] || '#6c5ce7'), borderWidth: 0 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '65%', plugins: { legend: { position: 'bottom', labels: { color: '#e4e6f0', padding: 12, font: { size: 11 } } } } },
+  });
+}
 
 async function renderBookmakersPage() {
   const mc = document.getElementById('main-content');
