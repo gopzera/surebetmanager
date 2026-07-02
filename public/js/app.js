@@ -4319,7 +4319,7 @@ async function renderBookmakersPage() {
   mc.innerHTML = `
     <div class="page-header">
       <div>
-        <h1 class="page-title">Análises</h1>
+        <h1 class="page-title">Estatísticas</h1>
         <p class="page-description">Casas, horários e dias — volume, lucro e atividade</p>
       </div>
     </div>
